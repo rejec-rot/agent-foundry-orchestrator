@@ -16,6 +16,7 @@ import {
   rotateLogs,
   formatLogRotationResult,
 } from './lib/executor-ops.mjs';
+import { reapOrphans, formatReclaimResult } from './lib/orphan-reaper.mjs';
 
 const args = process.argv.slice(2);
 const mainCmd = args[0];
@@ -37,7 +38,8 @@ function printUsage() {
   af-admin circuit list
   af-admin circuit reset <executor> --reason "<reason>" [--reset-by "<name>"]
   af-admin tasks prune [--confirm] [--tasks-dir <path>]
-  af-admin logs rotate [--days <N>] [--events-file <path>] [--archive-dir <path>]`);
+  af-admin logs rotate [--days <N>] [--events-file <path>] [--archive-dir <path>]
+  af-admin reclaim orphans [--confirm] [--runs-dir <path>]`);
 }
 
 async function main() {
@@ -194,6 +196,26 @@ async function main() {
       }
     } else {
       console.error(`unknown logs subcommand: ${subCmd} (expected: rotate)`);
+      printUsage();
+      process.exit(1);
+    }
+  } else if (mainCmd === 'reclaim') {
+    if (subCmd === 'orphans') {
+      // Debris from a HARD kill (SIGKILL): detached children survive and sandbox
+      // containers keep running, while recovery re-dispatches the same task.
+      // Default is a dry-run; --confirm executes.
+      const confirm = args.includes('--confirm');
+      const runsDir = argValue('--runs-dir') || undefined;
+      try {
+        const res = reapOrphans({ runsDir, apply: confirm });
+        console.log(formatReclaimResult(res, confirm));
+        process.exit(0);
+      } catch (err) {
+        console.error(`error: ${err.message}`);
+        process.exit(1);
+      }
+    } else {
+      console.error(`unknown reclaim subcommand: ${subCmd} (expected: orphans)`);
       printUsage();
       process.exit(1);
     }

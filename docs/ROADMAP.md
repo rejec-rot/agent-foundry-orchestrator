@@ -168,15 +168,32 @@ node --test          # 期望全绿，且通过数只增不减
 
 **验证**：ACA-3 有牙（塞回硬编码副本后精确点名文件与变量报红）；ACA-4 端到端断言部分契约 → `THREW:ACTION_CONTRACT_UNUSABLE`。`node --test` 237 通过 / 0 失败，零依赖。
 
-### P5 — 子进程统一交给 execa
+### ~~P5 — 子进程统一交给 execa~~ → **已评估并否决**；改为修补硬杀后的孤儿残留（见 [ADR-0007](adr/0007-reject-execa-reap-hard-kill-orphans.md)）
 
-| 项 | 内容 |
+原计划用 `sindresorhus/execa` 替换手写的 `lib/child-process.mjs`。核对后**否决替换**：
+
+| 核对点 | 结论 |
 |---|---|
-| 替换对象 | `lib/child-process.mjs`（我在修复批次里手写的） |
-| 采纳 | `sindresorhus/execa`（7.6k★, MIT） |
-| 必须保留 | **进程组树回收**（`kill(-pid)`）、**全部子进程登记**（停机一次性回收）、输出上限 |
-| 验证 | ① 现有 `child-process.test.mjs` 的 CP-1..CP-6 语义等价迁移 ② INV-6 仍绿 |
-| 风险 | execa 的 kill 语义与我们的"整组 + 升级"不完全一致 → 需要封装一层而不是直接替换调用点 |
+| execa 能否 1:1 覆盖现有能力 | **不能**。① 进程**组**整树信号（`kill(-pid)`，H3 修复的核心）仍需自己写 ② 全局存活子进程登记 + 停机一次回收（execa 的清理绑定在 `execa()` 调用上）③ 输出**截断**语义（execa 的 `maxBuffer` 是超限报错，会改变失败分类） |
+| 迁移爆炸半径 | 覆盖 adapters（事件式流 + 死循环监测 + 持久句柄）、acceptance（超时 + 登记 + 截断 + 沙箱）、vault-client（长驻 stdio MCP 子进程）、codex-planner。收益只是"把已有封装换成一层依赖" |
+| execa 能修本层真问题吗 | **不能**。真问题是编排器被 **SIGKILL** 后的残留；execa 自己也扛不住它所在进程被 SIGKILL |
+
+**实测确认的真实缺陷**（优雅路径已覆盖，硬杀覆盖不了）：
+
+```
+实证 A  detached 子进程：父进程组 122798 / 子进程组 122808（已脱离）→ SIGKILL 父进程后子进程仍存活
+实证 B  docker 容器：SIGKILL 客户端后容器状态仍为 running
+```
+
+危害不只是"不整洁"：恢复会为 owner 已消失的任务**重新派发**，于是旧执行器继续编辑同一工作区、继续烧 API 预算，而新运行同时开始。且实测**全仓无任何孤儿回收机制**。
+
+**已修复**：新增 `lib/orphan-reaper.mjs` + `af-admin reclaim orphans`（默认 dry-run，`--confirm` 执行）
+- 沙箱容器：按名称里的 owner pid 判断，**owner 已死才** `docker rm -f`
+- 执行器进程：运行句柄新增 `owner_pid` + `pgid` 指纹；**owner 已死且进程组一致**才发信号（两道检查防 PID 复用误杀）
+- 无指纹的旧句柄 → **报告为 unverifiable，绝不发信号**
+
+**验证**：OR-1..OR-9（含"进程组不匹配 → 拒绝发信号"的 PID 复用守卫）。246 测试全绿，零依赖。
+**残留**：回收目前是显式运维动作，未自动接入恢复路径（见 ADR-0007 后果节）；非沙箱化验收子进程无句柄可校验。
 
 ### P6 — provider 错误分类与限流
 
@@ -206,8 +223,8 @@ node --test          # 期望全绿，且通过数只增不减
 | P2 沙箱化 | ✅ **验收路径已完成**（执行器待镜像决策） | 见 git log |
 | P3 SQLite 存储与锁 | ❌ **已评估否决**；改为修补锁覆盖并完成（ADR-0005） | 见 git log |
 | P4 策略外置 OPA/Cerbos | ❌ **已评估否决**；改为补全契约权威性并完成（ADR-0006） | 见 git log |
-| P5 execa | ⬜ 未开始（**当前第一项**） | — |
-| P6 provider 错误分类 | ⬜ 未开始 | — |
+| P5 execa | ❌ **已评估否决**；改为修补硬孤儿残留并完成（ADR-0007） | 见 git log |
+| P6 provider 错误分类 | ⬜ 未开始（**当前第一项**） | — |
 | P7 可逆执行（可选） | ⬜ 未开始 | — |
 
 > 环境探测（P2 前置）已完成：本机**已装 `bwrap`**，且**非特权 user namespace 已启用**
