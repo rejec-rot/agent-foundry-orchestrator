@@ -111,15 +111,29 @@ node --test          # 期望全绿，且通过数只增不减
 | 待你决策 | 执行器沙箱化的镜像策略（现成镜像+只读挂载宿主机 CLI / 自建含全部 CLI 的镜像 / 每执行器一个镜像）——见 `P2-FEASIBILITY.md` §四 |
 | 风险 | 沙箱可能改变 CLI 行为（网络、HOME、tmp）→ 需为每种执行器验证一次真实运行 |
 
-### P3 — 存储与锁改用 SQLite
+### ~~P3 — 存储与锁改用 SQLite~~ → **已评估并否决**；改为修补锁覆盖（见 [ADR-0005](adr/0005-reject-sqlite-swap-fix-lock-coverage.md)）
 
-| 项 | 内容 |
+原计划用 `better-sqlite3` + WAL + `BEGIN IMMEDIATE` 替换 `lib/store.mjs` + `lib/tasklock.mjs`。核对后**否决替换**：
+
+| 核对点 | 结论 |
 |---|---|
-| 替换对象 | `lib/store.mjs`（原子文件写）+ `lib/tasklock.mjs`（文件锁 + 租约 + 死 PID 回收 + 恢复互斥） |
-| 采纳 | `better-sqlite3` + **WAL** + `BEGIN IMMEDIATE` 事务 |
-| 为什么做 | 我们为此写的 `tasklock` 需要处理 lease、死 PID、TOCTOU、恢复互斥；SQLite 事务一次性解决且经过验证 |
-| 验证 | ① 双实例并发抢同一任务的测试 ② 崩溃后恢复扫描 ③ 陈旧锁接管语义（`stale_lock_recovered` 审计字段不可丢） |
-| 风险 | 引入首个运行时依赖（违背上游"零外部重依赖"原则，但该原则本身无对等品价值——需在 ADR 中记录这个取舍） |
+| 是否与已声明的不变式冲突 | **是**。`lib/store.mjs:3` 明写 `no database introduced (Phase 1.1 boundary)`；`FINAL_ARCHITECTURE.md` 原则 3 要求"零外部重依赖与全平台可移植性"，而 `better-sqlite3` 是**原生模块** |
+| "文件即真源"是否是承重结构 | **是**。5 个测试文件直接读写 `tasks/<id>.json`，其中 `ACC-6` 正是**篡改检测**用例（改写盘上文件后断言拒绝）——这是 `docs/PRESERVE.md` 里验收锚定资产的**验证方式** |
+| P3 想解决的问题是否还在 | **大部分已不存在**。TOCTOU 双持（N1）、死 PID/畸形租约、续租竞态、恢复幂等性均已在修复批次解决并有测试 |
+| 迁移爆炸半径 | 大。锁语义被 `concurrency.test.mjs`(724 行)、`PROD-5` 双实例隔离、`recovery` TEST F/G/H 及 `af-read`/`af-admin` 巡检依赖 |
+
+**但核对中发现一个真实且当前可触发的缺陷：锁覆盖不全。**
+
+`approval/intent-gate.mjs` 的 `acquireTaskLock` 命中为 **0**，却通过 `persistTaskCapsule` → `saveTaskWithVersion`
+写入任务生命周期状态（`approveIntent` / `rejectIntent` / `alignTaskIntent`）；
+而调度器在派发期间**持有**同一任务锁直到运行结束 → **两个写者无互斥 → 丢失更新**（人工审批被静默覆盖）。
+
+**已修复**：
+- intent-gate 三处写入改为持有**与调度器相同的任务锁**（`withTaskWriteLock`），读-改-写成为互斥临界区
+- 锁冲突以 `TASK_LOCKED` 明确暴露给操作员；`alignTaskIntent` 原有的宽容 `catch` **不再吞掉锁冲突**（否则会"报告成功但没写"）
+- 新增 `tests/task-write-locking.test.mjs` TW-1..TW-5；并验证**有牙**：临时回退锁覆盖后 5/5 全红
+
+**结论**：未引入任何依赖，`package.json` 仍无 `dependencies`；232 项测试全绿。
 
 ### P4 — 策略外置到 OPA / Cerbos
 
@@ -167,8 +181,8 @@ node --test          # 期望全绿，且通过数只增不减
 |---|---|---|
 | P1 断路器外置 | ❌ **已评估否决**（ADR-0004） | — |
 | P2 沙箱化 | ✅ **验收路径已完成**（执行器待镜像决策） | 见 git log |
-| P3 SQLite 存储与锁 | ⬜ 未开始（**当前第一项**） | — |
-| P4 策略外置 OPA/Cerbos | ⬜ 未开始 | — |
+| P3 SQLite 存储与锁 | ❌ **已评估否决**；改为修补锁覆盖并完成（ADR-0005） | 见 git log |
+| P4 策略外置 OPA/Cerbos | ⬜ 未开始（**当前第一项**） | — |
 | P5 execa | ⬜ 未开始 | — |
 | P6 provider 错误分类 | ⬜ 未开始 | — |
 | P7 可逆执行（可选） | ⬜ 未开始 | — |
