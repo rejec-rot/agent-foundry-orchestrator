@@ -195,15 +195,34 @@ node --test          # 期望全绿，且通过数只增不减
 **验证**：OR-1..OR-9（含"进程组不匹配 → 拒绝发信号"的 PID 复用守卫）。246 测试全绿，零依赖。
 **残留**：回收目前是显式运维动作，未自动接入恢复路径（见 ADR-0007 后果节）；非沙箱化验收子进程无句柄可校验。
 
-### P6 — provider 错误分类与限流
+### ~~P6 — provider 错误分类与限流~~ → **已评估并否决**；改为补齐 provider 拒绝族（见 [ADR-0008](adr/0008-reject-provider-gateway-extend-refusal-families.md)）
 
-| 项 | 内容 |
+原计划用 litellm Router 或 axonhub 承担 provider 错误映射。核对后**否决替换**：
+
+| 核对点 | 结论 |
 |---|---|
-| 替换对象 | `lib/executor-error-classifier.mjs` 的 provider 错误映射与限流判断 |
-| 采纳 | `BerriAI/litellm` 的 Router 错误映射（或 `looplj/axonhub`） |
-| 必须保留 | **403/封号 → fail-closed**（`ACCOUNT_POLICY` → `OPEN_MANUAL_RESET`，禁止静默重试降级） |
-| 注意 | litellm 的断路器**不会自愈**（issue #30192 / #37592）→ 它的冷却不能取代 AFR 的人工解封门禁 |
-| 验证 | ① 现有 `executor-error-classifier.test.mjs`（含"403 走 stdout"回归）全绿 ② 新增 provider 错误样本对照表测试 |
+| 这是什么东西 | 一个**纯函数**（无 I/O），调度器在关键路径同步调用；候选方案都是**外部进程**（litellm = Python 服务/库，axonhub = Go 二进制） |
+| 后果 | 违反原则 3「零外部重依赖」，且**把安全判定放到网络跳数之后 = 给安全路径新增故障点**。分类器绝不能因"网关不可用"而失败 |
+| 该学什么 | **分类法**，不是运行时——`MODULE-MAP` §4 早已注明这是"偷分类法、不要依赖"的项 |
+
+**实测确认的真实缺陷：三处误判，方向全是"账号/计费问题被当成可重试"**（README 承诺"403/封号 fail-closed、禁止静默重试"）：
+
+| 样本 | 修复前 | 应为 |
+|---|---|---|
+| OpenAI `account_deactivated`（**账号被封**） | `TRANSIENT_FAULT` retryable | 非重试 + 人工解封 |
+| OpenAI `insufficient_quota` | `TRANSIENT_FAULT` retryable | 非重试 |
+| Anthropic `credit balance is too low` | `TRANSIENT_FAULT` retryable | 非重试 |
+
+根因与 C1 同类：原 `ACCOUNT_POLICY` 只认 `account.*disabled`，而 OpenAI 的封号措辞是 `deactivated`——**同一原则只覆盖了一种措辞**。
+
+**已修复**：新增 `PROVIDER_ACCOUNT_REFUSAL` 表（账号状态族 + 计费配额族），命中一律
+`ACCOUNT_POLICY` → 非重试 → `OPEN_MANUAL_RESET`；`reason` 按族区分（billing → 提示加余额；account state → 提示人工准入）。
+
+两个刻意取舍（已写进注释与测试）：① 计费用人工门禁而非 `COOLDOWN`（余额耗尽是永久的，冷却只会无进展地烧配额）
+② 排除裸 `402`（任何含 "402 bytes" 的输出都会误触发熔断），并把表项分 `ambiguous` 两级——
+特征词永不被抑制，散文式措辞仅在 stdout 看起来像测试日志时抑制；边界由 PE-4b 显式记录。
+
+**验证**：PE-1..PE-8 + PE-4b（含"五个执行器分类一致"与"安全动作真的到达运行时守卫"）。255 测试全绿，零依赖。
 
 ### 可选 P7 — 参考 shepherd 做可逆执行
 
@@ -224,8 +243,8 @@ node --test          # 期望全绿，且通过数只增不减
 | P3 SQLite 存储与锁 | ❌ **已评估否决**；改为修补锁覆盖并完成（ADR-0005） | 见 git log |
 | P4 策略外置 OPA/Cerbos | ❌ **已评估否决**；改为补全契约权威性并完成（ADR-0006） | 见 git log |
 | P5 execa | ❌ **已评估否决**；改为修补硬孤儿残留并完成（ADR-0007） | 见 git log |
-| P6 provider 错误分类 | ⬜ 未开始（**当前第一项**） | — |
-| P7 可逆执行（可选） | ⬜ 未开始 | — |
+| P6 provider 错误分类 | ❌ **已评估否决**；改为补齐拒绝族并完成（ADR-0008） | 见 git log |
+| P7 可逆执行（可选） | ⬜ 未开始（**当前第一项，最后一个可选阶段**） | — |
 
 > 环境探测（P2 前置）已完成：本机**已装 `bwrap`**，且**非特权 user namespace 已启用**
 > （`unprivileged_userns_clone=1`、`max_user_namespaces=55500`），`systemd-run` 可用；
