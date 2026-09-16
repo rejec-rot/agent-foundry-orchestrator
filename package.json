@@ -1,0 +1,16 @@
+{
+  "name": "agent-foundry-next",
+  "version": "2.0.0-dev",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "Control Plane for multi-executor task workflows. Successor line: upstream agent-foundry-orchestrator v1.2.0 @ 434114e + second-pass security fixes, being refactored onto mature components (see docs/ROADMAP.md).",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "test:contract": "node --test tests/action-contract.test.mjs tests/action-contract-hardening.test.mjs",
+    "admin": "node af-admin.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
