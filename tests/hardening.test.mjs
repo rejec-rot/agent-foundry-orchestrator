@@ -111,8 +111,12 @@ test('TEST A: reviewer NEEDS_FIX -> author exact resume -> PASS -> COMPLETED', a
 });
 
 test('TEST B: reviewer PASS -> acceptance FAIL -> auto fix -> acceptance PASS -> COMPLETED', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'af-11-b-'));
-  const marker = join(dir, 'fixed.marker');
+  // The marker lives INSIDE the task workspace on purpose. An acceptance command
+  // may only observe its own workspace: when the sandbox is active nothing else
+  // is mounted, so a marker outside `fixture_dir` would be invisible and the fix
+  // loop could never converge. Keeping it in the workspace also keeps this test
+  // honest about what an acceptance command is allowed to depend on.
+  const marker = join(WORK, 'b-fixed.marker');
   const author = makeFake('claude', [
     { sessionRef: 'S1' },                          // rev1: does not create marker
     { sessionRef: 'S1' },                          // fix run
@@ -138,7 +142,7 @@ test('TEST B: reviewer PASS -> acceptance FAIL -> auto fix -> acceptance PASS ->
   const fixCall = author.calls.find((c) => c.kind === 'resume');
   assert.ok(fixCall.prompt.includes('ACCEPTANCE_FAILURE'));
   assert.ok(fixCall.prompt.includes('exit_code: 1'));
-  rmSync(dir, { recursive: true, force: true });
+  // The marker sits inside WORK, which the file-level after() hook removes.
 });
 
 test('TEST C: persistent acceptance failure exhausts max_revisions -> FAILED', async () => {

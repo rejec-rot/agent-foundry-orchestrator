@@ -80,7 +80,25 @@ node --test          # 期望全绿，且通过数只增不减
 **后果**：未引入依赖，218 项测试未被扰动，`package.json` 无 `dependencies`。
 重新评估的条件写在 ADR-0004 末尾（引入阈值语义 / 把运行包进策略管道 / 需要多策略组合）。
 
-### P2 — 沙箱化（一次解决三个问题）**← 现在的第一项**
+### P2 — 沙箱化（一次解决三个问题）**← 验收路径已完成**
+
+**实现**：`lib/sandbox.mjs`，接入 `lib/acceptance.mjs`。测试 `tests/sandbox.test.mjs`（SB-1..SB-9）。
+
+| 机制 | 结果 |
+|---|---|
+| 模式 | `AF_SANDBOX=auto`（默认，不可用时**记录**降级）/ `require`（不可用即 fail-closed）/ `off` |
+| 隔离 | `--network none`（默认）、`--cap-drop ALL`、`no-new-privileges`、`--user <uid>:<gid>`、**只挂载工作区** |
+| 限额 | `--memory`/`--memory-swap`、`--pids-limit`、`--cpus`，rlimit 改由 `--ulimit` 施加 |
+| 回收 | 容器具名 `af-sbx-*`；`--rm` + 显式 `docker rm -f`（因为 SIGKILL 客户端不会停容器） |
+
+**与 rlimit 的关系**：两者不叠加。rlimit 路径用 `bash -c` shim，而 `node:24-alpine` **有 `sh` 没有 `bash`**（已实测），
+所以沙箱激活时跳过 shim，改由 Docker `--ulimit` 施加同样的限额。
+
+**实现中修掉的两个真问题**（都是"安全改进顺手打断了既有功能"）：
+1. `AF_ACCEPTANCE_ENV_*` 显式透传在容器内失效 → 现按文档语义以 `-e` 转发（并拒绝转发 `AF_SAFETY_STATE_FILE` 等安全关键变量）
+2. `TEST B` 的 marker 写在**工作区之外**，沙箱隐藏它导致修复循环无法收敛 → marker 移入工作区（这也更符合"验收命令只应观察自己的工作区"）
+
+**尚未完成**：执行器沙箱化（需要镜像策略决策，见 `P2-FEASIBILITY.md` §四）。
 
 | 项 | 内容 |
 |---|---|
@@ -148,8 +166,8 @@ node --test          # 期望全绿，且通过数只增不减
 | 阶段 | 状态 | commit |
 |---|---|---|
 | P1 断路器外置 | ❌ **已评估否决**（ADR-0004） | — |
-| P2 沙箱化 | ⬜ 未开始（**当前第一项**） | — |
-| P3 SQLite 存储与锁 | ⬜ 未开始 | — |
+| P2 沙箱化 | ✅ **验收路径已完成**（执行器待镜像决策） | 见 git log |
+| P3 SQLite 存储与锁 | ⬜ 未开始（**当前第一项**） | — |
 | P4 策略外置 OPA/Cerbos | ⬜ 未开始 | — |
 | P5 execa | ⬜ 未开始 | — |
 | P6 provider 错误分类 | ⬜ 未开始 | — |
