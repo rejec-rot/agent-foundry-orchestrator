@@ -85,11 +85,13 @@ node --test          # 期望全绿，且通过数只增不减
 | 项 | 内容 |
 |---|---|
 | 替换对象 | 现在"拿操作员权限裸跑 + rlimits + 进程组树杀"的组合 |
-| 采纳 | `google/nsjail`（含 cgroup，可补内存限额）或 `containers/bubblewrap`（无特权）；容器环境可用 `OpenSandbox` / `k8s agent-sandbox` |
-| 一次解决 | ① **内存限额**（本机做不到的那项）② 双 fork+setsid 孙进程逃逸 ③ **执行器与编排器同 UID 的根因** ④ 文件系统污染 |
-| 验证 | ① 沙箱内跑一个尝试写编排器目录的命令 → 必须失败 ② 跑一个 fork 炸弹 → 必须被限额拦住 ③ 跑一个 double-fork+setsid 的守护进程 → 沙箱销毁后无残留 ④ 现有 218 测试全绿 |
-| 前置 | **能力探测**：namespace / cgroup 委派是否可用；不可用时明确报错，不静默降级 |
-| 风险 | 沙箱可能改变执行器 CLI 的行为（如网络、HOME、tmp）→ 需要为每种执行器验证一次真实运行 |
+| 采纳 | **Docker**（实测唯一在本机可用的机制）。`nsjail` 未安装；`bwrap`/`unshare` 因非特权 userns 被禁而失败；`systemd-run` 的内存限额未生效；cgroup 无委派。详见 [`P2-FEASIBILITY.md`](P2-FEASIBILITY.md) |
+| 实施范围 | **先沙箱化验收命令**（`lib/acceptance.mjs`，风险最高、镜像需求最简）；执行器暂缓，因其需要镜像内含 5 种 CLI —— 属部署决策 |
+| 一次解决 | ① **内存限额**（rlimit 做不到）② 双 fork+setsid 孙进程逃逸 ③ **执行器与编排器同 UID 的根因** ④ 文件系统污染 |
+| 验证（**已预先实测通过**） | ① setsid 守护进程随容器退出而死 ✅ ② `--memory=64m` 写 256MB → OOM Killed ✅ ③ `--pids-limit=24` → `can't fork` ✅ ④ 不挂载即不可见 ✅ ⑤ 现有 218 测试全绿（待实现后跑） |
+| 前置 | 能力探测**必须显式**：Docker 不可用时不得静默降级，要么 fail-closed，要么明确报告"沙箱未启用，仅有 rlimits 保护" |
+| 待你决策 | 执行器沙箱化的镜像策略（现成镜像+只读挂载宿主机 CLI / 自建含全部 CLI 的镜像 / 每执行器一个镜像）——见 `P2-FEASIBILITY.md` §四 |
+| 风险 | 沙箱可能改变 CLI 行为（网络、HOME、tmp）→ 需为每种执行器验证一次真实运行 |
 
 ### P3 — 存储与锁改用 SQLite
 
