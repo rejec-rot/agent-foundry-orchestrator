@@ -65,18 +65,22 @@ node --test          # 期望全绿，且通过数只增不减
 
 ## 五、分阶段计划（路线 1）
 
-### P1 — 断路器外置（性价比最高，先做）
+### ~~P1 — 断路器外置~~ → **已评估并否决**（见 [ADR-0004](adr/0004-reject-breaker-library.md)）
 
-| 项 | 内容 |
+原计划用 `cockatiel` / `opossum` 替换 `lib/executor-runtime-guard.mjs` 的断路器状态机。
+按原则 4「先探测再实现」核对后**否决**，证据（ADR-0004 全文）：
+
+| 核对点 | 结论 |
 |---|---|
-| 替换对象 | `lib/executor-runtime-guard.mjs` 中的断路器状态机（`CLOSED / OPEN_COOLDOWN / OPEN_MANUAL_RESET / HALF_OPEN / PROBING`） |
-| 采纳 | `cockatiel`（TS，首选）或 `opossum`（Node） |
-| 必须保留的语义 | **人工 probe → admit 门禁**（`REASON_REQUIRED` / `EVIDENCE_REQUIRED`）、fail-closed、状态持久化与损坏隔离 |
-| 为什么做 | 我们已修出 C5（状态文件损坏 → 全量静默解禁）等手写状态机典型翻车；断路器是几十年成熟模式 |
-| 验证 | 新增测试：① 现有 `runtime-safety` / `runtime-guard-state` / `gated-recovery` 用例全绿 ② 新增"断路器库接入后 fail-closed 行为不变"的对照测试 |
-| 风险 | 库的状态机语义与 AFR 的"人工解封"不同 → **库只做内部状态与计数，门禁语义留在 AFR 层** |
+| 是否存在可替换的阈值/计数逻辑 | **不存在**。`recordResult` 按分类的 `safety_action` **立即开闸**；`grep threshold\|allowed_fails\|consecutive` 零命中 |
+| 库的核心特性是否契合 | **相反**。库按设计**自动半开自愈**；AFR 的保证是**永不自动自愈、必须人工 probe→admit**。用它需压制 `halfOpenAfter`，等于逆着库设计用 |
+| 并发槽位能否换 bulkhead | **不能**。`acquireSlot` 把电路复检与槽位等待**耦合**，另有 `min_interval_ms` 节流；bulkhead 两者都不提供，且是 `execute(fn)` 式，需重构 adapter 主流程（24 处引用） |
+| C5 翻车的真实归因 | 是**持久化与错误处理**缺陷（非原子写、`catch {}` 吞错），换任何库都不能自动修复；修复批次已针对根因整改 |
 
-### P2 — 沙箱化（一次解决三个问题）
+**后果**：未引入依赖，218 项测试未被扰动，`package.json` 无 `dependencies`。
+重新评估的条件写在 ADR-0004 末尾（引入阈值语义 / 把运行包进策略管道 / 需要多策略组合）。
+
+### P2 — 沙箱化（一次解决三个问题）**← 现在的第一项**
 
 | 项 | 内容 |
 |---|---|
@@ -141,13 +145,17 @@ node --test          # 期望全绿，且通过数只增不减
 
 | 阶段 | 状态 | commit |
 |---|---|---|
-| P1 断路器外置 | ⬜ 未开始 | — |
-| P2 沙箱化 | ⬜ 未开始 | — |
+| P1 断路器外置 | ❌ **已评估否决**（ADR-0004） | — |
+| P2 沙箱化 | ⬜ 未开始（**当前第一项**） | — |
 | P3 SQLite 存储与锁 | ⬜ 未开始 | — |
 | P4 策略外置 OPA/Cerbos | ⬜ 未开始 | — |
 | P5 execa | ⬜ 未开始 | — |
 | P6 provider 错误分类 | ⬜ 未开始 | — |
 | P7 可逆执行（可选） | ⬜ 未开始 | — |
+
+> 环境探测（P2 前置）已完成：本机**已装 `bwrap`**，且**非特权 user namespace 已启用**
+> （`unprivileged_userns_clone=1`、`max_user_namespaces=55500`），`systemd-run` 可用；
+> `nsjail` 未安装。→ P2 若用 bubblewrap 路线，可在本机真实实现并验证（含内存限额）。
 
 ---
 

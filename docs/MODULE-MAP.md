@@ -119,7 +119,17 @@
 | [Portkey-AI/gateway](https://github.com/Portkey-AI/gateway) | 12,998 | MIT | 2026-05-25 | 1,600+ LLM 路由 + guardrails |
 | [looplj/axonhub](https://github.com/looplj/axonhub) | 5,228 | NOASSERTION | 2026-09-15 | 内置 failover / 负载均衡 |
 
-**结论**：断路器状态机 + 冷却 + 半开是几十年成熟模式，**绝不该手写**（C5"状态文件损坏导致全量解禁"就是手写状态机的经典翻车）。
+**结论**：断路器状态机 + 冷却 + 半开是几十年成熟模式，一般**不该手写**（C5"状态文件损坏导致全量解禁"就是手写状态机的经典翻车）。
+
+> ⚠️ **本条对本项目不成立——已实测否决。** 本表给出的是"存在成熟库"这一事实，但**不表示 AFR 应当采纳**。
+> 核对 `lib/executor-runtime-guard.mjs` 后确认：
+>
+> - 它**没有阈值/计数逻辑**（`recordResult` 按 `safety_action` 立即开闸），库的 `ConsecutiveBreaker` 无处可用
+> - 库按设计**自动半开自愈**，而 AFR 的保证是**永不自动自愈、必须人工 probe→admit** → 用库需压制其核心特性
+> - C5 的真实根因是**持久化与错误处理**（非原子写、`catch {}` 吞错），换库不会自动修复
+>
+> 完整论证见 [`adr/0004-reject-breaker-library.md`](adr/0004-reject-breaker-library.md)。
+> **教训**：模块图能回答"有没有成熟方案"，但不能回答"该不该换"——后者必须核对被替换代码的实际形态。
 
 ---
 
