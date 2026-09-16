@@ -135,15 +135,38 @@ node --test          # 期望全绿，且通过数只增不减
 
 **结论**：未引入任何依赖，`package.json` 仍无 `dependencies`；232 项测试全绿。
 
-### P4 — 策略外置到 OPA / Cerbos
+### ~~P4 — 策略外置到 OPA / Cerbos~~ → **已评估并否决**；改为补全契约权威性（见 [ADR-0006](adr/0006-reject-policy-engine-complete-contract-authority.md)）
 
-| 项 | 内容 |
+原计划用 `open-policy-agent/opa` 或 `cerbos/cerbos` 替换动作合约/白名单层。核对后**否决替换**：
+
+| 核对点 | 结论 |
 |---|---|
-| 替换对象 | `intent/action-validator.mjs` + `contracts/action-types.json` + `config/*.json` 白名单 |
-| 采纳 | `open-policy-agent/opa`（Rego）或 `cerbos/cerbos`（YAML，更易上手） |
-| 保留 | **验收命令白名单的"参数前缀匹配 + 内容哈希锚定"** —— 策略外置不等于丢掉这一层 |
-| 验证 | ① 现有 `action-contract*` / `human-intent-gate` 用例全绿 ② 策略变更不再需要改代码 ③ 策略决策写入审计 |
-| 风险 | OPA 需引入 sidecar 或 WASM；若嫌重可用 cerbos 或先只借鉴其策略模型 |
+| 这层是什么 | **不是**"请求→决策矩阵"，而是"从文件系统上下文分类（含 `realpathSync` 防符号链接穿越）+ 字段缺失即 fail-closed 升级"+ 一张 gate 表。策略引擎只覆盖最后那张表，前两步全部留下 |
+| 部署代价 | OPA 需 `opa` 工具链在**构建期**编译 Rego→WASM，或作为 sidecar；Cerbos 需独立服务 → 违反原则 3「零外部重依赖」 |
+| Casbin 是否可行 | 纯 JS 可进程内运行，但它是**授权决策**引擎，无法覆盖分类与 fail-closed 升级 |
+| 换引擎能否解决本层真实问题 | **不能**。真实问题是"声明为真源的文件没有被读取"，换引擎不会修复"声明与实现不一致" |
+
+**核对中发现的真实缺陷：契约高估了自己的权威性。**
+
+`contracts/action-types.json` 声明**四个**列表，`FINAL_ARCHITECTURE.md:18` 称其为唯一真源，但实测只有 `action_types` 被读取：
+
+| 契约列表 | 修复前 | 真正的真源位置 |
+|---|---|---|
+| `action_types` | ✅ | 契约文件 |
+| `target_asset_types` | ❌ **0 次** | 硬编码 `asset-classifier.mjs:47` |
+| `impact_scopes` | ❌ **0 次** | 硬编码 `asset-classifier.mjs:57` |
+| `gates` | ❌ | 硬编码 `action-validator.mjs:48` |
+
+**且存在一条 fail-OPEN 路径**：契约**部分缺失**（如缺 `gates` 而 `action_types` 完好）时，schema 校验能通过，
+而 `required_gate === GATE_VERDICTS.WAITING_HUMAN` 会变成 `undefined === undefined` → **既不拒绝也不升级**。
+
+**已修复**：
+- 新增 `intent/action-contract.mjs`：**唯一**读取契约的模块，一次读出四个列表；执法模块的硬编码枚举改为派生（**枚举对象形态不变**，108 处引用不受影响）
+- **显式 fail-closed 守卫**：`isActionContractUsable()` 要求四列表齐备非空；不可用时抛 `ACTION_CONTRACT_UNUSABLE` **拒绝决策**，而不是拿空枚举去比较
+- 新增 `AF_ACTION_CONTRACT` 覆盖入口（部署可固定契约，也让 fail-closed 路径可端到端测试）
+- 新增 `tests/action-contract-authority.test.mjs` ACA-1..ACA-5，含**漂移守卫**（禁止硬编码副本回潮）
+
+**验证**：ACA-3 有牙（塞回硬编码副本后精确点名文件与变量报红）；ACA-4 端到端断言部分契约 → `THREW:ACTION_CONTRACT_UNUSABLE`。`node --test` 237 通过 / 0 失败，零依赖。
 
 ### P5 — 子进程统一交给 execa
 
@@ -182,8 +205,8 @@ node --test          # 期望全绿，且通过数只增不减
 | P1 断路器外置 | ❌ **已评估否决**（ADR-0004） | — |
 | P2 沙箱化 | ✅ **验收路径已完成**（执行器待镜像决策） | 见 git log |
 | P3 SQLite 存储与锁 | ❌ **已评估否决**；改为修补锁覆盖并完成（ADR-0005） | 见 git log |
-| P4 策略外置 OPA/Cerbos | ⬜ 未开始（**当前第一项**） | — |
-| P5 execa | ⬜ 未开始 | — |
+| P4 策略外置 OPA/Cerbos | ❌ **已评估否决**；改为补全契约权威性并完成（ADR-0006） | 见 git log |
+| P5 execa | ⬜ 未开始（**当前第一项**） | — |
 | P6 provider 错误分类 | ⬜ 未开始 | — |
 | P7 可逆执行（可选） | ⬜ 未开始 | — |
 

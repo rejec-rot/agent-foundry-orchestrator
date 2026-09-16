@@ -19,37 +19,24 @@ import {
   TARGET_ASSET_TYPES,
   IMPACT_SCOPES,
 } from './asset-classifier.mjs';
+import {
+  CANONICAL_ACTION_TYPES,
+  GATE_VERDICTS,
+  isActionContractUsable,
+  actionContractProblem,
+} from './action-contract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 
 export const CURRENT_CONTRACT_VERSION = '1.0';
 
-// The canonical action list lives in contracts/action-types.json and is READ
-// from there: keeping a second hardcoded copy here meant the contract file could
-// drift from the validator that enforces it, silently, with the docs pointing at
-// the file as "the single source". A missing or malformed contract yields an
-// empty list, so every proposal is rejected (fail-closed) rather than accepted
-// against an unknown rule set.
-const ACTION_TYPES_CONTRACT = join(ROOT, 'contracts', 'action-types.json');
-
-function loadCanonicalActionTypes() {
-  try {
-    const parsed = JSON.parse(readFileSync(ACTION_TYPES_CONTRACT, 'utf8'));
-    if (Array.isArray(parsed?.action_types) && parsed.action_types.length > 0) {
-      return parsed.action_types.map(String);
-    }
-  } catch { /* fall through to the empty (fail-closed) list */ }
-  return [];
-}
-
-export const CANONICAL_ACTION_TYPES = Object.freeze(loadCanonicalActionTypes());
-
-export const GATE_VERDICTS = Object.freeze({
-  AUTO_ALLOW: 'AUTO_ALLOW',
-  WAITING_HUMAN: 'WAITING_HUMAN',
-  DENY: 'DENY',
-});
+// Every enforced list - action types AND the gate verdicts - is now read from
+// contracts/action-types.json (see intent/action-contract.mjs). The verdicts used
+// to be a hand-written copy here, which is how three of the contract's four
+// declared lists could drift from their enforcement unnoticed. Re-exported so
+// existing importers keep the same names.
+export { CANONICAL_ACTION_TYPES, GATE_VERDICTS };
 
 /**
  * Validate syntax and schema of an incoming Action Proposal.
@@ -222,6 +209,16 @@ export function deriveActionProposal(capsule = {}, plan = null) {
  */
 export function validateAndComputeEffectiveAction(proposal = null, capsule = {}, plan = null) {
   const effectiveProposal = proposal || capsule?.action_proposal || deriveActionProposal(capsule, plan);
+
+  // Derived enums are only fail-closed while the contract is whole: an absent
+  // `gates` list would make `required_gate === GATE_VERDICTS.WAITING_HUMAN`
+  // compare undefined-to-undefined and quietly fail OPEN. So refuse to decide at
+  // all when any required list is missing.
+  if (!isActionContractUsable()) {
+    const err = new Error(`[action_contract_unusable] ${actionContractProblem()}`);
+    err.code = 'ACTION_CONTRACT_UNUSABLE';
+    throw err;
+  }
 
   // 1. Schema check & AC-H2 fail-closed version check
   let versionRejected = false;
