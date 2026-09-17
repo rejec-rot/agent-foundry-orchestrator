@@ -275,11 +275,14 @@ test('SB-8: a sandboxed acceptance run succeeds, records the sandbox, and cleans
       return undefined;
     });
 
-    // No container may be left behind (the `docker run` client is removed by
-    // --rm, and the explicit cleanup covers an abrupt kill).
-    const leftover = await runPlan({ command: 'docker', args: ['ps', '-a', '--filter', 'name=af-sbx-', '--format', '{{.Names}}'] });
-    const strays = String(leftover.out).trim().split('\n').filter((n) => n.startsWith('af-sbx-'));
-    assert.deepStrictEqual(strays, [], `no sandbox container may survive the run: ${strays.join(', ')}`);
+    // No container of THIS test may be left behind. The check is scoped to this
+    // process's pid, which is part of the container name (af-sbx-<ownerpid>-<uuid>):
+    // node:test runs test FILES in parallel, and the other sandbox tests create
+    // containers of their own at the same time, so a globally scoped assertion
+    // races with them and fails intermittently.
+    const leftover = await runPlan({ command: 'docker', args: ['ps', '-a', '--filter', `name=af-sbx-${process.pid}-`, '--format', '{{.Names}}'] });
+    const strays = String(leftover.out).trim().split('\n').filter((n) => n.startsWith(`af-sbx-${process.pid}-`));
+    assert.deepStrictEqual(strays, [], `no sandbox container of this process may survive the run: ${strays.join(', ')}`);
     if (containerName) assert.fail('unreachable');
   } finally {
     rmSync(work, { recursive: true, force: true });

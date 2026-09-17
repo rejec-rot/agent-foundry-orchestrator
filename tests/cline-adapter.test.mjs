@@ -6,10 +6,13 @@
 //   CLINE-3: ROLE != PLATFORM: cline can be routed as author or reviewer
 //   CLINE-4: Capability: requires_mcp retains cline (supports unattended MCP)
 //   CLINE-5: Router Priority: priority_order and preference correctly select cline
+//   CLINE-10: Health resolves the CLI through PATH, not a hardcoded node version
 
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import './helpers/runtime-state-fixture.mjs';
 import './helpers/executors-fixture.mjs';
 import { ClineAdapter, ADAPTERS } from '../lib/adapters.mjs';
@@ -172,3 +175,33 @@ test('CLINE-8: Target workspace test logs containing HTTP 429 must NOT trigger R
   assert.strictEqual(cls.category, 'TRANSIENT_FAULT');
 });
 
+
+// ------------------------------------------------------------------ CLINE-10
+test('CLINE-10: health resolves the CLI through PATH, not a hardcoded node version', () => {
+  // Regression, found while verifying the executor sandbox against a real CLI.
+  // The health fallback used to hardcode
+  // `~/.nvm/versions/node/v24.20.0/bin/cline`. This host has v24.21.0, and any host
+  // with a different node version would report an installed, working executor as
+  // unhealthy - a false negative in a health check is worse than no health check.
+  let cliOnPath = null;
+  try {
+    cliOnPath = execFileSync('sh', ['-c', 'command -v cline'], { encoding: 'utf8' }).trim();
+  } catch { /* cline is not installed here */ }
+
+  const previous = process.env.CLINE_LAUNCHER;
+  process.env.CLINE_LAUNCHER = join(tmpdir(), 'definitely-absent-cline-af');
+  try {
+    const health = ClineAdapter.health();
+    assert.strictEqual(health.launcher, process.env.CLINE_LAUNCHER, 'the override is honoured');
+    assert.strictEqual(
+      health.ok,
+      Boolean(cliOnPath),
+      cliOnPath
+        ? 'an installed CLI must not be reported unhealthy just because no launcher exists'
+        : 'with no CLI installed, health must say so'
+    );
+  } finally {
+    if (previous === undefined) delete process.env.CLINE_LAUNCHER;
+    else process.env.CLINE_LAUNCHER = previous;
+  }
+});

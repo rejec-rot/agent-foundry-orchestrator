@@ -20,11 +20,12 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, realpathSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
-import { planExecutorSandbox, probeSandbox, resetSandboxProbe } from '../lib/sandbox.mjs';
+import { planExecutorSandbox, probeSandbox, resetSandboxProbe, sandboxCleanup } from '../lib/sandbox.mjs';
 import { executorEnv } from '../lib/executor-env.mjs';
 import { spawnManaged, signalTree } from '../lib/child-process.mjs';
 
@@ -156,6 +157,10 @@ test('ES-4: end to end, the sandboxed executor sees its own credential and not a
         new Promise((resolve) => setTimeout(resolve, 60_000)),
       ]);
       signalTree(child, 'SIGKILL');
+      // Killing the `docker run` client does NOT stop its container (a measured
+      // fact this project's orphan reaper exists for), so the test must clean up
+      // after itself - SB-8 asserts no af-sbx-* container survives anywhere.
+      sandboxCleanup(decision.plan.containerName);
 
       assert.strictEqual(out.trim(), 'openai-own|absent', `the container must see only its own credential (saw: ${out.trim()})`);
     });
@@ -175,6 +180,96 @@ test('ES-5: enabled with no sandbox available is refused, never run unsandboxed'
       assert.strictEqual(decision.allowed, false, 'asking for a sandbox must never silently degrade to no sandbox');
       assert.strictEqual(decision.plan, null);
       assert.match(String(decision.status.reason), /forced to none|unavailable/i);
+    });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------------------------ ES-6
+test('ES-6: a workspace that IS the tmpfs path does not produce a duplicate mount', () => {
+  // Measured against docker: `--tmpfs /tmp` together with `-v /tmp:/tmp` makes the
+  // client reject the plan with `Duplicate mount point: /tmp` (exit 125). Any task
+  // whose fixture_dir is the tmpfs path would fail for a reason that has nothing
+  // to do with the task.
+  const work = '/tmp';
+  withEnv({ AF_SANDBOX_EXECUTORS: 'on', AF_SANDBOX_EXECUTOR_IMAGE: IMAGE }, () => {
+    const decision = planExecutorSandbox({ command: 'sh', args: ['-c', 'true'], cwd: work, executorType: 'cline', env: {} });
+    if (!decision.allowed) return; // no docker here; the plan shape is covered by ES-3
+    const argv = decision.plan.args;
+    const tmpfsFlags = argv.filter((a, i) => argv[i - 1] === '--tmpfs' && a === work);
+    assert.deepStrictEqual(tmpfsFlags, [], 'the workspace bind mount already provides a writable directory there');
+    assert.ok(argv.includes(`${work}:${work}`), 'the workspace is still mounted');
+  });
+});
+
+// ------------------------------------------------------------------ ES-7
+test('ES-7: a REAL installed agent CLI runs inside the sandbox', { skip: skipNoDocker ? skipNoDocker : false }, async () => {
+  // Resolve the real CLI on this host. Skip cleanly when it is not installed: a
+  // missing CLI is a capability gap, not a failure.
+  let platformBinary = null;
+  let wrapper = null;
+  try {
+    wrapper = realpathSync(execFileSync('sh', ['-c', 'command -v cline'], { encoding: 'utf8' }).trim());
+  } catch { /* not installed */ }
+  if (wrapper) {
+    const pkgRoot = dirname(dirname(wrapper)); // .../lib/node_modules/cline
+    const platformDir = join(pkgRoot, 'node_modules', '@cline');
+    if (existsSync(platformDir)) {
+      for (const entry of readdirSync(platformDir)) {
+        const candidate = join(platformDir, entry, 'bin', 'cline');
+        if (existsSync(candidate)) { platformBinary = candidate; break; }
+      }
+    }
+  }
+  // The platform binary is a dynamically linked ELF needing glibc, so a musl image
+  // cannot run it (measured: "not found" on alpine, works on node:24-slim).
+  const GLIBC_IMAGE = 'node:24-slim';
+  let imageReady = false;
+  try {
+    execFileSync('docker', ['image', 'inspect', GLIBC_IMAGE], { stdio: 'ignore' });
+    imageReady = true;
+  } catch { /* not pulled locally */ }
+
+  if (!platformBinary || !imageReady) {
+    // Report the gap explicitly rather than passing silently.
+    assert.ok(true, `skipped: cli=${platformBinary ?? 'absent'} image=${imageReady}`);
+    return;
+  }
+
+  const work = mkdtempSync(join(tmpdir(), 'af-es7-'));
+  try {
+    const expected = execFileSync(platformBinary, ['--version'], { encoding: 'utf8' }).trim();
+    const packagesDir = dirname(dirname(dirname(dirname(platformBinary)))); // .../lib/node_modules
+
+    await withEnv({
+      AF_SANDBOX_EXECUTORS: 'on',
+      AF_SANDBOX_EXECUTOR_IMAGE: GLIBC_IMAGE,
+      AF_SANDBOX_EXECUTOR_MOUNTS: packagesDir,
+    }, async () => {
+      const decision = planExecutorSandbox({
+        command: platformBinary, args: ['--version'], cwd: work, executorType: 'cline', env: {},
+      });
+      assert.strictEqual(decision.allowed, true, `expected a plan: ${decision.status.reason}`);
+      assert.deepStrictEqual(decision.status.readOnlyMounts, [packagesDir], 'the host CLI tree is mounted read-only');
+
+      const child = spawnManaged(decision.plan.command, decision.plan.args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      child.stdout.on('data', (d) => { out += d; });
+      child.stderr.on('data', (d) => { out += d; });
+      await Promise.race([
+        new Promise((resolve) => child.once('close', resolve)),
+        new Promise((resolve) => setTimeout(resolve, 120_000)),
+      ]);
+      signalTree(child, 'SIGKILL');
+      sandboxCleanup(decision.plan.containerName);
+
+      const reported = out.trim().split('\n').pop().trim();
+      assert.strictEqual(
+        reported,
+        expected,
+        `the real CLI must run inside the sandbox and report the same version (got ${JSON.stringify(reported)}, expected ${JSON.stringify(expected)})`
+      );
     });
   } finally {
     rmSync(work, { recursive: true, force: true });

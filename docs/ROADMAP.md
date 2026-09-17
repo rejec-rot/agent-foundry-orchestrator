@@ -98,11 +98,25 @@ node --test          # 期望全绿，且通过数只增不减
 1. `AF_ACCEPTANCE_ENV_*` 显式透传在容器内失效 → 现按文档语义以 `-e` 转发（并拒绝转发 `AF_SAFETY_STATE_FILE` 等安全关键变量）
 2. `TEST B` 的 marker 写在**工作区之外**，沙箱隐藏它导致修复循环无法收敛 → marker 移入工作区（这也更符合"验收命令只应观察自己的工作区"）
 
-**执行器沙箱化：已完成**（[ADR-0010](adr/0010-executor-sandbox-posture.md)）。
-默认关闭、**必须显式给镜像**（`AF_SANDBOX_EXECUTOR_IMAGE`）、网络走 bridge。
-理由：镜像必须**内含那个 CLI**，而选镜像是部署决策，因此**拒绝猜测**；启用后不可用则 fail-closed
-（`SANDBOX_UNAVAILABLE`），绝不静默退回无沙箱。测试 ES-1..ES-5，其中 ES-4 端到端断言
-容器内执行器**只看得见自己的凭证**。真实 CLI 镜像在本机未安装，故未验证——启用前须先用目标镜像跑一次。
+**执行器沙箱化：已完成并用真实 CLI 验证**（[ADR-0010](adr/0010-executor-sandbox-posture.md)）。
+默认关闭、**必须显式给镜像**（`AF_SANDBOX_EXECUTOR_IMAGE`）、网络走 bridge；启用后不可用则 fail-closed
+（`SANDBOX_UNAVAILABLE`），绝不静默退回无沙箱。
+
+**真实验证**：本机装着 `cline`（v3.0.62），已实测它在沙箱内运行成功：
+
+| 镜像 | 结果 |
+|---|---|
+| `node:24-alpine` (musl) | ❌ 失败——平台二进制是动态链接 ELF，需 glibc |
+| `node:24-slim` (glibc) | ✅ 成功——容器内报告 `3.0.62` |
+
+配方：`AF_SANDBOX_EXECUTORS=on` + `AF_SANDBOX_EXECUTOR_IMAGE=node:24-slim` +
+`AF_SANDBOX_EXECUTOR_MOUNTS=<宿主 node_modules 目录>`（只读挂载）。
+
+**这次真实验证抓出两个真缺陷**：① `--tmpfs /tmp` 与 `-v /tmp:/tmp` 冲突导致 docker 拒绝该计划（exit 125）
+② cline 健康检查写死了 node 版本 `v24.20.0`（作者机器残留）→ 假阴性。两者都已修，各有回归测试。
+
+测试 ES-1..ES-7（ES-7 是真跑 `cline`）与 CLINE-10。`claude`/`codex`/`agy`/`vertex-gemini`
+**确认不在本机**，其镜像仍需部署时验证。
 
 | 项 | 内容 |
 |---|---|

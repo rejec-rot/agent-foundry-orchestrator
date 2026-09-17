@@ -42,6 +42,63 @@ ES-5  启用但无沙箱可用 → 拒绝，绝不无沙箱运行
 
 `node --test`：268 通过 / 0 失败（原 263），零依赖。
 
+## 补充（同日）：用真实执行器验证，并纠正一处错误断言
+
+**我最初写的"本机未安装任何执行器 CLI"是错的**——我只查了 claude/codex/agy/vertex 就下了结论，
+漏掉了**本机确实装着的 `cline`**（`~/.nvm/versions/node/v24.21.0/bin/cline`，平台二进制 v3.0.62）。
+经彻底清点（PATH / 所有 nvm bin / `/usr/local/bin` / `~/.local/bin` / `~/bin` / maxdepth-4 可执行文件搜索）：
+
+| 执行器 | 本机状态 |
+|---|---|
+| `cline` | ✅ **已安装**（v3.0.62 平台二进制，151MB 动态链接 ELF） |
+| `claude` / `codex` / `agy` / `vertex-gemini` | ❌ 确认不存在 |
+
+于是"真实 CLI 无法验证"这个借口不成立，并已完成验证：
+
+### 实测结论：镜像策略
+
+| 镜像 | 结果 |
+|---|---|
+| `node:24-alpine`（musl） | ❌ **失败**：`not found`——平台二进制是动态链接 ELF，需要 `/lib64/ld-linux-x86-64.so.2`，musl 没有 |
+| `node:24-slim`（glibc） | ✅ **成功**：容器内报告 `3.0.62`，与宿主一致 |
+
+**可用配方**（宿主 CLI 只读挂载，即 `P2-FEASIBILITY.md` §四的选项 A）：
+
+```bash
+AF_SANDBOX_EXECUTORS=on \
+AF_SANDBOX_EXECUTOR_IMAGE=node:24-slim \
+AF_SANDBOX_EXECUTOR_MOUNTS="$HOME/.nvm/versions/node/<ver>/lib/node_modules" \
+node bin/cline-af ...
+```
+
+因此新增能力：`buildSandboxCommand` 支持**只读额外挂载**（`roMounts`），
+`planExecutorSandbox` 从 `AF_SANDBOX_EXECUTOR_MOUNTS` 读取（逗号分隔，按同路径 ro 挂载）。
+只读是刻意的：沙箱不得修改它所运行的工具链。
+
+### 这次真实验证抓出的两个真缺陷
+
+1. **`--tmpfs /tmp` 与 `-v /tmp:/tmp` 冲突**（`Duplicate mount point: /tmp`，docker exit 125）：
+   当工作区**正好是** tmpfs 路径时整个计划被 docker 拒绝。任何 `fixture_dir` 为 `/tmp` 的任务都会失败。
+   已修（工作区即该路径时跳过 `--tmpfs`），并加了回归测试 ES-6。
+2. **cline 健康检查写死了 node 版本**（`adapters.mjs` 里的 `~/.nvm/versions/node/v24.20.0/bin/cline`，
+   而本机是 v24.21.0）——这是**作者机器残留**，构成**假阴性**：启动器缺失时，
+   明明装好的 cline 会被报成不健康。已改为按 PATH 解析（与 codex 适配器同一做法），
+   并用 `CLINE-10` 做有牙回归（回退该修复即报红）。
+
+### 另一个真实教训（关于测试）
+
+真实验证过程中 SB-8 出现**间歇性失败**：它在 ES 测试里 `SIGKILL` docker 客户端后泄漏了容器——
+而"杀客户端不停容器"正是 P5 实测确认、并为之写了孤儿回收器的行为。
+同时发现 SB-8 原有断言是**全局范围**的，在 node:test 并行跑测试文件时与其他沙箱测试产生竞态。
+两处都已修：ES 测试自建容器自行清理；SB-8 的断言按**本进程 pid** 定界（容器名本就含 owner pid）。
+修复后全量**连跑两次 271/0 一致**，无容器残留。
+
+### 仍未验证的部分（现在是有依据的窄范围）
+
+`claude` / `codex` / `agy` / `vertex-gemini` 四个 CLI**确认不在本机**，
+所以它们的镜像仍需在部署时验证。另：容器内 TLS 需要镜像自带 CA 证书
+（实测出现过 `Cannot open directory /etc/ssl/certs`），`node:24-slim` 已包含。
+
 ## 后果
 
 - 正面：执行器与验收命令现在共用**同一套**沙箱机制与安全默认（限额、cap-drop、no-new-privileges、只挂工作区）
