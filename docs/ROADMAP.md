@@ -290,7 +290,14 @@ node --test          # 期望全绿，且通过数只增不减
 > ② **许可问题**——上游无 LICENSE，本仓库不得公开发布（见 `NOTICE.md` / ADR-0003）
 > ③ **权限域分离**（executor 换 UID / 容器）——这是"文件级防护"的根因，属部署改造
 > ④ 恢复路径是否自动回收孤儿（ADR-0007 后果节）
-> ⑤ **执行器集合与本机不匹配**：AFR 的适配器为 `claude`/`codex`/`cline`/`vertex-gemini`/`antigravity`，
+> ⑤ ~~**执行器集合与本机不匹配**~~ ✅ **已解决**：新增 `command-code` 适配器（本机实装）、
+>    **新增 `dsh` 适配器**（把你平台里的 DSH 接成 AFR 的一个执行器，见 `docs/DSH-INTEGRATION.md`）。
+>    仍未处理：`claude`/`codex`/`antigravity` 在本机不存在（health 已如实报 false）；
+>    `vertex-gemini` 的仓库自带启动器是**伪造结果的桩**，已标为不可调度。
+> ⑥ ~~**health 谎报 / 桩被默认路由**~~ ✅ **已修**：health 现在检查 governance 前提并给出原因；
+>    桩被标记且不可调度（详见 ADR 与 `tests/executor-health-truth.test.mjs`）。
+> ⑦ **cline 适配器的 argv 与已装 3.0.62 不符**（`Unknown command or unquoted prompt`）：
+>    之前"用真实 cline 验证"验的是**沙箱与 CLI 存在**，**不是适配器参数**。需修正或显式标注未验证。：AFR 的适配器为 `claude`/`codex`/`cline`/`vertex-gemini`/`antigravity`，
 >    而本机实装的是 `cline` + **`command-code`**（v1.54.1，有完整 `-p` 非交互模式与 NDJSON 输出，
 >    接口形态正是执行器所需）+ `dsh`（平台本身，非 CLI agent）。`command-code` **没有适配器**。
 >    需要决策：为已装的 agent 补适配器，还是安装适配器期望的 CLI。
