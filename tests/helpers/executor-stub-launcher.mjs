@@ -102,6 +102,7 @@ function writeStub(fileName, source = STUB_SOURCE) {
 // it points at the cline-af adapter, so the stub keeps that name.
 export const CLINE_STUB = writeStub('cline-af-stub');
 export const VERTEX_STUB = writeStub('vertex-gemini-af-stub');
+export const COMMAND_CODE_STUB = writeStub('command-code-af-stub');
 
 // Stub that reports an account/ToS refusal on stdout and exits non-zero.
 export const POLICY_DENIAL_STUB = writeStub('cline-af-policy-denial', POLICY_DENIAL_SOURCE);
