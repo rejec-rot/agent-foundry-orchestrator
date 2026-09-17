@@ -17,6 +17,32 @@ import {
   formatLogRotationResult,
 } from './lib/executor-ops.mjs';
 import { reapOrphans, formatReclaimResult } from './lib/orphan-reaper.mjs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  captureRestorePoint,
+  listRestorePoints,
+  restoreToPoint,
+  formatRollbackResult,
+} from './lib/rollback.mjs';
+import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
+import { saveTaskWithVersion } from './lib/store.mjs';
+
+const AF_ROOT = join(dirname(fileURLToPath(import.meta.url)));
+const TASKS_DIR = process.env.AF_TASKS_DIR || join(AF_ROOT, 'tasks');
+const LOCKS_DIR = process.env.AF_LOCKS_DIR || join(AF_ROOT, 'locks');
+
+/** Load a task file, or exit with a clear message. */
+function loadTaskForRollback(taskId, tasksDir) {
+  const path = join(tasksDir, `${taskId}.json`);
+  try {
+    return { path, task: JSON.parse(readFileSync(path, 'utf8')) };
+  } catch (err) {
+    console.error(`error: cannot read task ${taskId} from ${tasksDir}: ${String(err?.message ?? err)}`);
+    process.exit(1);
+  }
+}
 
 const args = process.argv.slice(2);
 const mainCmd = args[0];
@@ -39,7 +65,10 @@ function printUsage() {
   af-admin circuit reset <executor> --reason "<reason>" [--reset-by "<name>"]
   af-admin tasks prune [--confirm] [--tasks-dir <path>]
   af-admin logs rotate [--days <N>] [--events-file <path>] [--archive-dir <path>]
-  af-admin reclaim orphans [--confirm] [--runs-dir <path>]`);
+  af-admin reclaim orphans [--confirm] [--runs-dir <path>]
+  af-admin restore-point list --task-id <id> [--tasks-dir <path>]
+  af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
+  af-admin restore-point restore --task-id <id> --revision <n> [--confirm] [--prune] [--tasks-dir <path>]`);
 }
 
 async function main() {
@@ -217,6 +246,76 @@ async function main() {
     } else {
       console.error(`unknown reclaim subcommand: ${subCmd} (expected: orphans)`);
       printUsage();
+      process.exit(1);
+    }
+  } else if (mainCmd === 'restore-point') {
+    const taskId = argValue('--task-id');
+    const tasksDir = argValue('--tasks-dir') || TASKS_DIR;
+    if (!taskId) {
+      console.error('error: --task-id is required');
+      printUsage();
+      process.exit(1);
+    }
+    const { path: taskPath, task } = loadTaskForRollback(taskId, tasksDir);
+    const fixtureDir = task.fixture_dir;
+    try {
+      if (subCmd === 'list') {
+        console.log(formatRollbackResult(listRestorePoints({ dir: fixtureDir, taskId }), 'list'));
+        process.exit(0);
+      }
+      if (subCmd === 'capture') {
+        const revision = argValue('--revision') || `manual-${Date.now()}`;
+        const label = argValue('--label') || 'manual capture';
+        const result = captureRestorePoint({ dir: fixtureDir, taskId, revision, label });
+        console.log(formatRollbackResult(result, 'capture'));
+        if (result.ok) {
+          // Record the point on the task under its lock, so the audit trail lives
+          // with the task (the control-plane truth) rather than only in a terminal.
+          const lock = acquireTaskLock(LOCKS_DIR, taskId, { orchestratorInstanceId: `af-admin-${process.pid}` });
+          try {
+            const fresh = JSON.parse(readFileSync(taskPath, 'utf8'));
+            fresh.restore_points = fresh.restore_points ?? [];
+            fresh.restore_points.push({ revision, sha: result.sha, ref: result.ref, captured_at: result.captured_at, label });
+            saveTaskWithVersion(tasksDir, fresh);
+          } finally {
+            releaseTaskLock(LOCKS_DIR, taskId, lock.lock);
+          }
+        }
+        process.exit(result.ok ? 0 : 1);
+      }
+      if (subCmd === 'restore') {
+        const revision = argValue('--revision');
+        if (!revision) {
+          console.error('error: --revision is required');
+          process.exit(1);
+        }
+        const confirm = args.includes('--confirm');
+        const result = restoreToPoint({ dir: fixtureDir, taskId, revision, apply: confirm, prune: args.includes('--prune') });
+        console.log(formatRollbackResult(result, 'restore'));
+        if (result.ok && result.applied) {
+          const lock = acquireTaskLock(LOCKS_DIR, taskId, { orchestratorInstanceId: `af-admin-${process.pid}` });
+          try {
+            const fresh = JSON.parse(readFileSync(taskPath, 'utf8'));
+            fresh.rollbacks = fresh.rollbacks ?? [];
+            fresh.rollbacks.push({
+              revision,
+              target: result.target,
+              safety_ref: result.safety_ref,
+              pruned: result.pruned,
+              restored_at: result.restored_at,
+            });
+            saveTaskWithVersion(tasksDir, fresh);
+          } finally {
+            releaseTaskLock(LOCKS_DIR, taskId, lock.lock);
+          }
+        }
+        process.exit(result.ok ? 0 : 1);
+      }
+      console.error(`unknown restore-point subcommand: ${subCmd} (expected: list, capture, restore)`);
+      printUsage();
+      process.exit(1);
+    } catch (err) {
+      console.error(`error: ${err.message}`);
       process.exit(1);
     }
   } else {

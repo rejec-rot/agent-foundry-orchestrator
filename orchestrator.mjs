@@ -28,6 +28,7 @@ import { classifyExecutionError } from './lib/executor-error-classifier.mjs';
 import { readTaskFile, taskFileExists, saveTaskWithVersion } from './lib/store.mjs';
 import { runAcceptance, normalizeAcceptanceCmd, acceptanceBinding } from './lib/acceptance.mjs';
 import { signalPidTree, signalAllManaged } from './lib/child-process.mjs';
+import { captureRestorePoint } from './lib/rollback.mjs';
 import { GovernanceBridge, classifyPublishVerdict } from './lib/governance.mjs';
 import { bindReviewResult, latestAuthorRun } from './lib/reviews.mjs';
 import { readLock, isLockStale } from './lib/tasklock.mjs';
@@ -353,6 +354,25 @@ async function acceptanceGate(task, revision) {
     acc.record.content_sha256 = currentSha;
     task.acceptance_runs = task.acceptance_runs ?? [];
     task.acceptance_runs.push(acc.record);
+  }
+
+  // P7: remember the exact state that PASSED, so a later revision can be rolled
+  // back to it (lib/rollback.mjs). Opt-in, because capturing brings the git index
+  // in line with the working tree - a visible side effect in a workspace the
+  // orchestrator may not own. A refusal is RECORDED with its reason, never
+  // swallowed: a workspace that cannot hold restore points must not look like one
+  // that silently did nothing.
+  if (acc.ok && process.env.AF_RESTORE_POINTS === 'on') {
+    const point = captureRestorePoint({
+      dir: task.fixture_dir,
+      taskId: task.task_id,
+      revision,
+      label: 'acceptance passed',
+    });
+    task.restore_points = task.restore_points ?? [];
+    task.restore_points.push(point.ok
+      ? { revision, sha: point.sha, ref: point.ref, captured_at: point.captured_at, label: point.label }
+      : { revision, captured: false, reason: point.reason });
   }
   return acc;
 }
