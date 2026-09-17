@@ -25,6 +25,7 @@ import {
 } from '../lib/executor-router.mjs';
 import './helpers/acceptance-allowlist.mjs';
 import { Scheduler } from '../lib/scheduler.mjs';
+import { ADAPTERS } from '../lib/adapters.mjs';
 import { classifyExecutionError } from '../lib/executor-error-classifier.mjs';
 import { ExecutorRuntimeGuard } from '../lib/executor-runtime-guard.mjs';
 import { readTaskFile, saveTaskAtomic } from '../lib/store.mjs';
@@ -120,8 +121,16 @@ test('6C-1: Capability Filter (requires_mcp excludes blocked executors, permits 
   assert.strictEqual(codexMcp.primary, 'codex', 'codex satisfies requires_mcp on 0.153.4');
 
   // 5. Enterprise compliance constraint
-  const entRoute = resolveExecutorRoute({ compliance: 'enterprise' });
-  assert.strictEqual(entRoute.primary, 'vertex-gemini', 'enterprise compliance selects vertex-gemini');
+  // adapters is passed because the scheduler (the production caller) passes it, and
+  // adapter-level flags - schedulable / stub - are only consulted through that map.
+  const entRoute = resolveExecutorRoute({ compliance: 'enterprise' }, { adapters: ADAPTERS });
+  // enterprise compliance can only be satisfied by a cloud-enterprise executor, and
+  // in this repository the only one is vertex-gemini - whose shipped launcher is a
+  // STUB that fabricates a result and a fixed `decision: 'PASS'`. A fabricated PASS
+  // is indistinguishable from a real review, so the stub is non-schedulable and the
+  // router correctly finds NO candidate. Routing to it would have been worse than
+  // returning nothing. Point VERTEX_GEMINI_LAUNCHER at a real client to restore this.
+  assert.strictEqual(entRoute.primary, null, 'the only enterprise executor present is a stub, so nothing is eligible');
   assert.ok(!entRoute.fallbacks.includes('claude'), 'claude is not cloud-enterprise');
 });
 

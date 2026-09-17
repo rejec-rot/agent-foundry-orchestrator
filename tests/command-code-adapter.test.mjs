@@ -84,15 +84,36 @@ test('CC-2: health resolves through PATH and the aliases, never a hardcoded path
   } catch {
     cliPresent = false;
   }
+  // A missing launcher is the actionable blocker: without the wrapper there is
+  // nothing to run, whatever the CLI situation is. (The first version of this test
+  // asserted the opposite - that an installed CLI must be healthy without a launcher
+  // - which was simply wrong.)
   await withEnv({ COMMAND_CODE_LAUNCHER: join(tmpdir(), 'definitely-absent-command-code-af') }, () => {
-    assert.strictEqual(
-      CommandCodeAdapter.health().ok,
-      cliPresent,
-      cliPresent
-        ? 'an installed CLI must not be reported unhealthy just because no launcher exists'
-        : 'with no CLI installed, health must say so'
-    );
+    const health = CommandCodeAdapter.health();
+    assert.strictEqual(health.ok, false, 'without the wrapper the executor cannot run');
+    assert.match(String(health.reason), /launcher not found/, 'and the reason must name the launcher');
   });
+
+  // With governance provided and PATH stripped, the only remaining blocker is the
+  // CLI itself - which proves the lookup is a PATH lookup, not a hardcoded path.
+  const dir = mkdtempSync(join(tmpdir(), 'af-cc2-'));
+  try {
+    const canonical = join(dir, 'AGENTS.md');
+    writeFileSync(canonical, 'GOVERNANCE\n');
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      const { ADAPTERS } = await import('file://${join(ROOT_DIR, 'lib', 'adapters.mjs')}');
+      process.stdout.write(JSON.stringify(ADAPTERS['command-code'].health()));
+    `], {
+      encoding: 'utf8',
+      env: { ...process.env, AF_CANONICAL_AGENTS_MD: canonical, AF_GLOBAL_DIR: '', PATH: '/nonexistent-bin' },
+    });
+    const health = JSON.parse(out);
+    assert.strictEqual(health.ok, false, `with no CLI on PATH the executor cannot run (reason: ${health.reason})`);
+    assert.match(String(health.reason), /not found on PATH/, 'the reason must name the CLI lookup');
+    assert.ok(!/v\d+\.\d+\.\d+\/bin/.test(String(health.reason)), 'no hardcoded node-version path may appear');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ------------------------------------------------------------------ CC-3

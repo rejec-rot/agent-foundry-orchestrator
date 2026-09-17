@@ -11,8 +11,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import './helpers/runtime-state-fixture.mjs';
 import './helpers/executors-fixture.mjs';
 import { ClineAdapter, ADAPTERS } from '../lib/adapters.mjs';
@@ -33,7 +35,18 @@ test('CLINE-2: Health check verifies binary and governance', () => {
   const h = ClineAdapter.health();
   assert.strictEqual(h.executor_type, 'cline');
   assert.ok(h.launcher.includes('cline-af'), 'launcher must point to cline-af');
-  assert.strictEqual(h.ok, true, 'health must be ok');
+  // This used to assert ok === true unconditionally, which was a lie on any host
+  // without the canonical governance: bin/cline-af exits 2 without it, so the
+  // executor could not start while health claimed otherwise. Health now reports the
+  // precondition, and says which one failed.
+  const cliPresent = (() => { try { execFileSync('sh', ['-c', 'command -v cline'], { stdio: 'ignore' }); return true; } catch { return false; } })();
+  const governancePresent = h.reason === null || !/canonical governance/.test(h.reason);
+  assert.strictEqual(
+    h.ok,
+    cliPresent && governancePresent,
+    `health must reflect whether the executor can actually start (reason: ${h.reason})`
+  );
+  if (!h.ok) assert.ok(h.reason, 'an unhealthy executor must explain why');
 });
 
 test('CLINE-3: ROLE != PLATFORM: cline can be routed as author or reviewer', () => {
@@ -178,28 +191,58 @@ test('CLINE-8: Target workspace test logs containing HTTP 429 must NOT trigger R
 
 // ------------------------------------------------------------------ CLINE-10
 test('CLINE-10: health resolves the CLI through PATH, not a hardcoded node version', () => {
-  // Regression, found while verifying the executor sandbox against a real CLI.
-  // The health fallback used to hardcode
-  // `~/.nvm/versions/node/v24.20.0/bin/cline`. This host has v24.21.0, and any host
-  // with a different node version would report an installed, working executor as
-  // unhealthy - a false negative in a health check is worse than no health check.
-  let cliOnPath = null;
-  try {
-    cliOnPath = execFileSync('sh', ['-c', 'command -v cline'], { encoding: 'utf8' }).trim();
-  } catch { /* cline is not installed here */ }
+  // Regression, found while verifying the executor sandbox against a real CLI: the
+  // health fallback used to hardcode `~/.nvm/versions/node/v24.20.0/bin/cline`, so a
+  // host with a different node version reported an installed, working executor as
+  // unhealthy. Two properties must hold, and the first version of this test asserted
+  // NEITHER of them correctly (it claimed an installed CLI must be healthy even with
+  // no launcher, which is false: without the wrapper nothing can run).
+  const ROOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 
+  // (1) A PATH lookup, proven by stripping PATH: the CLI is then genuinely absent and
+  //     the reason must name it. A hardcoded-path implementation would not notice.
+  const dir = mkdtempSync(join(tmpdir(), 'af-cline10-'));
+  try {
+    const canonical = join(dir, 'AGENTS.md');
+    writeFileSync(canonical, 'GOVERNANCE\n');
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      const { ADAPTERS } = await import('file://${join(ROOT_DIR, 'lib/adapters.mjs')}');
+      process.stdout.write(JSON.stringify(ADAPTERS.cline.health()));
+    `], {
+      encoding: 'utf8',
+      env: { ...process.env, AF_CANONICAL_AGENTS_MD: canonical, AF_GLOBAL_DIR: '', PATH: '/nonexistent-bin' },
+    });
+    const health = JSON.parse(out);
+    assert.strictEqual(health.ok, false, 'with the CLI absent from PATH the executor cannot run');
+    assert.match(String(health.reason), /cline not found on PATH/, 'the reason must name the CLI');
+
+    // (2) No hardcoded node version may reappear anywhere in that reasoning.
+    assert.ok(
+      !/v\d+\.\d+\.\d+\/bin/.test(String(health.reason)),
+      `a hardcoded node-version path came back: ${health.reason}`
+    );
+    // Strip comments first: the executable code must not hardcode a node-version
+    // path, while the comment that documents the old bug legitimately quotes one.
+    const adapterSource = readFileSync(join(ROOT_DIR, 'lib', 'adapters.mjs'), 'utf8')
+      .split('\n')
+      .map((line) => line.replace(/\/\/.*$/, ''))
+      .join('\n');
+    assert.ok(
+      !/v\d+\.\d+\.\d+\/bin/.test(adapterSource),
+      'lib/adapters.mjs must not hardcode a node-version path in executable code'
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // (3) A missing launcher is reported by name, and it is the actionable blocker.
   const previous = process.env.CLINE_LAUNCHER;
   process.env.CLINE_LAUNCHER = join(tmpdir(), 'definitely-absent-cline-af');
   try {
     const health = ClineAdapter.health();
     assert.strictEqual(health.launcher, process.env.CLINE_LAUNCHER, 'the override is honoured');
-    assert.strictEqual(
-      health.ok,
-      Boolean(cliOnPath),
-      cliOnPath
-        ? 'an installed CLI must not be reported unhealthy just because no launcher exists'
-        : 'with no CLI installed, health must say so'
-    );
+    assert.strictEqual(health.ok, false, 'without the wrapper there is nothing to run');
+    assert.match(String(health.reason), /launcher not found/, 'and the reason must say so');
   } finally {
     if (previous === undefined) delete process.env.CLINE_LAUNCHER;
     else process.env.CLINE_LAUNCHER = previous;
