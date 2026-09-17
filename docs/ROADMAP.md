@@ -115,8 +115,14 @@ node --test          # 期望全绿，且通过数只增不减
 **这次真实验证抓出两个真缺陷**：① `--tmpfs /tmp` 与 `-v /tmp:/tmp` 冲突导致 docker 拒绝该计划（exit 125）
 ② cline 健康检查写死了 node 版本 `v24.20.0`（作者机器残留）→ 假阴性。两者都已修，各有回归测试。
 
-测试 ES-1..ES-7（ES-7 是真跑 `cline`）与 CLINE-10。`claude`/`codex`/`agy`/`vertex-gemini`
-**确认不在本机**，其镜像仍需部署时验证。
+测试 ES-1..ES-8（ES-7/ES-8 真跑两个真实 CLI）与 CLINE-10。镜像要求按 CLI 打包方式而定：
+
+| CLI | alpine (musl) | slim (glibc) |
+|---|---|---|
+| `cline`（ELF） | ❌ | ✅ `3.0.62` |
+| `command-code`（纯 JS） | ✅ `1.54.1` | ✅ `1.54.1` |
+
+`claude`/`codex`/`agy`/`vertex-gemini` **确认不在本机**，其镜像仍需部署时验证。
 
 | 项 | 内容 |
 |---|---|
@@ -284,6 +290,10 @@ node --test          # 期望全绿，且通过数只增不减
 > ② **许可问题**——上游无 LICENSE，本仓库不得公开发布（见 `NOTICE.md` / ADR-0003）
 > ③ **权限域分离**（executor 换 UID / 容器）——这是"文件级防护"的根因，属部署改造
 > ④ 恢复路径是否自动回收孤儿（ADR-0007 后果节）
+> ⑤ **执行器集合与本机不匹配**：AFR 的适配器为 `claude`/`codex`/`cline`/`vertex-gemini`/`antigravity`，
+>    而本机实装的是 `cline` + **`command-code`**（v1.54.1，有完整 `-p` 非交互模式与 NDJSON 输出，
+>    接口形态正是执行器所需）+ `dsh`（平台本身，非 CLI agent）。`command-code` **没有适配器**。
+>    需要决策：为已装的 agent 补适配器，还是安装适配器期望的 CLI。
 
 > 环境探测（P2 前置）已完成：本机**已装 `bwrap`**，且**非特权 user namespace 已启用**
 > （`unprivileged_userns_clone=1`、`max_user_namespaces=55500`），`systemd-run` 可用；

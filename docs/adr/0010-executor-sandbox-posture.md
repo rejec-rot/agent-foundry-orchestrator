@@ -48,19 +48,41 @@ ES-5  启用但无沙箱可用 → 拒绝，绝不无沙箱运行
 漏掉了**本机确实装着的 `cline`**（`~/.nvm/versions/node/v24.21.0/bin/cline`，平台二进制 v3.0.62）。
 经彻底清点（PATH / 所有 nvm bin / `/usr/local/bin` / `~/.local/bin` / `~/bin` / maxdepth-4 可执行文件搜索）：
 
-| 执行器 | 本机状态 |
-|---|---|
-| `cline` | ✅ **已安装**（v3.0.62 平台二进制，151MB 动态链接 ELF） |
-| `claude` / `codex` / `agy` / `vertex-gemini` | ❌ 确认不存在 |
+**这一条本身也是错的，纠正了两次。** 正确的清点方法是**列出这台机器实际装了什么**
+（`npm ls -g --depth=0`），而不是**逐一对肋骨架上期望的名字**：
+
+```
+@deepseek-ai/dsh@0.1.5-rc.1   命令: dsh
+cline@3.0.62                  命令: cline
+command-code@1.54.1           命令: cmd / cmdc / command-code / commandcode
+dsh-fix@0.2.0                 命令: dsh-fix
+```
+
+| 命令 | 是什么 | 能当执行器？ |
+|---|---|---|
+| `cline` | 编码 agent CLI（v3.0.62 平台二进制，151MB 动态链接 ELF） | ✅ |
+| **`command-code` / `cmd`** | 编码 agent CLI v1.54.1，**有完整非交互模式**（`-p/--print`、`--output-format json` NDJSON、`--max-turns`、`--model`、`--effort`、`--resume`） | ✅ **接口形态最匹配** |
+| `dsh` | **平台/harness 本身**（启动 profile = 插件栈补丁层），不是 prompt 驱动的 CLI agent | ⚠️ 不是执行器 |
+| `dsh-fix` | DSH 插件故障修复工具（`doctor`/`list`/`safe`） | ❌ |
+| `claude` / `codex` / `agy` / `vertex-gemini` | ❌ 确认不在本机 |—|
+
+即：**本机有三个 agent CLI（`cline`、`command-code`、`dsh`），不是一个。**
 
 于是"真实 CLI 无法验证"这个借口不成立，并已完成验证：
 
 ### 实测结论：镜像策略
 
-| 镜像 | 结果 |
-|---|---|
-| `node:24-alpine`（musl） | ❌ **失败**：`not found`——平台二进制是动态链接 ELF，需要 `/lib64/ld-linux-x86-64.so.2`，musl 没有 |
-| `node:24-slim`（glibc） | ✅ **成功**：容器内报告 `3.0.62`，与宿主一致 |
+镜像要求**取决于 CLI 的打包方式**，不是沙箱决定的。两个真实 CLI 都在本机实测过：
+
+| CLI | `node:24-alpine`（musl） | `node:24-slim`（glibc） |
+|---|---|---|
+| `cline`（ELF 打包） | ❌ exit=127 `not found`——动态链接 ELF 需要 `/lib64/ld-linux-x86-64.so.2` | ✅ exit=0 → `3.0.62` |
+| `command-code`（纯 JS 打包） | ✅ `1.54.1` | ✅ `1.54.1` |
+
+**新增发现：执行器集合与本机不匹配。** AFR 的适配器是
+`claude` / `codex` / `cline` / `vertex-gemini` / `antigravity`——本机只有 `cline` 存在，
+而本机**真正装着的 `command-code` 没有适配器**（尽管它的非交互接口正是执行器所需的形态）。
+这是一个**产品决策**（为已装的 agent 补适配器，还是安装适配器期望的 CLI），已记入 `ROADMAP.md`。
 
 **可用配方**（宿主 CLI 只读挂载，即 `P2-FEASIBILITY.md` §四的选项 A）：
 

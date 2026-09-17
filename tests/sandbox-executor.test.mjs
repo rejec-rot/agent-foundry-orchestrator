@@ -275,3 +275,76 @@ test('ES-7: a REAL installed agent CLI runs inside the sandbox', { skip: skipNoD
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+// ------------------------------------------------------------------ ES-8
+test('ES-8: a second real CLI with different packaging runs in the sandbox', { skip: skipNoDocker ? skipNoDocker : false }, async () => {
+  // The image requirement depends on how a CLI is PACKAGED, not on the sandbox:
+  //   cline         ships a dynamically linked ELF -> needs glibc (alpine fails)
+  //   command-code  ships pure JavaScript        -> runs on musl too
+  // Verified against both real CLIs installed on this host.
+  let entry = null;
+  let wrapper = null;
+  try {
+    wrapper = realpathSync(execFileSync('sh', ['-c', 'command -v command-code'], { encoding: 'utf8' }).trim());
+    const pkgDir = dirname(dirname(wrapper)); // .../lib/node_modules/command-code
+    for (const candidate of [join(pkgDir, 'dist', 'index.mjs'), join(pkgDir, 'bin', 'index.mjs')]) {
+      if (existsSync(candidate)) { entry = candidate; break; }
+    }
+  } catch { /* not installed here */ }
+  if (!entry) {
+    assert.ok(true, 'skipped: command-code is not installed on this host');
+    return;
+  }
+
+  const expected = execFileSync(process.execPath, [entry, '--version'], { encoding: 'utf8' }).trim();
+  assert.ok(/^\d/.test(expected), `could not read a version from the host CLI (got ${JSON.stringify(expected)})`);
+  // entry = <mount>/command-code/dist/index.mjs, so three dirnames give the
+  // node_modules directory to mount read-only.
+  const packagesDir = dirname(dirname(dirname(entry)));
+
+  const work = mkdtempSync(join(tmpdir(), 'af-es8-'));
+  try {
+    for (const image of ['node:24-alpine', 'node:24-slim']) {
+      let imageReady = false;
+      try {
+        execFileSync('docker', ['image', 'inspect', image], { stdio: 'ignore' });
+        imageReady = true;
+      } catch { /* not pulled locally */ }
+      if (!imageReady) continue;
+
+      await withEnv({
+        AF_SANDBOX_EXECUTORS: 'on',
+        AF_SANDBOX_EXECUTOR_IMAGE: image,
+        AF_SANDBOX_EXECUTOR_MOUNTS: packagesDir,
+      }, async () => {
+        const decision = planExecutorSandbox({
+          // `node` from the image's PATH, not process.execPath: the host node path
+          // is not present inside the container (measured failure).
+          command: 'node', args: [entry, '--version'], cwd: work, executorType: 'command-code', env: {},
+        });
+        assert.strictEqual(decision.allowed, true, `expected a plan: ${decision.status.reason}`);
+
+        const child = spawnManaged(decision.plan.command, decision.plan.args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let out = '';
+        child.stdout.on('data', (d) => { out += d; });
+        child.stderr.on('data', (d) => { out += d; });
+        const code = await Promise.race([
+          new Promise((resolve) => child.once('close', resolve)),
+          new Promise((resolve) => setTimeout(() => resolve('timeout'), 120_000)),
+        ]);
+        signalTree(child, 'SIGKILL');
+        sandboxCleanup(decision.plan.containerName);
+
+        const reported = out.trim().split('\n').filter(Boolean).pop() ?? '';
+        assert.strictEqual(code, 0, `the CLI must run inside ${image} (output: ${reported.slice(0, 120)})`);
+        assert.strictEqual(
+          reported.trim(),
+          expected,
+          `a pure-JS CLI must report the same version on ${image} (got ${JSON.stringify(reported)}, expected ${JSON.stringify(expected)})`
+        );
+      });
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
