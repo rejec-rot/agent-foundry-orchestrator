@@ -248,3 +248,45 @@ test('CLINE-10: health resolves the CLI through PATH, not a hardcoded node versi
     else process.env.CLINE_LAUNCHER = previous;
   }
 });
+
+// ------------------------------------------------------------------ CLINE-11
+test('CLINE-11: the argv the installed cline 3.0.62 accepts is preserved', async () => {
+  // Verified against the real CLI on this host: `cline --json --auto-approve true
+  // "<prompt>"` is accepted, but a BARE one-word prompt is rejected with
+  // "Unknown command or unquoted prompt" because a single word is ambiguous with
+  // a subcommand. The adapter's single-word guard (append a trailing space) is
+  // what makes the real invocation work, so it must not be dropped as noise.
+  const { CLINE_STUB, STUB_ARGV_LOG } = await import('./helpers/executor-stub-launcher.mjs');
+  rmSync(STUB_ARGV_LOG, { force: true });
+  const previousLauncher = process.env.CLINE_LAUNCHER;
+  const previousLog = process.env.AF_STUB_ARGV_LOG;
+  process.env.CLINE_LAUNCHER = CLINE_STUB;
+  process.env.AF_STUB_ARGV_LOG = STUB_ARGV_LOG;
+
+  try {
+    const result = await ClineAdapter.run({
+      task_id: 'TASK-CLINE-11',
+      assigned_role: 'author',
+      prompt: 'hi', // one word on purpose
+      cwd: tmpdir(),
+      timeout_ms: 15000,
+    });
+    assert.strictEqual(result.status, 'completed', 'the stub launcher run must complete');
+
+    const args = readFileSync(STUB_ARGV_LOG, 'utf8')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line)).at(-1);
+
+    assert.ok(args.includes('--json'), '--json is required for the run_result stream the parser reads');
+    assert.strictEqual(args[args.indexOf('--auto-approve') + 1], 'true', '--auto-approve must take a value');
+    assert.strictEqual(
+      args.at(-1),
+      'hi ',
+      'a single-word prompt must carry a trailing space, or cline 3.0.62 rejects it as an unknown command'
+    );
+  } finally {
+    if (previousLauncher === undefined) delete process.env.CLINE_LAUNCHER;
+    else process.env.CLINE_LAUNCHER = previousLauncher;
+    if (previousLog === undefined) delete process.env.AF_STUB_ARGV_LOG;
+    else process.env.AF_STUB_ARGV_LOG = previousLog;
+  }
+});
