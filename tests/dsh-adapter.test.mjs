@@ -29,6 +29,7 @@ import './helpers/executors-fixture.mjs';
 import './helpers/runtime-state-fixture.mjs';
 import { DshAdapter, ADAPTERS, selectExecutor } from '../lib/adapters.mjs';
 import { resolveExecutorRoute, DEFAULT_PRIORITY_ORDER } from '../lib/executor-router.mjs';
+import { realCliSkip } from './helpers/real-cli.mjs';
 
 const ROOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -189,7 +190,7 @@ test('DSH-7: the MCP capability claim is conservative', () => {
 });
 
 // ------------------------------------------------------------------ DSH-8
-test('DSH-8: the REAL dsh resolves the headless profile', { skip: (() => { try { execFileSync('sh', ['-c', 'command -v dsh'], { stdio: 'ignore' }); return false; } catch { return 'dsh is not installed on this host'; } })() }, () => {
+test('DSH-8: the REAL dsh resolves the headless profile', { skip: realCliSkip() || (() => { try { execFileSync('sh', ['-c', 'command -v dsh'], { stdio: 'ignore' }); return false; } catch { return 'dsh is not installed on this host'; } })() }, () => {
   // Zero-cost integration proof. dsh-headless documents that `--help` "prints the
   // command's help text and exits without running anything", so this exercises the
   // real launcher, the real profile resolution and the real argument shape without

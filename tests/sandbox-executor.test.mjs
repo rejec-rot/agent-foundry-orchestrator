@@ -28,16 +28,28 @@ import { execFileSync } from 'node:child_process';
 import { planExecutorSandbox, probeSandbox, resetSandboxProbe, sandboxCleanup } from '../lib/sandbox.mjs';
 import { executorEnv } from '../lib/executor-env.mjs';
 import { spawnManaged, signalTree } from '../lib/child-process.mjs';
+import { realCliSkip, lastSemver } from './helpers/real-cli.mjs';
 
 const dockerAvailable = probeSandbox().available;
 const skipNoDocker = dockerAvailable ? false : 'docker is not available on this host';
+const skipRealCli = realCliSkip();
 const IMAGE = 'alpine:3.20';
 
 function tmpDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
-/** Run `fn` with temporary env overrides, restoring everything afterwards. */
+/**
+ * Run `fn` with temporary env overrides, restoring everything afterwards.
+ *
+ * Handles BOTH a synchronous and an async callback. The async case is the one
+ * that bites: a plain `try { return fn(); } finally { restore }` restores the
+ * environment as soon as the async body returns its first promise, i.e. before
+ * the child process is even spawned. `fn()` is invoked before any await, so the
+ * env-dependent setup here happens synchronously and the current tests pass - but
+ * any env read after the first await would see the restored values. Awaiting the
+ * result keeps the override alive for the whole body.
+ */
 function withEnv(overrides, fn) {
   const previous = new Map();
   for (const [key, value] of Object.entries(overrides)) {
@@ -46,15 +58,23 @@ function withEnv(overrides, fn) {
     else process.env[key] = value;
   }
   resetSandboxProbe();
-  try {
-    return fn();
-  } finally {
+  const restore = () => {
     for (const [key, value] of previous.entries()) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
     resetSandboxProbe();
+  };
+  let result;
+  try {
+    result = fn();
+  } catch (err) {
+    restore();
+    throw err;
   }
+  if (result && typeof result.then === 'function') return Promise.resolve(result).finally(restore);
+  restore();
+  return result;
 }
 
 const SOURCE_ENV = Object.freeze({
@@ -204,7 +224,7 @@ test('ES-6: a workspace that IS the tmpfs path does not produce a duplicate moun
 });
 
 // ------------------------------------------------------------------ ES-7
-test('ES-7: a REAL installed agent CLI runs inside the sandbox', { skip: skipNoDocker ? skipNoDocker : false }, async () => {
+test('ES-7: a REAL installed agent CLI runs inside the sandbox', { skip: skipRealCli || (skipNoDocker ? skipNoDocker : false) }, async () => {
   // Resolve the real CLI on this host. Skip cleanly when it is not installed: a
   // missing CLI is a capability gap, not a failure.
   let platformBinary = null;
@@ -239,7 +259,8 @@ test('ES-7: a REAL installed agent CLI runs inside the sandbox', { skip: skipNoD
 
   const work = mkdtempSync(join(tmpdir(), 'af-es7-'));
   try {
-    const expected = execFileSync(platformBinary, ['--version'], { encoding: 'utf8' }).trim();
+    const expected = lastSemver(execFileSync(platformBinary, ['--version'], { encoding: 'utf8' }));
+    assert.ok(expected, 'could not read a version from the host CLI');
     const packagesDir = dirname(dirname(dirname(dirname(platformBinary)))); // .../lib/node_modules
 
     await withEnv({
@@ -264,7 +285,7 @@ test('ES-7: a REAL installed agent CLI runs inside the sandbox', { skip: skipNoD
       signalTree(child, 'SIGKILL');
       sandboxCleanup(decision.plan.containerName);
 
-      const reported = out.trim().split('\n').pop().trim();
+      const reported = lastSemver(out);
       assert.strictEqual(
         reported,
         expected,
@@ -277,7 +298,7 @@ test('ES-7: a REAL installed agent CLI runs inside the sandbox', { skip: skipNoD
 });
 
 // ------------------------------------------------------------------ ES-8
-test('ES-8: a second real CLI with different packaging runs in the sandbox', { skip: skipNoDocker ? skipNoDocker : false }, async () => {
+test('ES-8: a second real CLI with different packaging runs in the sandbox', { skip: skipRealCli || (skipNoDocker ? skipNoDocker : false) }, async () => {
   // The image requirement depends on how a CLI is PACKAGED, not on the sandbox:
   //   cline         ships a dynamically linked ELF -> needs glibc (alpine fails)
   //   command-code  ships pure JavaScript        -> runs on musl too
@@ -296,7 +317,10 @@ test('ES-8: a second real CLI with different packaging runs in the sandbox', { s
     return;
   }
 
-  const expected = execFileSync(process.execPath, [entry, '--version'], { encoding: 'utf8' }).trim();
+  // `--no-auto-update`: command-code would otherwise update itself mid-test and
+  // prepend a notice to stdout. lastSemver() is the second line of defence - the
+  // host CLI's version must not be read as a whole blob.
+  const expected = lastSemver(execFileSync(process.execPath, [entry, '--no-auto-update', '--version'], { encoding: 'utf8' }));
   assert.ok(/^\d/.test(expected), `could not read a version from the host CLI (got ${JSON.stringify(expected)})`);
   // entry = <mount>/command-code/dist/index.mjs, so three dirnames give the
   // node_modules directory to mount read-only.
@@ -320,7 +344,7 @@ test('ES-8: a second real CLI with different packaging runs in the sandbox', { s
         const decision = planExecutorSandbox({
           // `node` from the image's PATH, not process.execPath: the host node path
           // is not present inside the container (measured failure).
-          command: 'node', args: [entry, '--version'], cwd: work, executorType: 'command-code', env: {},
+          command: 'node', args: [entry, '--no-auto-update', '--version'], cwd: work, executorType: 'command-code', env: {},
         });
         assert.strictEqual(decision.allowed, true, `expected a plan: ${decision.status.reason}`);
 
@@ -335,7 +359,7 @@ test('ES-8: a second real CLI with different packaging runs in the sandbox', { s
         signalTree(child, 'SIGKILL');
         sandboxCleanup(decision.plan.containerName);
 
-        const reported = out.trim().split('\n').filter(Boolean).pop() ?? '';
+        const reported = lastSemver(out);
         assert.strictEqual(code, 0, `the CLI must run inside ${image} (output: ${reported.slice(0, 120)})`);
         assert.strictEqual(
           reported.trim(),
