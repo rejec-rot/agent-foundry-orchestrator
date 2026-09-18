@@ -78,8 +78,9 @@ P5 原方案：把修复批次里手写的 `lib/child-process.mjs` 换成 `sindr
 
 - 正面：硬杀后的残留有了回收手段；PID 复用风险被显式处理而不是忽略
 - 正面：进程句柄新增 owner/pgid 指纹，为后续任何"跨进程可靠性"逻辑提供基础
-- 负面：**回收目前是显式运维动作，未自动接入启动路径**。恢复流程重新派发前是否自动回收，
-  是一个会改变启动行为的决策，应在下一轮单独决定（候选：`AF_REAP_ORPHANS_ON_RECOVER=1`）
+- ~~负面：**回收目前是显式运维动作，未自动接入启动路径**~~ → **已接线（本 ADR 的更新节）**：
+  恢复路径在**续跑之前**回收，开关 `AF_REAP_ORPHANS_ON_RECOVER=1`（默认关闭）。启动路径
+  （`recover --task-id`）已接入；自动扫描仍不主动回收。
 - 负面：**未覆盖非沙箱化的验收子进程**——验收子进程不写运行句柄，因此没有可校验的指纹。
   沙箱默认 `auto` 时它由容器路径覆盖（清理在 `finish()` 中，硬杀后由容器名回收兜底）；
   但 `AF_SANDBOX=off` 时该残留仍在
@@ -111,4 +112,9 @@ P5 原方案：把修复批次里手写的 `lib/child-process.mjs` 换成 `sindr
 - `reapOrphanRuns`/`reapOrphans` 因此变为**异步**，`af-admin` 相应 `await`
 
 新增 OR-10（忽略 SIGTERM 者被升级到 SIGKILL 且确认消失）、OR-11（模拟杀不死者 → 句柄保留）。
+
+同轮把"未接入恢复路径"这条后果也补上了：`recoverTask` 新增注入式 `reapOrphans`，在**续跑派发之前**
+await 一次清扫，并把证据写进 `task.recovery_attempts[].orphan_reap`。默认关闭，由
+`AF_REAP_ORPHANS_ON_RECOVER=1` 打开。清扫失败**不阻塞**恢复，但**记录**而非吞掉；
+分类为 `INTERRUPTED`（不会续跑）的任务不触发清扫。回归见 `tests/recovery-orphan-reap.test.mjs` ROR-1..ROR-4。
 

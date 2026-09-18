@@ -283,11 +283,13 @@ node --test          # 期望全绿，且通过数只增不减
 | P7 可逆执行（可选） | ✅ **已完成**（自行实现，ADR-0009） | 见 git log |
 
 > **计划阶段全部完成。** P1–P6 五处替换经核对被否决（ADR-0004..0008），改为修补各层真实缺陷；
-> P2 完成验收路径沙箱化；P7 完成可逆执行。零外部依赖，`node --test` 通过数只增不减（218 → 299）。
+> P2 完成验收路径沙箱化；P7 完成可逆执行。零外部依赖，`node --test` 通过数只增不减（218 → 303）。
 >
 > **本轮复核后追加的修补**（不改变上文结论）：
 > — 孤儿回收的 SIGKILL 升级改为**可观测**（等到确认死亡才删句柄，未死则保留并报 `SURVIVED`），
 >   见 `lib/child-process.mjs#killPidTree` 与 OR-10/OR-11；
+> — **恢复路径接入回收**（原先只在手工 `af-admin` 里）：`recoverTask` 续跑前清扫，
+>   默认关闭、`AF_REAP_ORPHANS_ON_RECOVER=1` 开启，证据落 `recovery_attempts[]`（ROR-1..ROR-4）；
 > — 真实 CLI 集成测试加 `AF_REAL_CLI_TESTS` 开关并修正版本解析，
 >   使 `command-code` 自更新不再把默认套件弄红（`tests/helpers/real-cli.mjs`）；
 > — ⑦ cline 结论已按真实 3.0.62 重测更正（见下）；
@@ -297,7 +299,9 @@ node --test          # 期望全绿，且通过数只增不减
 > ① **执行器沙箱化**——需要镜像策略决策（见 `P2-FEASIBILITY.md` §四）
 > ② **许可问题**——上游无 LICENSE，本仓库不得公开发布（见 `NOTICE.md` / ADR-0003）
 > ③ **权限域分离**（executor 换 UID / 容器）——这是"文件级防护"的根因，属部署改造
-> ④ 恢复路径是否自动回收孤儿（ADR-0007 后果节）
+> ④ ~~恢复路径是否自动回收孤儿（ADR-0007 后果节）~~ ✅ **已接线**：`recoverTask` 在**续跑派发之前**
+>    回收（注入式，默认关闭，`AF_REAP_ORPHANS_ON_RECOVER=1` 开启），证据写入 `recovery_attempts[].orphan_reap`；
+>    清扫失败不阻塞恢复但会记录（`tests/recovery-orphan-reap.test.mjs` ROR-1..ROR-4）
 > ⑤ ~~**执行器集合与本机不匹配**~~ ✅ **已解决**：新增 `command-code` 适配器（本机实装）、
 >    **新增 `dsh` 适配器**（把你平台里的 DSH 接成 AFR 的一个执行器，见 `docs/DSH-INTEGRATION.md`）。
 >    仍未处理：`claude`/`codex`/`antigravity` 在本机不存在（health 已如实报 false）；

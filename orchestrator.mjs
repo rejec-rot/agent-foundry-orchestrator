@@ -1554,12 +1554,20 @@ if (isMain) {
     const tid = argValue('--task-id');
     if (!tid) { console.error('usage: recover --scan | recover --task-id <id>'); process.exit(2); }
     const instance = `af-orch-${randomUUID().slice(0, 8)}`;
+    // Opt-in: reaping sweeps side effects, so it is not on by default. Enabled,
+    // it runs before a continuation dispatches, clearing debris a hard-killed
+    // previous owner left behind (ADR-0007, consequence section). The flag exists
+    // because turning it on changes what recovery does; see tests/recovery-orphan-reap.
+    const reapOnRecover = ['1', 'true', 'on'].includes(String(process.env.AF_REAP_ORPHANS_ON_RECOVER ?? '').toLowerCase());
     const done = await recoverTask(tid, {
       adapters: ADAPTERS, tasksDir: TASKS_DIR, locksDir: LOCKS_DIR,
       availability, orchestratorInstanceId: instance,
       continueTaskFn: (id, o = {}) => continueTask(id, ADAPTERS, o),
       resumeGovernanceFn: (id, o = {}) => resumeGovernance(id, o),
       governanceBridge: null, targetCoordination: null,
+      reapOrphans: reapOnRecover
+        ? async () => (await import('./lib/orphan-reaper.mjs')).reapOrphans({ apply: true })
+        : null,
     });
     console.log(`[orchestrator] recover result: ${JSON.stringify(done, null, 2)}`);
     process.exit(done?.outcome === 'RECOVERED' && done?.state === 'COMPLETED' ? 0 : (done?.outcome === 'TERMINAL' || done?.outcome === 'WAITING_EXTERNAL' ? 0 : 1));
