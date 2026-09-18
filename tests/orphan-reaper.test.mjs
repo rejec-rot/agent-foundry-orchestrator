@@ -21,6 +21,9 @@
 //   OR-6  dry-run reports without killing
 //   OR-7  a sandbox container with a dead owner pid is removed
 //   OR-8  a sandbox container with a live owner pid is skipped
+//   OR-9  reapOrphans returns evidence for both halves
+//   OR-10 a SIGTERM-ignoring orphan is escalated to SIGKILL and confirmed gone
+//   OR-11 a process that survives even SIGKILL keeps its handle (not lost)
 
 import { test } from 'node:test';
 import assert from 'node:assert';
@@ -86,7 +89,7 @@ test('OR-2: a dead owner leaves a reapable child and a stale handle', { skip: IS
       adapter_type: 'codex',
     });
 
-    const result = reapOrphanRuns({ runsDir });
+    const result = await reapOrphanRuns({ runsDir });
     assert.strictEqual(result.inspected, 1);
     assert.strictEqual(result.orphans.length, 1, `expected one orphan (${JSON.stringify(result)})`);
     assert.deepStrictEqual(result.killed.map((k) => k.pid), [child.pid]);
@@ -114,7 +117,7 @@ test('OR-3: a live owner keeps its child', { skip: IS_LINUX ? false : 'requires 
       adapter_type: 'codex',
     });
 
-    const result = reapOrphanRuns({ runsDir });
+    const result = await reapOrphanRuns({ runsDir });
     assert.deepStrictEqual(result.orphans, [], 'a live owner must not be reaped');
     assert.deepStrictEqual(result.killed, []);
     assert.strictEqual(pidAlive(child.pid), true, 'the child must still be running');
@@ -140,7 +143,7 @@ test('OR-4: a mismatched process group is refused (PID-reuse guard)', { skip: IS
       adapter_type: 'codex',
     });
 
-    const result = reapOrphanRuns({ runsDir });
+    const result = await reapOrphanRuns({ runsDir });
     assert.deepStrictEqual(result.killed, [], 'a fingerprint mismatch must never signal');
     assert.strictEqual(result.unverifiable.length, 1, 'it must be reported as unverifiable');
     assert.match(String(result.unverifiable[0].reason), /process group does not match/i);
@@ -159,7 +162,7 @@ test('OR-5: a handle without owner_pid is reported, never signalled', { skip: IS
     // This is the shape of a handle written before the fingerprint existed.
     writeHandle(runsDir, 'RUN-OR5', { task_id: 'TASK-OR5', pid: child.pid, adapter_type: 'codex' });
 
-    const result = reapOrphanRuns({ runsDir });
+    const result = await reapOrphanRuns({ runsDir });
     assert.deepStrictEqual(result.killed, [], 'an unverifiable handle must not be acted on');
     assert.strictEqual(result.unverifiable.length, 1);
     assert.match(String(result.unverifiable[0].reason), /no owner_pid/i);
@@ -179,7 +182,7 @@ test('OR-6: dry-run reports without killing', { skip: IS_LINUX ? false : 'requir
       task_id: 'TASK-OR6', pid: child.pid, pgid: child.pid, owner_pid: DEAD_PID, adapter_type: 'codex',
     });
 
-    const result = reapOrphanRuns({ runsDir, apply: false });
+    const result = await reapOrphanRuns({ runsDir, apply: false });
     assert.strictEqual(result.orphans.length, 1, 'dry-run still reports the orphan');
     assert.deepStrictEqual(result.killed, [], 'dry-run must not signal');
     assert.strictEqual(pidAlive(child.pid), true, 'the process must be untouched');
@@ -187,7 +190,7 @@ test('OR-6: dry-run reports without killing', { skip: IS_LINUX ? false : 'requir
 
     // A handle whose process is already gone is only stale bookkeeping.
     writeHandle(runsDir, 'RUN-OR6B', { task_id: 'T', pid: DEAD_PID, pgid: DEAD_PID, owner_pid: DEAD_PID });
-    const second = reapOrphanRuns({ runsDir, apply: false });
+    const second = await reapOrphanRuns({ runsDir, apply: false });
     assert.ok(second.staleHandles.includes('RUN-OR6B.json'), 'a dead pid is a stale handle, not an orphan to kill');
     assert.ok(!second.orphans.some((o) => o.handle === 'RUN-OR6B.json'));
   } finally {
@@ -236,14 +239,68 @@ test('OR-8: a sandbox container with a live owner pid is skipped', { skip: docke
 });
 
 // ------------------------------------------------------------------ OR-9
-test('OR-9: reapOrphans returns evidence for both halves', { skip: IS_LINUX ? false : 'requires /proc' }, () => {
+test('OR-9: reapOrphans returns evidence for both halves', { skip: IS_LINUX ? false : 'requires /proc' }, async () => {
   const runsDir = tmpDir('af-or9-');
   try {
-    const result = reapOrphans({ runsDir, apply: false });
+    const result = await reapOrphans({ runsDir, apply: false });
     assert.ok(result.sandboxes && typeof result.sandboxes.inspected === 'number');
     assert.ok(result.runs && typeof result.runs.inspected === 'number');
     assert.ok(Array.isArray(result.sandboxes.orphans) && Array.isArray(result.runs.orphans));
   } finally {
+    rmSync(runsDir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------------------------ OR-10
+test('OR-10: a SIGTERM-ignoring orphan is escalated to SIGKILL and confirmed gone', { skip: IS_LINUX ? false : 'requires /proc' }, async () => {
+  const runsDir = tmpDir('af-or10-');
+  // A child that ignores SIGTERM: the ONLY way it dies is the escalated SIGKILL.
+  // The previous fire-and-forget escalation could not be observed, so this is
+  // exactly the case that used to be reported as reaped while still running.
+  //
+  // The ready marker is written AFTER the trap is installed: signalling before
+  // that would race the shell's own setup and the child would die on SIGTERM.
+  const readyFile = join(runsDir, 'trap-installed');
+  const child = spawnManaged('sh', ['-c', `trap "" TERM; : > "${readyFile}"; sleep 60`]);
+  try {
+    assert.ok(await waitFor(() => existsSync(readyFile)), 'the child must install its SIGTERM trap before we signal');
+    writeHandle(runsDir, 'RUN-OR10', {
+      task_id: 'TASK-OR10', pid: child.pid, pgid: child.pid, owner_pid: DEAD_PID, adapter_type: 'codex',
+    });
+
+    const result = await reapOrphanRuns({ runsDir, graceMs: 300 });
+    assert.deepStrictEqual(result.killed.map((k) => k.pid), [child.pid]);
+    assert.strictEqual(result.killed[0].escalated, true, 'surviving SIGTERM must be escalated to SIGKILL');
+    assert.deepStrictEqual(result.survived, [], 'the process must not be reported as surviving');
+    assert.strictEqual(pidAlive(child.pid), false, 'the orphan must actually be gone when reap reports success');
+    assert.ok(!existsSync(join(runsDir, 'RUN-OR10.json')), 'the handle is removed only once it is confirmed gone');
+  } finally {
+    signalTree(child, 'SIGKILL');
+    rmSync(runsDir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------------------------ OR-11
+test('OR-11: a process that survives even SIGKILL keeps its handle', { skip: IS_LINUX ? false : 'requires /proc' }, async () => {
+  const runsDir = tmpDir('af-or11-');
+  const child = spawnManaged('sleep', ['60']);
+  try {
+    writeHandle(runsDir, 'RUN-OR11', {
+      task_id: 'TASK-OR11', pid: child.pid, pgid: child.pid, owner_pid: DEAD_PID, adapter_type: 'codex',
+    });
+
+    // Simulate an unkillable process (D-state, or a signal the OS did not
+    // deliver): the killer is injected to report "not gone".
+    const result = await reapOrphanRuns({
+      runsDir,
+      kill: async () => ({ killed: true, escalated: true, gone: false }),
+    });
+    assert.deepStrictEqual(result.killed, [], 'a survivor must not be counted as reaped');
+    assert.strictEqual(result.survived.length, 1, 'it must be reported as surviving');
+    assert.match(String(result.survived[0].reason), /still alive after SIGKILL/i);
+    assert.ok(existsSync(join(runsDir, 'RUN-OR11.json')), 'the handle must be kept so the orphan is not lost');
+  } finally {
+    signalTree(child, 'SIGKILL');
     rmSync(runsDir, { recursive: true, force: true });
   }
 });

@@ -95,4 +95,20 @@ P5 原方案：把修复批次里手写的 `lib/child-process.mjs` 换成 `sindr
 
 - `package.json` 仍无 `dependencies`
 - `af-admin reclaim orphans`（dry-run）可用；`--confirm` 执行
-- OR-1..OR-9 全绿，其中 OR-4（进程组不匹配拒绝）是防止误杀的回归护栏
+- OR-1..OR-11 全绿，其中 OR-4（进程组不匹配拒绝）是防止误杀的回归护栏
+
+## 更新（复核后修补）
+
+复核时发现本 ADR 的原实现有一个**未被观察的升级路径**：`reapOrphanRuns` 发完 SIGTERM 后，
+用一个 `setTimeout(..., 4000).unref()` 排 SIGKILL，但 **`af-admin` 紧接着 `process.exit(0)`**——
+定时器永不执行，且**无论杀没杀掉都立即删除了运行句柄**。后果：忽略 SIGTERM 的孤儿被报成
+"已回收"，句柄被清掉，从此再也看不见。
+
+**已改为可观测的升级杀**（`lib/child-process.mjs#killPidTree`，pid 版 `killTree`）：
+
+- SIGTERM → 有界宽限 → SIGKILL，**等待并观察**结果，不再用 unref 定时器
+- 只有**确认进程已死**才删除句柄；未死则**保留句柄**并报告 `survived`（打印为 `SURVIVED`）
+- `reapOrphanRuns`/`reapOrphans` 因此变为**异步**，`af-admin` 相应 `await`
+
+新增 OR-10（忽略 SIGTERM 者被升级到 SIGKILL 且确认消失）、OR-11（模拟杀不死者 → 句柄保留）。
+

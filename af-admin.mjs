@@ -236,7 +236,7 @@ async function main() {
       const confirm = args.includes('--confirm');
       const runsDir = argValue('--runs-dir') || undefined;
       try {
-        const res = reapOrphans({ runsDir, apply: confirm });
+        const res = await reapOrphans({ runsDir, apply: confirm });
         console.log(formatReclaimResult(res, confirm));
         process.exit(0);
       } catch (err) {
