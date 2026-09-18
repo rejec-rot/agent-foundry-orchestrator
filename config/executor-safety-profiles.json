@@ -19,5 +19,13 @@
   "cline": {
     "max_parallel": 1,
     "min_interval_ms": 2000
+  },
+  "command-code": {
+    "max_parallel": 1,
+    "min_interval_ms": 1000
+  },
+  "dsh": {
+    "max_parallel": 1,
+    "min_interval_ms": 2000
   }
 }

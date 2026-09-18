@@ -25,7 +25,7 @@ import {
 } from '../lib/executor-router.mjs';
 import './helpers/acceptance-allowlist.mjs';
 import { Scheduler } from '../lib/scheduler.mjs';
-import { ADAPTERS } from '../lib/adapters.mjs';
+import { ADAPTERS, AUTO_SELECTABLE_ORDER } from '../lib/adapters.mjs';
 import { classifyExecutionError } from '../lib/executor-error-classifier.mjs';
 import { ExecutorRuntimeGuard } from '../lib/executor-runtime-guard.mjs';
 import { readTaskFile, saveTaskAtomic } from '../lib/store.mjs';
@@ -578,6 +578,23 @@ test('6C-7: No Fallback on ACCOUNT_POLICY (fail closed, zero fallback)', async (
   assert.strictEqual(fallbackEvents.length, 0, 'Zero fallback events permitted');
 
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ------------------------------------------------------------------ 6C-9
+test('6C-9: the auto-selection order only names registered, non-stub executors', () => {
+  // AUTO_SELECTABLE_ORDER is deliberately a different symbol from
+  // DEFAULT_PRIORITY_ORDER (see lib/adapters.mjs): the router's order names
+  // non-schedulable executors, this one must name only executors that can run.
+  // A rename or removal must therefore be caught here rather than silently
+  // skipped at scheduling time.
+  assert.ok(AUTO_SELECTABLE_ORDER.length > 0, 'there must be at least one auto-selectable executor');
+  for (const id of AUTO_SELECTABLE_ORDER) {
+    assert.ok(ADAPTERS[id], `auto-selection names an executor with no adapter: ${id}`);
+  }
+  assert.ok(
+    !AUTO_SELECTABLE_ORDER.includes('vertex-gemini'),
+    'the fabricated-result stub must never be auto-selected'
+  );
 });
 
 // ------------------------------------------------------------------ 6C-8
