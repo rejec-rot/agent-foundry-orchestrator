@@ -263,7 +263,7 @@ node --test          # 期望全绿，且通过数只增不减
 | 自动留点 `AF_RESTORE_POINTS=on`，**默认关闭** | 捕获会同步 git 索引（可见副作用）；开启后拒绝原因会写入 `task.restore_points[]` |
 
 **验证**：RB-1..RB-8（含"捕获不动 HEAD/分支"、"恢复可逆"、"prune 报告与实际一致"）+ CLI 冒烟。
-263 测试全绿，零依赖。
+`node --test` 全绿，零依赖。
 
 **残留**（ADR-0009 后果节）：捕获会同步 git 索引；`.gitignore` 忽略的文件不进留点；
 超大工作区的路径列表可能触及 argv 上限；**非 git 工作区没有可逆能力**（未做，也不静默降级）。
@@ -283,7 +283,15 @@ node --test          # 期望全绿，且通过数只增不减
 | P7 可逆执行（可选） | ✅ **已完成**（自行实现，ADR-0009） | 见 git log |
 
 > **计划阶段全部完成。** P1–P6 五处替换经核对被否决（ADR-0004..0008），改为修补各层真实缺陷；
-> P2 完成验收路径沙箱化；P7 完成可逆执行。零外部依赖，`node --test` 通过数 187 → 263 只增不减。
+> P2 完成验收路径沙箱化；P7 完成可逆执行。零外部依赖，`node --test` 通过数只增不减（218 → 299）。
+>
+> **本轮复核后追加的修补**（不改变上文结论）：
+> — 孤儿回收的 SIGKILL 升级改为**可观测**（等到确认死亡才删句柄，未死则保留并报 `SURVIVED`），
+>   见 `lib/child-process.mjs#killPidTree` 与 OR-10/OR-11；
+> — 真实 CLI 集成测试加 `AF_REAL_CLI_TESTS` 开关并修正版本解析，
+>   使 `command-code` 自更新不再把默认套件弄红（`tests/helpers/real-cli.mjs`）；
+> — ⑦ cline 结论已按真实 3.0.62 重测更正（见下）；
+> — `dsh`/`command-code` 补显式安全档；`selectExecutor` 的自动顺序提为具名常量 + 漂移守卫。
 >
 > **尚未完成（需要你的决策，不是技术阻塞）**：
 > ① **执行器沙箱化**——需要镜像策略决策（见 `P2-FEASIBILITY.md` §四）
@@ -296,11 +304,16 @@ node --test          # 期望全绿，且通过数只增不减
 >    `vertex-gemini` 的仓库自带启动器是**伪造结果的桩**，已标为不可调度。
 > ⑥ ~~**health 谎报 / 桩被默认路由**~~ ✅ **已修**：health 现在检查 governance 前提并给出原因；
 >    桩被标记且不可调度（详见 ADR 与 `tests/executor-health-truth.test.mjs`）。
-> ⑦ **cline 适配器的 argv 与已装 3.0.62 不符**（`Unknown command or unquoted prompt`）：
->    之前"用真实 cline 验证"验的是**沙箱与 CLI 存在**，**不是适配器参数**。需修正或显式标注未验证。：AFR 的适配器为 `claude`/`codex`/`cline`/`vertex-gemini`/`antigravity`，
->    而本机实装的是 `cline` + **`command-code`**（v1.54.1，有完整 `-p` 非交互模式与 NDJSON 输出，
->    接口形态正是执行器所需）+ `dsh`（平台本身，非 CLI agent）。`command-code` **没有适配器**。
->    需要决策：为已装的 agent 补适配器，还是安装适配器期望的 CLI。
+> ⑦ ~~**cline 适配器的 argv 与已装 3.0.62 不符**~~ ✅ **已核实并澄清**：用真实 `cline 3.0.62`
+>    重测后，适配器拼出的 argv（`cline -s <governance> --json --auto-approve true "<prompt>"`）
+>    **被真实 CLI 接受并正常开跑**。此前报 `Unknown command or unquoted prompt` 的那次探测
+>    用的是**裸单词 prompt**（`cline "hi"`），绕过了适配器自己的兜底——适配器会给单词 prompt
+>    补一个尾空格，正是为了让 cline 不把它当子命令。该兜底由 `CLINE-11` 钉住。
+>    **仍未端到端验证的是输出事件 schema**：解析器等 `run_result`（`finishReason`/`text`），
+>    而 3.0.62 实测输出为 `hook_event` / `agent_event` 流，结尾事件形态需一次**已登录 provider
+>    的真实运行**才能确认；未确认前，评审裁决路径按"未验证"对待，不予宣称。
+>    *(历史注：`claude`/`codex`/`antigravity` 本机不存在，health 如实报 false；`vertex-gemini`
+>    的仓库自带启动器是伪造结果的桩，已标为不可调度。)*
 
 > 环境探测（P2 前置）已完成：本机**已装 `bwrap`**，且**非特权 user namespace 已启用**
 > （`unprivileged_userns_clone=1`、`max_user_namespaces=55500`），`systemd-run` 可用；
