@@ -31,6 +31,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 
 import {
   TrustedCAS,
@@ -52,6 +53,7 @@ import {
   QuiesceError,
   CANONICAL_REF,
 } from '../lib/trusted-import/index.mjs';
+import { killPidTree, pidIsAlive, reapProcessGroup } from '../lib/child-process.mjs';
 
 function makeTempDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -301,18 +303,50 @@ test('TI-3: QUIESCE unproven -> strictly refuse scan/import', async () => {
   }
 });
 
-test('TI-3: QUIESCE PID witness waits for the process tree to disappear', async () => {
+test('TI-3: QUIESCE rejects a PID witness without a strong writer scope', async () => {
   const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30_000)'], {
     detached: true,
     stdio: 'ignore',
   });
   try {
     assert.ok(child.pid);
-    const evidence = await verifyQuiesced({ pid: child.pid, timeoutMs: 1000 });
-    assert.strictEqual(evidence.pid, child.pid);
-    assert.strictEqual(evidence.writers_terminated, true);
+    await assert.rejects(
+      () => verifyQuiesced({ pid: child.pid, timeoutMs: 1000 }),
+      (err) => err.details.reason === 'WRITER_SCOPE_UNVERIFIED',
+    );
   } finally {
     if (child.pid && child.exitCode === null) child.kill('SIGKILL');
+  }
+});
+
+test('TI-3: process-group reaping does not claim an escaped setsid writer is gone', async () => {
+  const root = makeTempDir('af-quiesce-escape-');
+  const pidFile = join(root, 'escaped.pid');
+  const parentCode = [
+    "const { spawn } = require('node:child_process');",
+    "const { writeFileSync } = require('node:fs');",
+    "const escaped = spawn(process.execPath, ['-e', 'setInterval(() => {}, 30000)'], { detached: true, stdio: 'ignore' });",
+    "writeFileSync(process.env.AF_ESCAPE_PID_FILE, String(escaped.pid));",
+    "setTimeout(() => process.exit(0), 50);",
+  ].join(' ');
+  const parent = spawn(process.execPath, ['-e', parentCode], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, AF_ESCAPE_PID_FILE: pidFile },
+  });
+  try {
+    assert.ok(parent.pid);
+    await once(parent, 'close');
+    const escapedPid = Number(readFileSync(pidFile, 'utf8'));
+    assert.ok(pidIsAlive(escapedPid), 'the escaped descendant should still be alive for the probe');
+    const outcome = await reapProcessGroup(parent.pid, { graceMs: 200, pollMs: 10 });
+    assert.strictEqual(outcome.group_gone, true);
+    assert.strictEqual(outcome.gone, false);
+    assert.strictEqual(outcome.scope_verified, false);
+    await killPidTree(escapedPid, { graceMs: 200, pollMs: 10 });
+  } finally {
+    if (parent.pid && pidIsAlive(parent.pid)) await killPidTree(parent.pid, { graceMs: 200, pollMs: 10 });
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

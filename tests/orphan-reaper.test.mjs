@@ -24,6 +24,7 @@
 //   OR-9  reapOrphans returns evidence for both halves
 //   OR-10 a SIGTERM-ignoring orphan is escalated to SIGKILL and confirmed gone
 //   OR-11 a process that survives even SIGKILL keeps its handle (not lost)
+//   OR-12 a durable writer cgroup is reaped before the handle is removed
 
 import { test } from 'node:test';
 import assert from 'node:assert';
@@ -299,6 +300,45 @@ test('OR-11: a process that survives even SIGKILL keeps its handle', { skip: IS_
     assert.strictEqual(result.survived.length, 1, 'it must be reported as surviving');
     assert.match(String(result.survived[0].reason), /still alive after SIGKILL/i);
     assert.ok(existsSync(join(runsDir, 'RUN-OR11.json')), 'the handle must be kept so the orphan is not lost');
+  } finally {
+    signalTree(child, 'SIGKILL');
+    rmSync(runsDir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------------------------ OR-12
+test('OR-12: a durable writer scope is reaped before an orphan handle is removed', { skip: IS_LINUX ? false : 'requires /proc' }, async () => {
+  const runsDir = tmpDir('af-or12-');
+  const child = spawnManaged('sleep', ['60']);
+  const scopeCalls = [];
+  try {
+    writeHandle(runsDir, 'RUN-OR12', {
+      task_id: 'TASK-OR12',
+      pid: child.pid,
+      pgid: child.pid,
+      owner_pid: DEAD_PID,
+      adapter_type: 'codex',
+      writer_scope: {
+        kind: 'cgroup',
+        path: `/sys/fs/cgroup/af-writer-${DEAD_PID}-test`,
+        attached: true,
+        verified: true,
+        owner_pid: DEAD_PID,
+      },
+    });
+
+    const result = await reapOrphanRuns({
+      runsDir,
+      scopeReap: async (scope) => {
+        scopeCalls.push(scope);
+        return { scope_verified: true, scope_empty: true };
+      },
+    });
+    assert.strictEqual(scopeCalls.length, 1);
+    assert.strictEqual(scopeCalls[0].kind, 'cgroup');
+    assert.deepStrictEqual(result.killed.map((k) => k.pid), [child.pid]);
+    assert.strictEqual(result.killed[0].scope_verified, true);
+    assert.ok(!existsSync(join(runsDir, 'RUN-OR12.json')));
   } finally {
     signalTree(child, 'SIGKILL');
     rmSync(runsDir, { recursive: true, force: true });

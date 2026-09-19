@@ -97,6 +97,9 @@ function writerTermination() {
     process_group_id: 12345,
     process_group_alive: false,
     termination_confirmed: true,
+    scope_verified: true,
+    scope_kind: 'test-scope',
+    scope_empty: true,
     termination_signal: null,
     forced: false,
     checked_at: new Date().toISOString(),
@@ -336,4 +339,47 @@ test('V2 recovery survives a real process restart after canonical promotion', ()
   assert.strictEqual(afterRecovery.state, 'COMPLETED');
   assert.strictEqual(afterRecovery.trusted_import.phase, 'PROMOTED');
   assert.strictEqual(afterRecovery.trusted_import.promotion_intent, null);
+});
+
+test('V2 recovery accepts a committed promotion that is an ancestor of current canonical', () => {
+  const root = tempRoot('af-ti-crash-descendant-');
+  const dirs = dirsFor(root);
+  initRepo(dirs.repoDir, 'v2');
+  const task = makeTask({ ...dirs, taskId: `TASK-TI-CRASH-DESC-${randomUUID().slice(0, 8)}` });
+  const taskPath = join(process.env.AF_TASKS_DIR, `${task.task_id}.json`);
+  writeFileSync(taskPath, JSON.stringify(task, null, 2));
+
+  const worker = join(process.cwd(), 'tests', 'helpers', 'trusted-import-worker.mjs');
+  const crashed = spawnSync(process.execPath, [worker, taskPath, 'crash'], {
+    cwd: process.cwd(),
+    env: { ...process.env, AF_TASKS_DIR: process.env.AF_TASKS_DIR },
+    encoding: 'utf8',
+  });
+  assert.strictEqual(crashed.status, 97, `worker should crash at the post-CAS fault point: ${crashed.stderr}`);
+  const promotedOid = getCanonicalOid(dirs.repoDir);
+
+  // Simulate another accepted task committing on top of the already-promoted
+  // transaction before the first task's completion journal is written.
+  execFileSync('git', ['checkout', '--detach', promotedOid], { cwd: dirs.repoDir, stdio: 'pipe' });
+  mkdirSync(join(dirs.repoDir, 'docs'));
+  writeFileSync(join(dirs.repoDir, 'docs', 'other-task.md'), 'other task accepted\n');
+  execFileSync('git', ['add', 'docs/other-task.md'], { cwd: dirs.repoDir, stdio: 'pipe' });
+  execFileSync('git', ['commit', '-m', 'other task after trusted import'], { cwd: dirs.repoDir, stdio: 'pipe' });
+  const descendantOid = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dirs.repoDir, encoding: 'utf8' }).trim();
+  execFileSync('git', ['update-ref', 'refs/afr/canonical', descendantOid, promotedOid], { cwd: dirs.repoDir, stdio: 'pipe' });
+
+  const recovered = spawnSync(process.execPath, [worker, taskPath, 'recover'], {
+    cwd: process.cwd(),
+    env: { ...process.env, AF_TASKS_DIR: process.env.AF_TASKS_DIR },
+    encoding: 'utf8',
+  });
+  assert.strictEqual(recovered.status, 0, recovered.stderr || recovered.stdout);
+  const afterRecovery = JSON.parse(readFileSync(taskPath, 'utf8'));
+  assert.strictEqual(afterRecovery.state, 'COMPLETED');
+  assert.strictEqual(afterRecovery.trusted_import.phase, 'PROMOTED');
+  assert.strictEqual(afterRecovery.trusted_import.promotion_intent, null);
+  assert.strictEqual(afterRecovery.trusted_import.promotion.promoted_oid, promotedOid);
+  assert.strictEqual(afterRecovery.trusted_import.canonical_oid, descendantOid);
+  assert.strictEqual(getCanonicalOid(dirs.repoDir), descendantOid);
+  assert.strictEqual(readFileSync(join(dirs.materializeDir, 'docs', 'other-task.md'), 'utf8'), 'other task accepted\n');
 });

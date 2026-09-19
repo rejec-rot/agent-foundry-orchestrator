@@ -151,6 +151,7 @@ function capsuleForAuthor(task, revision, { cwd = task.fixture_dir } = {}) {
     timeout_ms: task.timeout_ms ?? 600000,
     protect_active_process: task.protect_active_process !== false,
     idle_timeout_ms: task.idle_timeout_ms ?? 900000,
+    purpose: task.trusted_import?.enabled === true ? 'trusted_import' : undefined,
   };
 }
 
@@ -198,6 +199,7 @@ function capsuleForReview(task, revision, { cwd = task.fixture_dir } = {}) {
     timeout_ms: task.timeout_ms ?? 600000,
     protect_active_process: task.protect_active_process !== false,
     idle_timeout_ms: task.idle_timeout_ms ?? 900000,
+    purpose: task.trusted_import?.enabled === true ? 'trusted_import' : undefined,
     cline_fallback_model: task.cline_fallback_model || 'cline-pass/deepseek-v4-flash',
     cline_fallback_effort: task.cline_fallback_effort || 'xhigh',
   };
@@ -904,7 +906,11 @@ export async function executeTask(task, adapters = ADAPTERS, { governanceBridge 
         onRunStart,
         terminationVerifier: async ({ task: currentTask, evidence }) => (
           activeRunsForTask(currentTask.task_id).length === 0
-          && evidence.every((item) => item?.termination_confirmed === true && item?.process_group_alive === false)
+          && evidence.every((item) => (
+            item?.termination_confirmed === true
+            && item?.process_group_alive === false
+            && item?.scope_verified === true
+          ))
         ),
         trustedImportHooks,
       });
