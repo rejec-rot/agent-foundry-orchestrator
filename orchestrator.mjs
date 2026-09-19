@@ -23,7 +23,7 @@ import { randomUUID, createHash } from 'node:crypto';
 
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { selectExecutor, ADAPTERS } from './lib/adapters.mjs';
+import { selectExecutor, ADAPTERS, activeRunsForTask, getRunTerminationEvidence } from './lib/adapters.mjs';
 import { classifyExecutionError } from './lib/executor-error-classifier.mjs';
 import { readTaskFile, taskFileExists, saveTaskWithVersion } from './lib/store.mjs';
 import { runAcceptance, normalizeAcceptanceCmd, acceptanceBinding } from './lib/acceptance.mjs';
@@ -34,6 +34,7 @@ import { bindReviewResult, latestAuthorRun } from './lib/reviews.mjs';
 import { readLock, isLockStale } from './lib/tasklock.mjs';
 import { authorResultPersisted, reviewResultPersisted, latestAuthoritativeAcceptance } from './lib/recovery.mjs';
 import { WorktreeSession, buildPlanBatches } from './lib/worktree.mjs';
+import { assertTrustedImportAdmission, runTrustedImportTask } from './lib/trusted-import/orchestrator-adapter.mjs';
 
 const TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 
@@ -47,7 +48,7 @@ const TASKS_DIR = process.env.AF_TASKS_DIR || join(ROOT, 'tasks');
 const LOCKS_DIR = join(ROOT, 'locks');
 const MAX_REVISIONS_DEFAULT = 3;
 
-const RUNNING_STATES = new Set(['AUTHOR_RUNNING', 'FIX_RUNNING', 'REVIEW_RUNNING']);
+const RUNNING_STATES = new Set(['AUTHOR_RUNNING', 'FIX_RUNNING', 'REVIEW_RUNNING', 'TRUSTED_IMPORT_RUNNING']);
 
 function taskPath(taskId) {
   return join(TASKS_DIR, `${taskId}.json`);
@@ -99,7 +100,7 @@ function recordRun(task, executorType, assignedRole, result, purpose) {
   });
 }
 
-function capsuleForAuthor(task, revision) {
+function capsuleForAuthor(task, revision, { cwd = task.fixture_dir } = {}) {
   const parts = [
     `You are acting as the ${task.author_role} in a task workflow (executor identity does not determine your role).`,
     `TASK_ID: ${task.task_id}`,
@@ -107,7 +108,7 @@ function capsuleForAuthor(task, revision) {
     `GOAL: ${task.goal}`,
     `ACCEPTANCE: ${task.acceptance}`,
     `RED_LINES: ${task.red_lines.join('; ')}`,
-    `Working directory: ${task.fixture_dir}`,
+    `Working directory: ${cwd}`,
     `Do the work in that directory. Keep changes minimal and runnable.`,
     `When done, reply with a short summary of what you changed.`,
   ];
@@ -143,7 +144,7 @@ function capsuleForAuthor(task, revision) {
     task_id: task.task_id,
     runId: task.next_run_id ?? null,
     assigned_role: task.author_role,
-    cwd: task.fixture_dir,
+    cwd,
     acceptEdits: true,
     model: task.author_model || task.model,
     effort: task.author_effort || task.effort,
@@ -153,7 +154,7 @@ function capsuleForAuthor(task, revision) {
   };
 }
 
-function capsuleForReview(task, revision) {
+function capsuleForReview(task, revision, { cwd = task.fixture_dir } = {}) {
   const reviewSchema = {
     type: 'object',
     properties: {
@@ -178,8 +179,8 @@ function capsuleForReview(task, revision) {
     `ACCEPTANCE: ${task.acceptance}`,
     `REVIEW_SCOPE_RULES: ${task.review_rules.join('; ')}`,
     ...(task.task_mode === 'governed_write'
-      ? [`The author's submission is at ${join(task.fixture_dir, 'orchestrator-submission.md')} - review THAT file (it is the exact content that would be published).`]
-      : [`Working directory: ${task.fixture_dir} - inspect the files yourself. Cite file:line evidence.`]),
+      ? [`The author's submission is at ${join(cwd, 'orchestrator-submission.md')} - review THAT file (it is the exact content that would be published).`]
+      : [`Working directory: ${cwd} - inspect the files yourself. Cite file:line evidence.`]),
     `Respond with ONLY a JSON object of exactly this shape (no markdown fences, no extra text):`,
     JSON.stringify({ decision: 'PASS | NEEDS_FIX', summary: 'one paragraph', issues: ['...'], required_changes: ['...'], evidence: ['file:line or command output'] }),
     `Include "task_id" and "revision" in the JSON, echoing the TASK_ID and REVISION UNDER REVIEW above exactly (anti cross-talk binding).`,
@@ -190,7 +191,7 @@ function capsuleForReview(task, revision) {
     task_id: task.task_id,
     runId: task.next_run_id ?? null,
     assigned_role: task.reviewer_role,
-    cwd: task.fixture_dir,
+    cwd,
     response_schema: reviewSchema,
     model: task.reviewer_model || task.model,
     effort: task.reviewer_effort || task.effort || (task.reviewer_executor === 'cline' ? 'xhigh' : undefined),
@@ -242,11 +243,12 @@ async function runAuthor(task, revision, adapters, opts = {}) {
     // fix must resume the ORIGINAL author session -> same executor type.
     adapter = adapters[task.author_session_executor_type];
   }
-  const capsule = capsuleForAuthor(task, revision);
+  const capsule = capsuleForAuthor(task, revision, opts);
   const result = purpose === 'fix'
     ? await adapter.resume(task.author_session_ref, capsule)
     : await adapter.run(capsule);
   result.executor_run_id = runId; // stable identity for precise cancellation
+  result.writer_termination = result.writer_termination ?? getRunTerminationEvidence(runId);
   recordRun(task, adapter.type, capsule.assigned_role, result, purpose);
   if (result.status === 'cancelled') {
     const err = new Error('author run cancelled by operator');
@@ -276,12 +278,19 @@ async function runAuthor(task, revision, adapters, opts = {}) {
 
 async function runReview(task, revision, adapters, opts = {}) {
   const adapter = selectExecutor(task.reviewer_executor, { requiresMcp: !!task.requires_mcp, adapters });
+  if (opts.requireIndependentExecutor === true
+      && adapter.type === task.author_session_executor_type) {
+    throw new Error(`Trusted Import reviewer executor ${adapter.type} is the same as the author executor`);
+  }
   const runId = `RUN-${randomUUID().slice(0, 8)}`;
   task.next_run_id = runId;
   opts.onRunStart?.(runId, adapter.type);
-  const capsule = capsuleForReview(task, revision);
+  const capsule = capsuleForReview(task, revision, opts);
   let result = await adapter.run(capsule);
   result.executor_run_id = runId;
+  result.writer_termination = result.writer_termination ?? getRunTerminationEvidence(runId);
+  task.last_review_run_id = runId;
+  task.last_review_termination_evidence = result.writer_termination;
   recordRun(task, adapter.type, capsule.assigned_role, result, 'review');
   if (result.status === 'cancelled') {
     const err = new Error('review run cancelled by operator');
@@ -300,6 +309,8 @@ async function runReview(task, revision, adapters, opts = {}) {
   if (!ok && result.status === 'completed') {
     // one structured-output retry before failing the review leg
     result = await adapter.run(capsule);
+    result.writer_termination = result.writer_termination ?? getRunTerminationEvidence(runId);
+    task.last_review_termination_evidence = result.writer_termination;
     recordRun(task, adapter.type, capsule.assigned_role, result, 'review');
     ({ ok, review, raw } = parseReviewerResult(adapter.type, result.structured_result));
   }
@@ -842,7 +853,7 @@ async function executePlannedSteps(task, adapters, { governanceBridge = null, ta
 }
 
 
-export async function executeTask(task, adapters = ADAPTERS, { governanceBridge = null, targetCoordination = null, onRunStart = null, isShutdownRequested = null, shutdownMode = null } = {}) {
+export async function executeTask(task, adapters = ADAPTERS, { governanceBridge = null, targetCoordination = null, onRunStart = null, isShutdownRequested = null, shutdownMode = null, trustedImportHooks = {} } = {}) {
   // Never revive a task that already reached a terminal state, and never start
   // an executor for one the operator already cancelled: the on-disk task is the
   // lifecycle truth, so a stale in-memory copy must not overwrite it.
@@ -874,9 +885,30 @@ export async function executeTask(task, adapters = ADAPTERS, { governanceBridge 
     // governed tasks imply unattended MCP steps (formal review via vault-mcp)
     task.requires_mcp = true;
   }
+  if (task.trusted_import?.enabled === true) assertTrustedImportAdmission(task);
   task.state = 'AUTHOR_RUNNING';
   saveTask(task);
   try {
+    if (task.trusted_import?.enabled === true) {
+      return await runTrustedImportTask(task, {
+        runAuthor: (revision, opts = {}) => runAuthor(task, revision, adapters, {
+          ...opts,
+          onRunStart: opts.onRunStart ?? onRunStart,
+        }),
+        runReview: (revision, opts = {}) => runReview(task, revision, adapters, {
+          ...opts,
+          requireIndependentExecutor: true,
+          onRunStart: opts.onRunStart ?? onRunStart,
+        }),
+        saveTask,
+        onRunStart,
+        terminationVerifier: async ({ task: currentTask, evidence }) => (
+          activeRunsForTask(currentTask.task_id).length === 0
+          && evidence.every((item) => item?.termination_confirmed === true && item?.process_group_alive === false)
+        ),
+        trustedImportHooks,
+      });
+    }
     if (task.multi_step_dispatch && Array.isArray(task.planner_result?.plan) && task.planner_result.plan.length > 1) {
       return await executePlannedSteps(task, adapters, { governanceBridge, targetCoordination, onRunStart });
     }
@@ -1067,6 +1099,13 @@ export async function continueTask(taskId, adapters = ADAPTERS, { governanceBrid
     throw Object.assign(new Error(`TASK_TERMINAL: task ${taskId} is ${task.state} - recovery refused`), { code: 'TASK_TERMINAL' });
   }
 
+  // V2 Trusted Import owns its own durable phase machine. Re-enter through
+  // the same main entrypoint so a restart re-mints process-local authorization
+  // and human/evidence brands instead of trusting serialized clones.
+  if (task.trusted_import?.enabled === true) {
+    return await executeTask(task, adapters, { governanceBridge, targetCoordination });
+  }
+
   if (task.state === 'WAITING_HUMAN') {
     // durable park: re-query the vault truth by THIS task's candidate_id only
     return await resumeGovernance(taskId, { adapters, bridgeOverride: governanceBridge, tasksDir });
@@ -1208,6 +1247,7 @@ function loadTaskFile(path) {
     author_model: def.author_model,
     author_effort: def.author_effort,
     researcher_executor: def.researcher_executor ?? null,
+    trusted_import: def.trusted_import ?? null,
   };
   if (!task.goal || !task.acceptance || !task.fixture_dir) {
     throw new Error('task file must define goal, acceptance, fixture_dir');
@@ -1215,6 +1255,7 @@ function loadTaskFile(path) {
   if (task.task_mode === 'governed_write' && !task.candidate?.target) {
     throw new Error('governed_write tasks must define candidate.target');
   }
+  if (task.trusted_import?.enabled === true) assertTrustedImportAdmission(task);
   // Bind the acceptance trust anchor to the validated definition, so a later
   // edit of tasks/<id>.json is detected before the command is executed.
   task.acceptance_binding = acceptanceBinding(task);
