@@ -39,6 +39,20 @@ function tmpDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
+async function waitForChildClose(child, timeoutMs) {
+  let timeoutHandle;
+  try {
+    return await Promise.race([
+      new Promise((resolve) => child.once('close', (code) => resolve({ code, timedOut: false }))),
+      new Promise((resolve) => {
+        timeoutHandle = setTimeout(() => resolve({ code: null, timedOut: true }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
 /**
  * Run `fn` with temporary env overrides, restoring everything afterwards.
  *
@@ -172,10 +186,7 @@ test('ES-4: end to end, the sandboxed executor sees its own credential and not a
       let out = '';
       child.stdout.on('data', (d) => { out += d; });
       child.stderr.on('data', (d) => { out += d; });
-      await Promise.race([
-        new Promise((resolve) => child.once('close', resolve)),
-        new Promise((resolve) => setTimeout(resolve, 60_000)),
-      ]);
+      await waitForChildClose(child, 60_000);
       signalTree(child, 'SIGKILL');
       // Killing the `docker run` client does NOT stop its container (a measured
       // fact this project's orphan reaper exists for), so the test must clean up
@@ -278,10 +289,7 @@ test('ES-7: a REAL installed agent CLI runs inside the sandbox', { skip: skipRea
       let out = '';
       child.stdout.on('data', (d) => { out += d; });
       child.stderr.on('data', (d) => { out += d; });
-      await Promise.race([
-        new Promise((resolve) => child.once('close', resolve)),
-        new Promise((resolve) => setTimeout(resolve, 120_000)),
-      ]);
+      await waitForChildClose(child, 120_000);
       signalTree(child, 'SIGKILL');
       sandboxCleanup(decision.plan.containerName);
 
@@ -352,10 +360,8 @@ test('ES-8: a second real CLI with different packaging runs in the sandbox', { s
         let out = '';
         child.stdout.on('data', (d) => { out += d; });
         child.stderr.on('data', (d) => { out += d; });
-        const code = await Promise.race([
-          new Promise((resolve) => child.once('close', resolve)),
-          new Promise((resolve) => setTimeout(() => resolve('timeout'), 120_000)),
-        ]);
+        const result = await waitForChildClose(child, 120_000);
+        const code = result.timedOut ? 'timeout' : result.code;
         signalTree(child, 'SIGKILL');
         sandboxCleanup(decision.plan.containerName);
 

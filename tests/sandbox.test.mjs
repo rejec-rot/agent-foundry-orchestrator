@@ -58,10 +58,14 @@ async function runPlan(plan, timeoutMs = 60_000) {
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
   child.stderr.on('data', (d) => { out += d; });
+  let timeoutHandle;
   const result = await Promise.race([
     new Promise((resolve) => child.once('close', (code) => resolve({ code, timedOut: false }))),
-    new Promise((resolve) => setTimeout(() => resolve({ code: null, timedOut: true }), timeoutMs)),
+    new Promise((resolve) => {
+      timeoutHandle = setTimeout(() => resolve({ code: null, timedOut: true }), timeoutMs);
+    }),
   ]);
+  clearTimeout(timeoutHandle);
   if (result.timedOut) signalTree(child, 'SIGKILL');
   return { ...result, out };
 }
