@@ -25,6 +25,7 @@
 //   OR-10 a SIGTERM-ignoring orphan is escalated to SIGKILL and confirmed gone
 //   OR-11 a process that survives even SIGKILL keeps its handle (not lost)
 //   OR-12 a durable writer cgroup is reaped before the handle is removed
+//   OR-13 dry-run never invokes a durable writer scope reaper
 
 import { test } from 'node:test';
 import assert from 'node:assert';
@@ -341,6 +342,43 @@ test('OR-12: a durable writer scope is reaped before an orphan handle is removed
     assert.ok(!existsSync(join(runsDir, 'RUN-OR12.json')));
   } finally {
     signalTree(child, 'SIGKILL');
+    rmSync(runsDir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------------------------ OR-13
+test('OR-13: dry-run does not invoke the durable writer scope reaper', { skip: IS_LINUX ? false : 'requires /proc' }, async () => {
+  const runsDir = tmpDir('af-or13-');
+  let scopeCalls = 0;
+  try {
+    writeHandle(runsDir, 'RUN-OR13', {
+      task_id: 'TASK-OR13',
+      pid: DEAD_PID,
+      pgid: DEAD_PID,
+      owner_pid: DEAD_PID,
+      adapter_type: 'codex',
+      writer_scope: {
+        kind: 'cgroup',
+        path: `/sys/fs/cgroup/af-writer-${DEAD_PID}-dry-run`,
+        attached: true,
+        verified: true,
+        owner_pid: DEAD_PID,
+      },
+    });
+
+    const result = await reapOrphanRuns({
+      runsDir,
+      apply: false,
+      scopeReap: async () => {
+        scopeCalls += 1;
+        return { scope_verified: true, scope_empty: true };
+      },
+    });
+
+    assert.strictEqual(scopeCalls, 0, 'dry-run must not call scopeReap, including for stale handles');
+    assert.ok(result.staleHandles.includes('RUN-OR13.json'));
+    assert.ok(existsSync(join(runsDir, 'RUN-OR13.json')), 'dry-run must keep the durable handle');
+  } finally {
     rmSync(runsDir, { recursive: true, force: true });
   }
 });

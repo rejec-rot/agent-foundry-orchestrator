@@ -45,9 +45,9 @@ unavailable; a real V2 executor must be deployed with `AF_CGROUP_BASE` pointing
 to a delegated cgroup subtree or with `AF_SANDBOX_EXECUTORS=on` and a configured
 executor image.
 
-The repository-wide run reached 358 tests with 355 passes. The additional
-durable-scope orphan regression was run separately and passed 12/12. Three existing
-long-running suites (`runtime-guard-policy.test.mjs`,
-`sandbox-executor.test.mjs`, and `sandbox.test.mjs`) remained pending on this
-host and were stopped by the bounded run; they were not used as V2 acceptance
-evidence.
+The additional durable-scope orphan regression now passes 13/13, and the
+writer-termination handle regression also passes. A repository-wide run
+reached 359 discovered tests with 358 passes; it was intentionally interrupted
+while `runtime-guard-policy.test.mjs` was running its GP-4 recovery probe,
+which launches the real Codex CLI and did not finish on this host. The
+interruption was outside the V2-focused acceptance evidence.
