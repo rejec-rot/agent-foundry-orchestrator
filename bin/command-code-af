@@ -32,8 +32,8 @@ if [ -z "$CC_BIN" ] || [ ! -x "$CC_BIN" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-GOV_DIR="${AF_GLOBAL_DIR:-$(cd "$SCRIPT_DIR/../../agent-foundry-global" 2>/dev/null && pwd || true)}"
-CANONICAL="${AF_CANONICAL_AGENTS_MD:-${GOV_DIR:+$GOV_DIR/AGENTS.md}}"
+GOV_DIR="${AF_GLOBAL_DIR-$(cd "$SCRIPT_DIR/../../agent-foundry-global" 2>/dev/null && pwd || true)}"
+CANONICAL="${AF_CANONICAL_AGENTS_MD-${GOV_DIR:+$GOV_DIR/AGENTS.md}}"
 
 if [ -z "$CANONICAL" ] || [ ! -r "$CANONICAL" ]; then
     echo "command-code-af: canonical governance not readable: ${CANONICAL:-<unresolved>}" >&2

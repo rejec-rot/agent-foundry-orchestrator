@@ -234,6 +234,29 @@ test('ES-6: a workspace that IS the tmpfs path does not produce a duplicate moun
   });
 });
 
+// ------------------------------------------------------------------ ES-6b
+test('ES-6b: executor mounts can expose one read-only file at a temporary target', () => {
+  const work = tmpDir('af-es6b-');
+  try {
+    const source = join(work, 'auth.json');
+    const target = '/var/tmp/auth.json';
+    withEnv({
+      AF_SANDBOX_EXECUTORS: 'on',
+      AF_SANDBOX_EXECUTOR_IMAGE: IMAGE,
+      AF_SANDBOX_EXECUTOR_MOUNTS: `${source}=>${target}`,
+    }, () => {
+      const decision = planExecutorSandbox({
+        command: 'sh', args: ['-c', 'test -r /var/tmp/auth.json'], cwd: work, executorType: 'codex', env: {},
+      });
+      if (!decision.allowed) return;
+      assert.ok(decision.plan.args.includes(`${source}:${target}:ro`), 'the source file must bind at the requested container target');
+      assert.deepStrictEqual(decision.plan.applied.readOnlyMounts, [`${source}=>${target}`]);
+    });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
 // ------------------------------------------------------------------ ES-7
 test('ES-7: a REAL installed agent CLI runs inside the sandbox', { skip: skipRealCli || (skipNoDocker ? skipNoDocker : false) }, async () => {
   // Resolve the real CLI on this host. Skip cleanly when it is not installed: a
