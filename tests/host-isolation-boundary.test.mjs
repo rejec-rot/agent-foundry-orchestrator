@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -19,13 +20,14 @@ import {
   readdirSync,
   rmSync,
   symlinkSync,
+  watch,
   writeFileSync,
   unlinkSync,
   statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
 import {
   isExternalIsolationVerified,
@@ -1802,6 +1804,140 @@ test('HIB-38: CLI 成功恢复写入 intent 与 result 审计并退出 0', () =>
     assert.match(record.justification, /HIB-38 CLI happy path/);
     assert.ok(record.intent_file && existsSync(record.intent_file), 'the result record must point at its intent record');
   } finally {
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(auditDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-39: RESULT 写入失败的故障注入: 审计不完整不得算成功, 但恢复状态必须如实上报', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib39-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  mkdirSync(join(canonicalDir, 'src'), { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'src', 'value.mjs'), "export const value = 'v1';\n");
+  writeFileSync(join(canonicalDir, 'README.md'), 'readme\n');
+  chmodSync(join(canonicalDir, 'src', 'value.mjs'), 0o600); // a private file must survive the round trip
+
+  const auditDir = mkdtempSync(join(tmpdir(), 'af-hib39-audit-'));
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib39-scopes-'));
+  const cli = join(process.cwd(), 'af-admin.mjs');
+
+  const metadataMapOf = (dir) => {
+    const out = {};
+    const walk = (current, rel) => {
+      const st = lstatSync(current);
+      out[rel] = `${st.uid}:${st.gid}:${(st.mode & 0o7777).toString(8)}`;
+      if (st.isDirectory()) {
+        for (const name of readdirSync(current).sort()) walk(join(current, name), rel === '' ? name : `${rel}/${name}`);
+      }
+    };
+    walk(dir, '');
+    return out;
+  };
+
+  let child = null;
+  let watcher = null;
+  try {
+    const before = metadataMapOf(canonicalDir); // captured BEFORE protection, as the original state
+    engageTaskHostBoundary({ canonicalDir, casDir });
+    assert.strictEqual(statSync(canonicalDir).uid, 0, 'the fixture must start protected');
+
+    child = spawn(process.execPath, [
+      cli, 'boundary', 'recover',
+      '--canonical', canonicalDir,
+      '--cas', casDir,
+      '--reason', 'HIB-39 fault injection: make the RESULT audit write fail',
+    ], {
+      env: { ...process.env, AF_BOUNDARY_AUDIT_DIR: auditDir, AF_CGROUP_BASE: emptyScopeBase },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+
+    // Event-driven injection: as soon as the INTENT record appears, wait until it is
+    // COMPLETE (parses as phase:"intent"), prove no RESULT exists yet, then make the
+    // audit directory unwritable so only the later RESULT write can fail.
+    let observedIntent = null;
+    let resultFilesAtInjection = null;
+    let injected = false;
+    let injectResolve;
+    let injectReject;
+    const injected$ = new Promise((resolve, reject) => { injectResolve = resolve; injectReject = reject; });
+
+    watcher = watch(auditDir, (eventType, filename) => {
+      if (injected || !filename) return;
+      const name = String(filename);
+      if (!name.endsWith('-intent.json')) return;
+      injected = true;
+      (async () => {
+        const intentPath = join(auditDir, name);
+        const deadline = Date.now() + 5000;
+        let record = null;
+        while (Date.now() < deadline) {
+          try {
+            const parsed = JSON.parse(readFileSync(intentPath, 'utf8'));
+            if (parsed?.phase === 'intent') { record = parsed; break; }
+          } catch { /* not fully written yet */ }
+          await new Promise((resolve) => { setTimeout(resolve, 2); });
+        }
+        if (!record) throw new Error('the INTENT record never became complete');
+        resultFilesAtInjection = readdirSync(auditDir).filter((f) => f.endsWith('-result.json'));
+        chmodSync(auditDir, 0o500); // owner loses write permission: RESULT can no longer be created
+        observedIntent = record;
+        injectResolve(record);
+      })().catch((err) => injectReject(err));
+    });
+
+    const exitCode = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* best effort */ }
+        resolve('timeout');
+      }, 120000);
+      child.on('exit', (code) => { clearTimeout(timer); resolve(code); });
+    });
+
+    const timeout = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('the fault injection never fired')), 5000).unref?.();
+    });
+    await Promise.race([injected$, timeout]);
+
+    assert.ok(observedIntent, 'the INTENT record must be observed and injected upon');
+    assert.deepStrictEqual(resultFilesAtInjection, [], 'injection must happen before RESULT is written');
+    assert.notStrictEqual(exitCode, 0, 'an unaudited recovery result must never exit 0');
+
+    // 1. not delivered, 2. names the incomplete audit, 3. exit code non-zero (asserted above),
+    // 4. the ACTUAL boundary state is still reported truthfully - the release really happened.
+    assert.match(stdout, /delivered\s*:\s*false/, 'the CLI must not report delivery');
+    assert.match(stdout, /BOUNDARY_AUDIT_INCOMPLETE/, 'the CLI must name the incomplete audit');
+    assert.match(stdout, /boundary recovery:\s*DISENGAGED/, 'the real recovery outcome must be reported, not hidden');
+    assert.match(stdout, /recovered\s*:\s*true/, 'the release did happen and must be reported as such');
+    assert.doesNotMatch(stdout, /PROTECTION_RETAINED/, 'a successful release must not be misreported as retained protection');
+    assert.strictEqual(statSync(canonicalDir).uid, process.getuid(), 'the release must actually have happened');
+    assert.deepStrictEqual(metadataMapOf(canonicalDir), before, 'ownership/group/mode must be restored entry by entry');
+
+    // INTENT kept, RESULT absent.
+    const files = readdirSync(auditDir);
+    const intents = files.filter((f) => f.endsWith('-intent.json'));
+    assert.strictEqual(intents.length, 1, 'the INTENT record must survive');
+    assert.strictEqual(files.filter((f) => f.endsWith('-result.json')).length, 0, 'the RESULT write must have failed');
+
+    if (process.env.AF_HIB39_ARTIFACT_DIR) {
+      mkdirSync(process.env.AF_HIB39_ARTIFACT_DIR, { recursive: true });
+      copyFileSync(join(auditDir, intents[0]), join(process.env.AF_HIB39_ARTIFACT_DIR, intents[0]));
+      writeFileSync(join(process.env.AF_HIB39_ARTIFACT_DIR, 'cli-output.txt'), `exit_code=${exitCode}\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`);
+      writeFileSync(join(process.env.AF_HIB39_ARTIFACT_DIR, 'result-files-at-injection.json'), `${JSON.stringify(resultFilesAtInjection)}\n`);
+    }
+  } finally {
+    try { watcher?.close(); } catch { /* best effort */ }
+    if (child && child.exitCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* best effort */ }
+    }
+    try { chmodSync(auditDir, 0o700); } catch { /* best effort */ }
     disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
     rmSync(emptyScopeBase, { recursive: true, force: true });
     rmSync(auditDir, { recursive: true, force: true });
