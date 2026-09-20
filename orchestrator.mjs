@@ -206,11 +206,12 @@ function capsuleForReview(task, revision, { cwd = task.fixture_dir } = {}) {
 }
 
 function parseReviewerResult(executorType, structured) {
-  // agy: schema-constrained structured_output; claude: text inside the json
-  // envelope - JSON.parse it. Never string-matching on "PASS".
-  const raw = executorType === 'antigravity'
-    ? structured?.parsed
-    : extractJson(structured?.result ?? '');
+  // Schema-aware adapters (AGY and Cline) may return the parsed object in
+  // `parsed`; text-envelope adapters return the JSON inside `result`. Prefer
+  // the structured object whenever it is present, then fall back to bounded
+  // JSON extraction from text. Never string-match on "PASS".
+  const raw = structured?.parsed
+    ?? extractJson(structured?.result ?? '');
   if (!raw || !raw.decision) return { ok: false, review: null, raw: null };
   if (raw.decision !== 'PASS' && raw.decision !== 'NEEDS_FIX') return { ok: false, review: raw, raw };
   return {
@@ -1252,6 +1253,14 @@ function loadTaskFile(path) {
     step_executors: def.step_executors ?? null,
     author_model: def.author_model,
     author_effort: def.author_effort,
+    model: def.model,
+    effort: def.effort,
+    reviewer_model: def.reviewer_model,
+    reviewer_effort: def.reviewer_effort,
+    cline_model: def.cline_model,
+    cline_effort: def.cline_effort,
+    cline_fallback_model: def.cline_fallback_model,
+    cline_fallback_effort: def.cline_fallback_effort,
     researcher_executor: def.researcher_executor ?? null,
     trusted_import: def.trusted_import ?? null,
   };
