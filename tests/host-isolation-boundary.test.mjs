@@ -1268,7 +1268,8 @@ test('HIB-28: 恢复失配/操作失败时 disengage 报告 RESTORE_INCOMPLETE �
     );
     assert.ok(res.report.mismatch_sample.length > 0, 'a sample of mismatching entries must be exposed for recovery');
   } finally {
-    releasePathsBoundary([canonicalDir], undefined, undefined, { force: true });
+    // Best-effort cleanup: a forced release may itself report an unverifiable restore.
+    disengageTaskHostBoundary({ canonicalDir, force: true });
     if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
     rmSync(emptyScopeBase, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
@@ -1386,6 +1387,100 @@ test('HIB-29: 生命周期把无法验证的恢复记录为 RESTORE_INCOMPLETE (
     disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
     if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
     rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-30: 恢复已修改部分条目后容器失败 → RESTORE_INCOMPLETE (不得称已解锁或保护完整)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib30-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  mkdirSync(join(canonicalDir, 'src'), { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'src', 'value.mjs'), "export const value = 'v1';\n");
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib30-scopes-'));
+  process.env.AF_CGROUP_BASE = emptyScopeBase;
+
+  try {
+    engageTaskHostBoundary({ canonicalDir, casDir });
+    assert.strictEqual(statSync(canonicalDir).uid, 0);
+    assert.strictEqual(process.env.AF_HOST_BOUNDARY_ACTIVE, '1');
+
+    // An unusable snapshot entry makes the restore script fail AFTER it has already
+    // applied `chown -R` to the tree, so the container now exits non-zero mid-restore.
+    const snapshot = loadPathSnapshot(canonicalDir);
+    const parsed = JSON.parse(readFileSync(snapshot.file, 'utf8'));
+    parsed.entries.find((e) => e.rel === 'src/value.mjs').mode = '99';
+    writeFileSync(snapshot.file, JSON.stringify(parsed));
+
+    let thrown = null;
+    try {
+      releasePathsBoundary([canonicalDir]);
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown, 'a container failure during restore must throw');
+    assert.strictEqual(thrown.code, 'BOUNDARY_RELEASE_FAILED');
+    assert.strictEqual(thrown.releaseAttempted, true, 'the release must be flagged as attempted');
+    assert.strictEqual(thrown.protectionIntact, false, 'partial modification must never be reported as intact');
+    assert.ok(thrown.report.mismatches.length > 0, 'the failure report must carry the mismatch detail');
+    assert.strictEqual(statSync(canonicalDir).uid, process.getuid(), 'at least one entry was already released before the failure');
+
+    const res = disengageTaskHostBoundary({ canonicalDir, casDir });
+    assert.strictEqual(res.disengaged, false, 'a partial release must not report a clean unlock');
+    assert.strictEqual(res.outcome, 'RESTORE_INCOMPLETE', 'a mid-restore failure must not claim protection is intact');
+    assert.match(res.reason, /BOUNDARY_RESTORE_INCOMPLETE/);
+    assert.match(res.reason, /BOUNDARY_RELEASE_FAILED/);
+    assert.strictEqual(process.env.AF_HOST_BOUNDARY_ACTIVE, undefined, 'boundary flags must not survive a partial release');
+    assert.strictEqual(process.env.AF_PROTECTED_PATHS, undefined);
+  } finally {
+    // Best-effort cleanup: a forced release may itself report an unverifiable restore.
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-31: 容器在任何修改之前就失败 → 保护完整保留 (PROTECTION_RETAINED, 标志保留)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib31-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  mkdirSync(canonicalDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'main.js'), 'export const canonical = 1;');
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  const oldPath = process.env.PATH;
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib31-scopes-'));
+  const fakeBin = mkdtempSync(join(tmpdir(), 'af-hib31-bin-'));
+  process.env.AF_CGROUP_BASE = emptyScopeBase;
+
+  try {
+    engageTaskHostBoundary({ canonicalDir, casDir });
+    assert.strictEqual(statSync(canonicalDir).uid, 0);
+
+    // A docker that fails immediately: the restore container never runs, so nothing
+    // can have been modified and the boundary must be reported as fully intact.
+    writeFileSync(join(fakeBin, 'docker'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    process.env.PATH = fakeBin;
+
+    const res = disengageTaskHostBoundary({ canonicalDir, casDir });
+    assert.strictEqual(res.disengaged, false);
+    assert.strictEqual(res.outcome, 'PROTECTION_RETAINED', 'an untouched boundary must be reported as retained');
+    assert.match(res.reason, /BOUNDARY_RELEASE_FAILED/);
+    assert.strictEqual(statSync(canonicalDir).uid, 0, 'root protection must still be applied');
+    assert.strictEqual(statSync(casDir).uid, 0);
+    assert.strictEqual(process.env.AF_HOST_BOUNDARY_ACTIVE, '1', 'a still-applied boundary must keep advertising protection');
+    assert.ok(process.env.AF_PROTECTED_PATHS, 'protected paths must not be forgotten while protection holds');
+  } finally {
+    process.env.PATH = oldPath;
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(fakeBin, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
 });
