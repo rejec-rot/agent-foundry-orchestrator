@@ -47,7 +47,7 @@ import {
   BOUNDARY_SNAPSHOT_MISSING,
   WRITER_SCOPE_SCAN_UNKNOWN,
 } from '../lib/host-boundary.mjs';
-import { CodexAdapter } from '../lib/adapters.mjs';
+import { CodexAdapter, executorScratchDir } from '../lib/adapters.mjs';
 import { executorEnv } from '../lib/executor-env.mjs';
 import {
   createWriterScope,
@@ -1101,6 +1101,49 @@ test('HIB-24: 完整生命周期在作用域状态不可确认时保留保护 (�
     disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
     if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-25: 宿主 /tmp 被屏蔽时 executor scratch 目录仍对沙箱可见 (schema 交接)', () => {
+  if (!canUseRestrictedSandbox()) return;
+
+  const scratch = executorScratchDir(`HIB-25-${process.pid}`);
+  const schemaFile = join(scratch, 'response-schema.json');
+  writeFileSync(schemaFile, '{"type":"object"}');
+  const childOutput = join(scratch, 'child-output.txt');
+  const hostTmpCanary = join(tmpdir(), `af-hib25-canary-${Date.now()}.json`);
+  writeFileSync(hostTmpCanary, '{"secret":true}');
+
+  try {
+    // A real executor failure mode: agy receives --json-schema <host /tmp file> and
+    // aborts with "failed to read schema file" when /tmp is masked.
+    const launch = buildRestrictedSandboxArgs({
+      command: 'bash',
+      args: ['-c', `
+        # host-prepared input must be readable through the scratch bind
+        [ -r "${schemaFile}" ] || exit 1
+
+        # a bare host /tmp file must stay invisible (tmpfs masking still holds)
+        if [ -e "${hostTmpCanary}" ]; then exit 2; fi
+
+        # the executor must be able to write its own output into the scratch dir
+        echo ok > "${childOutput}" || exit 3
+
+        exit 0
+      `],
+      role: 'reviewer',
+      platform: 'antigravity',
+      allowedWritableDirs: [scratch],
+    });
+
+    const res = spawnSync(launch.command, launch.args, { encoding: 'utf8' });
+    assert.strictEqual(res.status, 0, `scratch hand-off probe failed (code ${res.status}): stderr=${res.stderr}`);
+    assert.strictEqual(readFileSync(childOutput, 'utf8').trim(), 'ok', 'sandbox must be able to write into the scratch dir');
+    assert.strictEqual(readFileSync(schemaFile, 'utf8'), '{"type":"object"}', 'host schema file must be reachable and unchanged');
+  } finally {
+    try { unlinkSync(hostTmpCanary); } catch { /* best effort */ }
+    try { unlinkSync(childOutput); } catch { /* best effort */ }
+    rmSync(scratch, { recursive: true, force: true });
   }
 });
 
