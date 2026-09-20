@@ -1,0 +1,106 @@
+#!/bin/bash
+# agy-af - Antigravity CLI adapter for Agent Foundry Global Governance
+#
+# Single Source of Truth: $AF_GLOBAL_DIR/AGENTS.md (agent-foundry-global)
+#
+# Responsibilities:
+#   1. resolve the agy binary (never a hardcoded author-machine path)
+#   2. verify canonical governance exists and is readable, else fail closed
+#   3. export adapter metadata env vars (GOVERNANCE_SHA256, GLOBAL_AGENTS)
+#   4. ensure --disable-slash-commands is included so print-mode does not stall
+#   5. mechanically verify external isolation before allowing --dangerously-skip-permissions
+#   6. pass through all original args; preserve exit code via exec
+
+set -u
+
+AGY_BIN="${AGY_BIN:-$(command -v agy 2>/dev/null || true)}"
+if [ -z "$AGY_BIN" ] || [ ! -x "$AGY_BIN" ]; then
+    for candidate in "$HOME/.local/bin/agy" /usr/local/bin/agy; do
+        if [ -x "$candidate" ]; then AGY_BIN="$candidate"; break; fi
+    done
+fi
+
+if [ -z "$AGY_BIN" ] || [ ! -x "$AGY_BIN" ]; then
+    echo "agy-af: agy binary not found or not executable: ${AGY_BIN:-<unresolved>}" >&2
+    exit 2
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+GOV_DIR="${AF_GLOBAL_DIR-$(cd "$SCRIPT_DIR/../../agent-foundry-global" 2>/dev/null && pwd || true)}"
+CANONICAL="${AF_CANONICAL_AGENTS_MD-${GOV_DIR:+$GOV_DIR/AGENTS.md}}"
+
+if [ -z "$CANONICAL" ] || [ ! -r "$CANONICAL" ]; then
+    echo "agy-af: canonical governance not readable: ${CANONICAL:-<unresolved>}" >&2
+    exit 2
+fi
+
+GOV_SHA=$(sha256sum "$CANONICAL" | cut -d' ' -f1)
+if [ -z "$GOV_SHA" ]; then
+    echo "agy-af: failed to compute governance sha256" >&2
+    exit 2
+fi
+
+export AGENT_FOUNDRY_GOVERNANCE_SHA256="$GOV_SHA"
+export AGENT_FOUNDRY_GLOBAL_AGENTS="$CANONICAL"
+
+# Ensure non-interactive options are present
+HAS_DISABLE_SLASH=false
+HAS_SKIP_PERMS=false
+for arg in "$@"; do
+    if [ "$arg" = "--disable-slash-commands" ]; then
+        HAS_DISABLE_SLASH=true
+    fi
+    if [ "$arg" = "--dangerously-skip-permissions" ]; then
+        HAS_SKIP_PERMS=true
+    fi
+done
+
+# Mechanical isolation probe: verify actual cgroup v2 presence & writability
+IS_ISOLATED=false
+if node -e '
+  import("'"$SCRIPT_DIR"'/../lib/host-boundary.mjs").then(m => {
+    const res = m.isExternalIsolationVerified({ requireProtectedPaths: false });
+    if (!res.verified) process.exit(1);
+    process.exit(0);
+  }).catch(() => process.exit(1));
+' 2>/dev/null; then
+  IS_ISOLATED=true
+fi
+
+# Reject explicit caller bypass if isolation is unverified
+if [ "$HAS_SKIP_PERMS" = true ]; then
+  if [ "$IS_ISOLATED" = false ]; then
+    echo "agy-af: refusing explicit --dangerously-skip-permissions: external isolation is unverified" >&2
+    exit 2
+  fi
+fi
+
+EXTRA_ARGS=()
+if [ "$HAS_DISABLE_SLASH" = false ]; then
+    EXTRA_ARGS+=(--disable-slash-commands)
+fi
+
+if [ "$HAS_SKIP_PERMS" = false ]; then
+    if [ "$IS_ISOLATED" = true ]; then
+        EXTRA_ARGS+=(--dangerously-skip-permissions)
+    elif [ "${AF_REQUIRE_ISOLATION:-0}" = "1" ]; then
+        echo "agy-af: refusing to append --dangerously-skip-permissions without verified external isolation (AF_REQUIRE_ISOLATION=1)" >&2
+        exit 2
+    fi
+fi
+
+# Add governance directory via --add-dir if directory exists and not already added
+if [ -n "$GOV_DIR" ] && [ -d "$GOV_DIR" ]; then
+    HAS_GOV_DIR=false
+    for arg in "$@"; do
+        if [ "$arg" = "$GOV_DIR" ]; then
+            HAS_GOV_DIR=true
+            break
+        fi
+    done
+    if [ "$HAS_GOV_DIR" = false ]; then
+        EXTRA_ARGS+=(--add-dir "$GOV_DIR")
+    fi
+fi
+
+exec "$AGY_BIN" "${EXTRA_ARGS[@]}" "$@"

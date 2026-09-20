@@ -210,8 +210,13 @@ function parseReviewerResult(executorType, structured) {
   // `parsed`; text-envelope adapters return the JSON inside `result`. Prefer
   // the structured object whenever it is present, then fall back to bounded
   // JSON extraction from text. Never string-match on "PASS".
-  const raw = structured?.parsed
-    ?? extractJson(structured?.result ?? '');
+  let raw = structured?.parsed;
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch { /* best effort */ }
+  }
+  if (!raw || !raw.decision) {
+    raw = extractJson(structured?.result ?? '');
+  }
   if (!raw || !raw.decision) return { ok: false, review: null, raw: null };
   if (raw.decision !== 'PASS' && raw.decision !== 'NEEDS_FIX') return { ok: false, review: raw, raw };
   return {
