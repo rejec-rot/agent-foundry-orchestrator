@@ -233,7 +233,8 @@ async function main() {
   } else if (mainCmd === 'boundary') {
     if (subCmd === 'recover') {
       // Controlled recovery of a boundary a failed lifecycle deliberately retained.
-      // Never guesses silently; every attempt (including refusals) is audited.
+      // Never guesses silently; every attempt (including a missing --reason) is
+      // audited, and an unaudited recovery is never reported as success.
       const canonicalDir = argValue('--canonical');
       const casDir = argValue('--cas') || null;
       const justification = argValue('--reason');
@@ -243,17 +244,15 @@ async function main() {
 
       if (!canonicalDir) {
         console.error('error: --canonical <dir> is required: af-admin boundary recover --canonical <dir> --reason "<reason>"');
-        process.exit(1);
-      }
-      if (!justification || !justification.trim()) {
-        console.error('error: --reason "<reason>" is required: recovering a retained boundary must be justified and is recorded');
-        process.exit(1);
+        process.exit(2);
       }
 
+      // A missing --reason is NOT a usage dead-end: it must still be recorded as a
+      // refused attempt (the audit trail has to show that someone tried).
       const res = recoverRetainedBoundary({
         canonicalDir,
         casDir,
-        justification: justification.trim(),
+        justification: justification ? justification.trim() : null,
         recoveredBy,
         acknowledgeLiveScopes,
         allowGuessedModes,
@@ -261,13 +260,18 @@ async function main() {
 
       console.log(`boundary recovery: ${res.outcome}`);
       console.log(`  recovered   : ${res.recovered}`);
+      console.log(`  delivered   : ${res.delivered}${res.delivered ? '' : ' (do NOT treat this as a completed recovery)'}`);
       console.log(`  reason      : ${res.reason ?? 'none'}`);
       console.log(`  scopes      : ${res.scopes ? `${res.scopes.status} (${res.scopes.active.length} active)` : 'not checked'}`);
       if (res.report) {
         console.log(`  restore     : ${res.report.entries_restored} restored, ${res.report.entries_skipped} missing, ${res.report.mismatches.length} mismatched, ${res.report.fallback.length} guessed`);
       }
-      console.log(`  audit record: ${res.audit_file ?? `NOT WRITTEN (${res.audit_error})`}`);
-      process.exit(res.outcome === 'DISENGAGED' ? 0 : 1);
+      console.log(`  audit intent: ${res.audit.intent_file ?? `NOT WRITTEN (${res.audit.error})`}`);
+      console.log(`  audit result: ${res.audit.result_file ?? (res.audit.intent_ok ? `NOT WRITTEN (${res.audit.error})` : 'not attempted')}`);
+      if (!res.delivered) {
+        console.error('error: boundary recovery did not complete cleanly; reconcile the boundary state manually before retrying');
+      }
+      process.exit(res.delivered ? 0 : 1);
     }
     console.error(`unknown boundary subcommand: ${subCmd} (expected: recover)`);
     printUsage();

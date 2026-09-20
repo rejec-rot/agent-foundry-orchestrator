@@ -1697,3 +1697,115 @@ test('HIB-35: 缺快照的受控恢复默认拒绝; 显式接受猜测时只能�
   }
 });
 
+test('HIB-36: CLI 缺 --reason 仍必须留下审计记录 (拒绝也留痕)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib36-'));
+  const auditDir = mkdtempSync(join(tmpdir(), 'af-hib36-audit-'));
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib36-scopes-'));
+  const cli = join(process.cwd(), 'af-admin.mjs');
+
+  try {
+    const res = spawnSync(process.execPath, [cli, 'boundary', 'recover', '--canonical', root], {
+      env: { ...process.env, AF_BOUNDARY_AUDIT_DIR: auditDir, AF_CGROUP_BASE: emptyScopeBase },
+      encoding: 'utf8',
+    });
+
+    assert.notStrictEqual(res.status, 0, 'a recovery without a reason must not exit 0');
+    const files = readdirSync(auditDir);
+    assert.ok(
+      files.some((f) => f.endsWith('-intent.json')),
+      'the attempt must be audited before anything else happens',
+    );
+    const resultFile = files.find((f) => f.endsWith('-result.json'));
+    assert.ok(resultFile, 'even a refused CLI attempt must leave a result record');
+    const record = JSON.parse(readFileSync(join(auditDir, resultFile), 'utf8'));
+    assert.strictEqual(record.outcome, 'REFUSED');
+    assert.match(record.reason, new RegExp(BOUNDARY_RECOVERY_JUSTIFICATION_REQUIRED));
+    assert.match(`${res.stdout}${res.stderr}`, /REFUSED/);
+    assert.match(`${res.stdout}${res.stderr}`, /delivered\s*:\s*false/);
+  } finally {
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(auditDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-37: 审计目录不可写时 CLI 拒绝恢复且不修改边界', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib37-'));
+  const canonicalDir = join(root, 'canonical');
+  mkdirSync(canonicalDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'main.js'), 'export const canonical = 1;\n');
+
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib37-scopes-'));
+  const cli = join(process.cwd(), 'af-admin.mjs');
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+
+  try {
+    protectPathsWithNonOwnerBoundary([canonicalDir]);
+    assert.strictEqual(statSync(canonicalDir).uid, 0, 'the fixture must start protected');
+
+    // /dev/null is a file, so an audit directory cannot be created beneath it.
+    const res = spawnSync(process.execPath, [cli, 'boundary', 'recover', '--canonical', canonicalDir, '--reason', 'HIB-37 unwritable audit dir'], {
+      env: { ...process.env, AF_BOUNDARY_AUDIT_DIR: '/dev/null/af-hib37-audit', AF_CGROUP_BASE: emptyScopeBase },
+      encoding: 'utf8',
+    });
+
+    assert.notStrictEqual(res.status, 0, 'an unauditable recovery must not exit 0');
+    assert.match(`${res.stdout}${res.stderr}`, /BOUNDARY_AUDIT_UNAVAILABLE/);
+    assert.strictEqual(statSync(canonicalDir).uid, 0, 'without an audit trail nothing may be released');
+    assert.throws(() => writeFileSync(join(canonicalDir, 'later.js'), 'x'), /(EACCES|EPERM)/, 'protection must still hold');
+  } finally {
+    process.env.AF_CGROUP_BASE = emptyScopeBase;
+    disengageTaskHostBoundary({ canonicalDir, force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-38: CLI 成功恢复写入 intent 与 result 审计并退出 0', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib38-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  mkdirSync(canonicalDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'main.js'), 'export const canonical = 1;\n');
+
+  const auditDir = mkdtempSync(join(tmpdir(), 'af-hib38-audit-'));
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib38-scopes-'));
+  const cli = join(process.cwd(), 'af-admin.mjs');
+
+  try {
+    engageTaskHostBoundary({ canonicalDir, casDir });
+    assert.strictEqual(statSync(canonicalDir).uid, 0);
+
+    const res = spawnSync(process.execPath, [
+      cli, 'boundary', 'recover',
+      '--canonical', canonicalDir,
+      '--cas', casDir,
+      '--reason', 'HIB-38 CLI happy path',
+    ], {
+      env: { ...process.env, AF_BOUNDARY_AUDIT_DIR: auditDir, AF_CGROUP_BASE: emptyScopeBase },
+      encoding: 'utf8',
+    });
+
+    assert.strictEqual(res.status, 0, `recovery failed: stdout=${res.stdout} stderr=${res.stderr}`);
+    assert.match(res.stdout, /delivered\s*:\s*true/);
+    assert.strictEqual(statSync(canonicalDir).uid, process.getuid(), 'ownership must be back with the host user');
+
+    const files = readdirSync(auditDir);
+    assert.strictEqual(files.filter((f) => f.endsWith('-intent.json')).length, 1, 'the intent must be recorded first');
+    const resultFiles = files.filter((f) => f.endsWith('-result.json'));
+    assert.strictEqual(resultFiles.length, 1, 'the outcome must be recorded as well');
+    const record = JSON.parse(readFileSync(join(auditDir, resultFiles[0]), 'utf8'));
+    assert.strictEqual(record.outcome, 'DISENGAGED');
+    assert.strictEqual(record.recovered, true);
+    assert.match(record.justification, /HIB-38 CLI happy path/);
+    assert.ok(record.intent_file && existsSync(record.intent_file), 'the result record must point at its intent record');
+  } finally {
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(auditDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
