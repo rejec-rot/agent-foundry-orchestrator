@@ -196,7 +196,9 @@ function capsuleForReview(task, revision, { cwd = task.fixture_dir } = {}) {
     response_schema: reviewSchema,
     model: task.reviewer_model || task.model,
     effort: task.reviewer_effort || task.effort || (task.reviewer_executor === 'cline' ? 'xhigh' : undefined),
-    timeout_ms: task.timeout_ms ?? 600000,
+    // The review leg gets its own bound: a review must be able to time out
+    // independently of a long author run (falls back to the task timeout).
+    timeout_ms: task.reviewer_timeout_ms ?? task.timeout_ms ?? 600000,
     protect_active_process: task.protect_active_process !== false,
     idle_timeout_ms: task.idle_timeout_ms ?? 900000,
     purpose: task.trusted_import?.enabled === true ? 'trusted_import' : undefined,

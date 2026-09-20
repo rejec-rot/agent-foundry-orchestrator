@@ -28,6 +28,7 @@ import {
 } from './lib/rollback.mjs';
 import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
 import { saveTaskWithVersion } from './lib/store.mjs';
+import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 
 const AF_ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const TASKS_DIR = process.env.AF_TASKS_DIR || join(AF_ROOT, 'tasks');
@@ -66,6 +67,7 @@ function printUsage() {
   af-admin tasks prune [--confirm] [--tasks-dir <path>]
   af-admin logs rotate [--days <N>] [--events-file <path>] [--archive-dir <path>]
   af-admin reclaim orphans [--confirm] [--runs-dir <path>]
+  af-admin boundary recover --canonical <dir> [--cas <dir>] --reason "<reason>" [--ack-live-scopes] [--allow-guessed-modes] [--recovered-by "<name>"]
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
   af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
   af-admin restore-point restore --task-id <id> --revision <n> [--confirm] [--prune] [--tasks-dir <path>]`);
@@ -228,6 +230,48 @@ async function main() {
       printUsage();
       process.exit(1);
     }
+  } else if (mainCmd === 'boundary') {
+    if (subCmd === 'recover') {
+      // Controlled recovery of a boundary a failed lifecycle deliberately retained.
+      // Never guesses silently; every attempt (including refusals) is audited.
+      const canonicalDir = argValue('--canonical');
+      const casDir = argValue('--cas') || null;
+      const justification = argValue('--reason');
+      const recoveredBy = argValue('--recovered-by') || process.env.USER || 'operator';
+      const acknowledgeLiveScopes = args.includes('--ack-live-scopes');
+      const allowGuessedModes = args.includes('--allow-guessed-modes');
+
+      if (!canonicalDir) {
+        console.error('error: --canonical <dir> is required: af-admin boundary recover --canonical <dir> --reason "<reason>"');
+        process.exit(1);
+      }
+      if (!justification || !justification.trim()) {
+        console.error('error: --reason "<reason>" is required: recovering a retained boundary must be justified and is recorded');
+        process.exit(1);
+      }
+
+      const res = recoverRetainedBoundary({
+        canonicalDir,
+        casDir,
+        justification: justification.trim(),
+        recoveredBy,
+        acknowledgeLiveScopes,
+        allowGuessedModes,
+      });
+
+      console.log(`boundary recovery: ${res.outcome}`);
+      console.log(`  recovered   : ${res.recovered}`);
+      console.log(`  reason      : ${res.reason ?? 'none'}`);
+      console.log(`  scopes      : ${res.scopes ? `${res.scopes.status} (${res.scopes.active.length} active)` : 'not checked'}`);
+      if (res.report) {
+        console.log(`  restore     : ${res.report.entries_restored} restored, ${res.report.entries_skipped} missing, ${res.report.mismatches.length} mismatched, ${res.report.fallback.length} guessed`);
+      }
+      console.log(`  audit record: ${res.audit_file ?? `NOT WRITTEN (${res.audit_error})`}`);
+      process.exit(res.outcome === 'DISENGAGED' ? 0 : 1);
+    }
+    console.error(`unknown boundary subcommand: ${subCmd} (expected: recover)`);
+    printUsage();
+    process.exit(1);
   } else if (mainCmd === 'reclaim') {
     if (subCmd === 'orphans') {
       // Debris from a HARD kill (SIGKILL): detached children survive and sandbox

@@ -44,7 +44,10 @@ import {
   inspectWriterScopes,
   capturePathSnapshot,
   loadPathSnapshot,
+  forgetPathSnapshot,
+  recoverRetainedBoundary,
   BOUNDARY_SNAPSHOT_MISSING,
+  BOUNDARY_RECOVERY_JUSTIFICATION_REQUIRED,
   WRITER_SCOPE_SCAN_UNKNOWN,
   MAX_WRITER_SCOPE_DEPTH,
 } from '../lib/host-boundary.mjs';
@@ -1537,6 +1540,159 @@ test('HIB-32: 完整性检查读取异常时不得判定保护完整 (EACCES →
     if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
     rmSync(emptyScopeBase, { recursive: true, force: true });
     rmSync(fakeBin, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-33: 受控恢复必须带理由; scope 不可确认时拒绝并保留保护', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib33-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  mkdirSync(canonicalDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'main.js'), 'export const canonical = 1;');
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib33-scopes-'));
+  const auditDir = mkdtempSync(join(tmpdir(), 'af-hib33-audit-'));
+  delete process.env.AF_CGROUP_BASE; // scope emptiness is UNKNOWABLE
+
+  try {
+    engageTaskHostBoundary({ canonicalDir, casDir });
+    assert.strictEqual(statSync(canonicalDir).uid, 0);
+
+    // 1. No justification -> REFUSED, nothing touched, the attempt is still audited.
+    const noReason = recoverRetainedBoundary({ canonicalDir, casDir, auditDir });
+    assert.strictEqual(noReason.outcome, 'REFUSED');
+    assert.strictEqual(noReason.recovered, false);
+    assert.match(noReason.reason, new RegExp(BOUNDARY_RECOVERY_JUSTIFICATION_REQUIRED));
+    assert.ok(noReason.audit_file && existsSync(noReason.audit_file), 'even a refused recovery attempt must be audited');
+    assert.strictEqual(statSync(canonicalDir).uid, 0, 'a refused recovery must not release anything');
+
+    // 2. Justified, but scope emptiness cannot be confirmed -> still refused.
+    const unknownScopes = recoverRetainedBoundary({ canonicalDir, casDir, justification: 'operator verified the host manually', auditDir });
+    assert.strictEqual(unknownScopes.outcome, 'PROTECTION_RETAINED');
+    assert.match(unknownScopes.reason, /CANNOT_RECOVER_BOUNDARY/);
+    assert.strictEqual(statSync(canonicalDir).uid, 0);
+    assert.strictEqual(process.env.AF_HOST_BOUNDARY_ACTIVE, '1', 'a refused recovery must not drop the protection flag');
+
+    // 3. With scopes confirmably empty the recovery restores the tree exactly.
+    process.env.AF_CGROUP_BASE = emptyScopeBase;
+    const recovered = recoverRetainedBoundary({ canonicalDir, casDir, justification: 'operator verified the host manually', auditDir });
+    assert.strictEqual(recovered.outcome, 'DISENGAGED');
+    assert.strictEqual(recovered.recovered, true);
+    assert.strictEqual(recovered.report.mismatches.length, 0);
+    assert.strictEqual(statSync(canonicalDir).uid, process.getuid());
+    assert.strictEqual(process.env.AF_HOST_BOUNDARY_ACTIVE, undefined);
+
+    const audit = JSON.parse(readFileSync(recovered.audit_file, 'utf8'));
+    assert.match(audit.justification, /operator verified the host manually/);
+    assert.strictEqual(audit.outcome, 'DISENGAGED');
+    assert.strictEqual(audit.recovered_by, process.env.USER || 'operator');
+  } finally {
+    process.env.AF_CGROUP_BASE = emptyScopeBase;
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(auditDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-34: 活跃 writer scope 下受控恢复默认拒绝, 显式确认后才释放', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib34-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  mkdirSync(canonicalDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'main.js'), 'export const canonical = 1;');
+
+  const liveScopeBase = mkdtempSync(join(tmpdir(), 'af-hib34-scopes-'));
+  const scope = join(liveScopeBase, 'af-writer-live');
+  mkdirSync(scope, { recursive: true });
+  writeFileSync(join(scope, 'cgroup.procs'), `${process.pid}\n`); // a genuinely live pid
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  process.env.AF_CGROUP_BASE = liveScopeBase;
+  const auditDir = mkdtempSync(join(tmpdir(), 'af-hib34-audit-'));
+
+  try {
+    engageTaskHostBoundary({ canonicalDir, casDir });
+    assert.strictEqual(inspectWriterScopes(liveScopeBase).status, 'active');
+
+    const refused = recoverRetainedBoundary({ canonicalDir, casDir, justification: 'pid verified unrelated', auditDir });
+    assert.strictEqual(refused.outcome, 'PROTECTION_RETAINED', 'live writer scopes must block recovery by default');
+    assert.match(refused.reason, /active writer scopes remain/);
+    assert.strictEqual(statSync(canonicalDir).uid, 0);
+
+    const acknowledged = recoverRetainedBoundary({
+      canonicalDir,
+      casDir,
+      justification: 'pid verified unrelated',
+      acknowledgeLiveScopes: true,
+      auditDir,
+    });
+    assert.strictEqual(acknowledged.outcome, 'DISENGAGED');
+    assert.strictEqual(statSync(canonicalDir).uid, process.getuid());
+    const audit = JSON.parse(readFileSync(acknowledged.audit_file, 'utf8'));
+    assert.strictEqual(audit.acknowledge_live_scopes, true);
+    assert.strictEqual(audit.scopes.status, 'active', 'the acknowledgement and the observed scope state must both be recorded');
+  } finally {
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(liveScopeBase, { recursive: true, force: true });
+    rmSync(auditDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-35: 缺快照的受控恢复默认拒绝; 显式接受猜测时只能报 RESTORE_INCOMPLETE', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib35-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  mkdirSync(canonicalDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'main.js'), 'export const canonical = 1;');
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib35-scopes-'));
+  const auditDir = mkdtempSync(join(tmpdir(), 'af-hib35-audit-'));
+  process.env.AF_CGROUP_BASE = emptyScopeBase;
+
+  try {
+    engageTaskHostBoundary({ canonicalDir, casDir });
+    // Simulate a lost snapshot: exact restoration is no longer possible.
+    forgetPathSnapshot(canonicalDir);
+    forgetPathSnapshot(casDir);
+    assert.strictEqual(loadPathSnapshot(canonicalDir), null);
+
+    const refused = recoverRetainedBoundary({ canonicalDir, casDir, justification: 'disk lost the snapshot', auditDir });
+    assert.strictEqual(refused.outcome, 'PROTECTION_RETAINED', 'a missing snapshot must block recovery by default');
+    assert.match(refused.reason, /no pre-protection snapshot/);
+    assert.strictEqual(statSync(canonicalDir).uid, 0, 'nothing may be released without an exact restore plan');
+    assert.strictEqual(process.env.AF_HOST_BOUNDARY_ACTIVE, '1');
+
+    const guessed = recoverRetainedBoundary({
+      canonicalDir,
+      casDir,
+      justification: 'disk lost the snapshot',
+      allowGuessedModes: true,
+      auditDir,
+    });
+    assert.strictEqual(guessed.outcome, 'RESTORE_INCOMPLETE', 'an explicitly authorized guess is still not a verified unlock');
+    assert.strictEqual(guessed.recovered, false);
+    assert.deepStrictEqual(guessed.report.fallback, [canonicalDir, casDir]);
+    assert.strictEqual(statSync(canonicalDir).uid, process.getuid(), 'ownership is released even though unverified');
+    assert.strictEqual(process.env.AF_HOST_BOUNDARY_ACTIVE, undefined);
+
+    const audit = JSON.parse(readFileSync(guessed.audit_file, 'utf8'));
+    assert.strictEqual(audit.allow_guessed_modes, true);
+    assert.strictEqual(audit.outcome, 'RESTORE_INCOMPLETE');
+  } finally {
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(auditDir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
 });
