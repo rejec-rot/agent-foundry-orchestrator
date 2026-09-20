@@ -46,6 +46,7 @@ import {
   loadPathSnapshot,
   BOUNDARY_SNAPSHOT_MISSING,
   WRITER_SCOPE_SCAN_UNKNOWN,
+  MAX_WRITER_SCOPE_DEPTH,
 } from '../lib/host-boundary.mjs';
 import { CodexAdapter, executorScratchDir } from '../lib/adapters.mjs';
 import { executorEnv } from '../lib/executor-env.mjs';
@@ -1144,6 +1145,248 @@ test('HIB-25: 宿主 /tmp 被屏蔽时 executor scratch 目录仍对沙箱可见
     try { unlinkSync(hostTmpCanary); } catch { /* best effort */ }
     try { unlinkSync(childOutput); } catch { /* best effort */ }
     rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('HIB-26: scope 根目录下的任意后代都被扫描, 扫描截断必须返回未知', () => {
+  const base = mkdtempSync(join(tmpdir(), 'af-hib26-scopes-'));
+  const deepBase = mkdtempSync(join(tmpdir(), 'af-hib26-deep-'));
+  try {
+    const scope = join(base, 'af-writer-outer');
+    mkdirSync(scope, { recursive: true });
+    writeFileSync(join(scope, 'cgroup.procs'), '\n'); // scope root itself is idle
+
+    // A NON af-* child cgroup holding a live pid: the parent's cgroup.procs never lists it.
+    const worker = join(scope, 'worker');
+    mkdirSync(worker, { recursive: true });
+    writeFileSync(join(worker, 'cgroup.procs'), '5150\n');
+
+    // Every cgroup directory carries its own cgroup.procs, so the synthetic tree must too.
+    const pool = join(worker, 'pool');
+    mkdirSync(pool, { recursive: true });
+    writeFileSync(join(pool, 'cgroup.procs'), '\n');
+
+    const deep = join(pool, 'task-1');
+    mkdirSync(deep, { recursive: true });
+    writeFileSync(join(deep, 'cgroup.procs'), '5151\n');
+
+    const scan = inspectWriterScopes(base);
+    assert.strictEqual(scan.status, 'active', 'descendants of a scope root must be scanned');
+    assert.deepStrictEqual(
+      scan.scopes.map((s) => s.path).sort(),
+      [deep, worker].sort(),
+      'every descendant cgroup holding a live pid must be reported',
+    );
+    assert.deepStrictEqual(scan.scopes.find((s) => s.path === worker).pids, ['5150']);
+
+    // Unrelated sibling cgroups outside af-* roots are not walked.
+    const unrelated = join(base, 'not-a-scope');
+    mkdirSync(unrelated, { recursive: true });
+    writeFileSync(join(unrelated, 'cgroup.procs'), '9999\n');
+    const narrowed = inspectWriterScopes(base);
+    assert.strictEqual(narrowed.scopes.some((s) => s.path === unrelated), false, 'non af-* roots must not be walked');
+
+    // A truncated scan is `unknown`, never `empty`.
+    let cur = join(deepBase, 'af-writer-deep');
+    mkdirSync(cur, { recursive: true });
+    writeFileSync(join(cur, 'cgroup.procs'), '\n');
+    for (let i = 0; i < MAX_WRITER_SCOPE_DEPTH + 2; i += 1) {
+      cur = join(cur, `level-${i}`);
+      mkdirSync(cur);
+      writeFileSync(join(cur, 'cgroup.procs'), '\n');
+    }
+    const truncated = inspectWriterScopes(deepBase);
+    assert.strictEqual(truncated.status, 'unknown', 'a truncated scan must never be reported as empty');
+    assert.match(truncated.reason, /truncated at depth/);
+  } finally {
+    rmSync(deepBase, { recursive: true, force: true });
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('HIB-27: 猜模式恢复不得报告已解锁 (RESTORE_INCOMPLETE, 且不冒充保护完整)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib27-'));
+  const canonicalDir = join(root, 'canonical');
+  mkdirSync(canonicalDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'main.js'), 'export const canonical = 1;');
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib27-scopes-'));
+  process.env.AF_CGROUP_BASE = emptyScopeBase;
+
+  try {
+    // Protected without a snapshot: the release can only guess, so it is unverified.
+    protectPathsWithNonOwnerBoundary([canonicalDir], { captureSnapshot: false });
+    assert.strictEqual(statSync(canonicalDir).uid, 0);
+
+    const res = disengageTaskHostBoundary({ canonicalDir, casDir: null, force: true });
+    assert.strictEqual(res.disengaged, false, 'a guessed restore must not be reported as a clean unlock');
+    assert.strictEqual(res.outcome, 'RESTORE_INCOMPLETE');
+    assert.match(res.reason, /BOUNDARY_RESTORE_INCOMPLETE/);
+    assert.deepStrictEqual(res.report.fallback, [canonicalDir], 'the guessed path must be named in the report');
+
+    // Ownership went back to the host user, so the boundary must NOT be advertised as active.
+    assert.strictEqual(statSync(canonicalDir).uid, process.getuid(), 'guessed release returns host ownership');
+    assert.strictEqual(process.env.AF_HOST_BOUNDARY_ACTIVE, undefined, 'an unverifiable release must clear the boundary flag');
+  } finally {
+    releasePathsBoundary([canonicalDir], undefined, undefined, { force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-28: 恢复失配/操作失败时 disengage 报告 RESTORE_INCOMPLETE 而非 DISENGAGED', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib28-'));
+  const canonicalDir = join(root, 'canonical');
+  mkdirSync(canonicalDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'main.js'), 'export const canonical = 1;');
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib28-scopes-'));
+  process.env.AF_CGROUP_BASE = emptyScopeBase;
+
+  try {
+    protectPathsWithNonOwnerBoundary([canonicalDir]);
+    const snapshot = loadPathSnapshot(canonicalDir);
+    assert.ok(snapshot, 'a pre-protection snapshot must exist');
+
+    // Simulate an unusable snapshot entry: a mode the restore cannot apply.
+    const parsed = JSON.parse(readFileSync(snapshot.file, 'utf8'));
+    const entry = parsed.entries.find((e) => e.rel === 'main.js');
+    assert.ok(entry, 'snapshot must contain the protected file');
+    entry.mode = '99';
+    writeFileSync(snapshot.file, JSON.stringify(parsed));
+
+    const res = disengageTaskHostBoundary({ canonicalDir, casDir: null });
+    assert.strictEqual(res.disengaged, false, 'a failed/partial restore must never claim success');
+    assert.strictEqual(res.outcome, 'RESTORE_INCOMPLETE');
+    assert.match(res.reason, /BOUNDARY_RESTORE_INCOMPLETE/);
+    assert.ok(
+      res.report.mismatches.length + res.report.failures.length > 0,
+      'the report must carry the failure detail instead of reporting success',
+    );
+    assert.ok(res.report.mismatch_sample.length > 0, 'a sample of mismatching entries must be exposed for recovery');
+  } finally {
+    releasePathsBoundary([canonicalDir], undefined, undefined, { force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-29: 生命周期把无法验证的恢复记录为 RESTORE_INCOMPLETE (不冒充 DISENGAGED)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib29-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  const candidateDir = join(root, 'candidate');
+  mkdirSync(canonicalDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  mkdirSync(candidateDir, { recursive: true });
+
+  execFileSync('git', ['init', '-b', 'main'], { cwd: canonicalDir, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.name', 'Tester'], { cwd: canonicalDir, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.email', 'tester@test.local'], { cwd: canonicalDir, stdio: 'pipe' });
+  mkdirSync(join(canonicalDir, 'src'));
+  mkdirSync(join(canonicalDir, 'tests'));
+  writeFileSync(join(canonicalDir, 'src', 'value.mjs'), "export const value = 'v1';\n");
+  writeFileSync(
+    join(canonicalDir, 'tests', 'gate.test.mjs'),
+    `import assert from 'node:assert/strict';\nimport { value } from '../src/value.mjs';\nimport { test } from 'node:test';\ntest('gate', () => assert.equal(value, 'v2'));\n`,
+  );
+  execFileSync('git', ['add', '.'], { cwd: canonicalDir, stdio: 'pipe' });
+  execFileSync('git', ['commit', '-m', 'baseline'], { cwd: canonicalDir, stdio: 'pipe' });
+  const baseOid = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: canonicalDir, encoding: 'utf8' }).trim();
+  execFileSync('git', ['update-ref', 'refs/afr/canonical', baseOid], { cwd: canonicalDir });
+
+  const task = {
+    task_id: 'TASK-HIB-29-RESTORE-INCOMPLETE',
+    fixture_dir: canonicalDir,
+    state: 'CREATED',
+    host_isolation: true,
+    author_executor: 'codex',
+    reviewer_executor: 'claude',
+    acceptance_cmd: { command: 'node', args: ['--test', 'tests/gate.test.mjs'] },
+    acceptance_binding: null,
+    trusted_import: {
+      enabled: true,
+      candidate_dir: candidateDir,
+      cas_dir: casDir,
+      proposed_required: ['src/**'],
+      policy: {
+        allowed_root: ['src/**', 'tests/**'],
+        forbidden: [],
+        protected_paths: [],
+        projection: { exclude: [] },
+        import: { deny: [] },
+      },
+      acceptance: {
+        tier: 'TierA',
+        acceptance_profile_digest: 'digest-hib-29',
+        acceptance_assets_digest: 'assets-hib-29',
+        dependency_fixture_id: 'dep-hib-29',
+      },
+    },
+  };
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib29-scopes-'));
+  process.env.AF_CGROUP_BASE = emptyScopeBase;
+
+  try {
+    let corrupted = false;
+    const res = await runTrustedImportTask(task, {
+      runAuthor: async (rev, { cwd }) => {
+        writeFileSync(join(cwd, 'src', 'value.mjs'), "export const value = 'v2';\n");
+        return {
+          executor_run_id: 'RUN-AUTHOR-HIB29',
+          writer_termination: {
+            process_started: true,
+            process_group_alive: false,
+            termination_confirmed: true,
+            scope_verified: true,
+            scope_kind: 'cgroup',
+          },
+        };
+      },
+      runReview: async () => {
+        task.last_review_termination_evidence = {
+          process_started: true,
+          process_group_alive: false,
+          termination_confirmed: true,
+          scope_verified: true,
+          scope_kind: 'cgroup',
+        };
+        return { decision: 'PASS', summary: 'value is v2 and the gate passes' };
+      },
+      saveTask: (t) => {
+        Object.assign(task, t);
+        // The promotion step releases and re-protects the repo, which re-captures the
+        // snapshot. Corrupt it only once promotion is done, i.e. right before the
+        // lifecycle's final release, to simulate a snapshot that cannot be applied.
+        if (!corrupted && t?.trusted_import?.phase === 'PROMOTED') {
+          corrupted = true;
+          const snap = loadPathSnapshot(canonicalDir);
+          const parsed = JSON.parse(readFileSync(snap.file, 'utf8'));
+          parsed.entries.find((e) => e.rel === 'src/value.mjs').mode = '99';
+          writeFileSync(snap.file, JSON.stringify(parsed));
+        }
+      },
+    });
+    assert.strictEqual(corrupted, true, 'promotion must have completed for this scenario to be exercised');
+
+    assert.strictEqual(res.trusted_import.boundary_state, 'RESTORE_INCOMPLETE', 'an unverifiable restore must not be recorded as DISENGAGED');
+    assert.match(res.trusted_import.boundary_retained_reason, /BOUNDARY_RESTORE_INCOMPLETE/);
+    assert.ok(
+      res.trusted_import.boundary_restore.mismatch_count > 0 || res.trusted_import.boundary_restore.failures.length > 0,
+      'the task record must carry the restore failure evidence',
+    );
+    assert.strictEqual(statSync(canonicalDir).uid, process.getuid(), 'ownership is released even though the restore is unverified');
+  } finally {
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
