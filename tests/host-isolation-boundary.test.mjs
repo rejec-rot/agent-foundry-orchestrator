@@ -1485,3 +1485,59 @@ test('HIB-31: 容器在任何修改之前就失败 → 保护完整保留 (PROTE
   }
 });
 
+test('HIB-32: 完整性检查读取异常时不得判定保护完整 (EACCES → RESTORE_INCOMPLETE)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib32-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  const blockedDir = join(canonicalDir, 'blocked');
+  mkdirSync(blockedDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  writeFileSync(join(blockedDir, 'inner.js'), 'export const inner = 1;\n');
+  writeFileSync(join(canonicalDir, 'main.js'), 'export const canonical = 1;\n');
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  const oldPath = process.env.PATH;
+  const emptyScopeBase = mkdtempSync(join(tmpdir(), 'af-hib32-scopes-'));
+  const fakeBin = mkdtempSync(join(tmpdir(), 'af-hib32-bin-'));
+  process.env.AF_CGROUP_BASE = emptyScopeBase;
+
+  const runDocker = (args) => execFileSync('docker', ['run', '--rm', '-v', `${canonicalDir}:${canonicalDir}`, 'alpine:latest', ...args], { stdio: 'pipe' });
+
+  try {
+    engageTaskHostBoundary({ canonicalDir, casDir });
+    assert.strictEqual(statSync(canonicalDir).uid, 0);
+
+    // Root removes traverse permission from one subdirectory: the boundary itself is
+    // still fully applied, but uid 1000 can no longer inspect the entry inside it.
+    runDocker(['chmod', '000', blockedDir]);
+    assert.throws(
+      () => lstatSync(join(blockedDir, 'inner.js')),
+      (err) => err.code === 'EACCES',
+      'the test setup must make one snapshot entry unreadable',
+    );
+
+    // docker fails immediately, so nothing was modified ...
+    writeFileSync(join(fakeBin, 'docker'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    process.env.PATH = fakeBin;
+
+    // ... but an entry that cannot be read is not evidence of an intact boundary.
+    const res = disengageTaskHostBoundary({ canonicalDir, casDir });
+    assert.strictEqual(res.disengaged, false);
+    assert.strictEqual(res.outcome, 'RESTORE_INCOMPLETE', 'an unverifiable entry must never be reported as intact protection');
+    assert.match(res.reason, /BOUNDARY_RELEASE_FAILED/);
+    assert.match(res.reason, /cannot verify/i);
+    assert.match(res.reason, /EACCES/);
+    assert.strictEqual(process.env.AF_HOST_BOUNDARY_ACTIVE, undefined, 'unverifiable state must not keep advertising protection');
+  } finally {
+    process.env.PATH = oldPath;
+    try {
+      runDocker(['chmod', '755', blockedDir]);
+    } catch { /* best effort */ }
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(emptyScopeBase, { recursive: true, force: true });
+    rmSync(fakeBin, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
