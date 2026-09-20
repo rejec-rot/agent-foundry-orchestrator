@@ -93,6 +93,7 @@ const results = {
   s4_truncated: null,
   s5_clean: null,
   s6_rescan: null,
+  s7_live_writer: null,
 };
 
 const tally = (classes) => classes.reduce((acc, c) => { acc[c] = (acc[c] || 0) + 1; return acc; }, {});
@@ -258,6 +259,46 @@ try {
     acknowledge_live_scopes_used: false,
   };
 
+  // -------------------------------------------------------------------------
+  // S7: a LIVE writer must never be missed, even while other scopes are reaped
+  // -------------------------------------------------------------------------
+  // A bounded rescan is only safe if it can never turn a live writer into "empty".
+  // Here one scope holds this process's own pid and is never reaped, while a storm
+  // removes neighbouring scopes; every observation must be `active` or `unknown`.
+  const liveBase = mkdtempSync(join(tmpdir(), 'af-scope-live-'));
+  const liveDir = join(liveBase, 'af-writer-live');
+  mkdirSync(liveDir, { recursive: true });
+  writeFileSync(join(liveDir, 'cgroup.procs'), `${process.pid}\n`);
+  for (let i = 0; i < SCOPES; i += 1) {
+    const dir = join(liveBase, `af-writer-race-${i}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'cgroup.procs'), '\n');
+  }
+  const liveReaper = spawn(process.execPath, [fileURLToPath(import.meta.url), '--reaper', liveBase, '--scopes', String(SCOPES)], {
+    stdio: 'ignore',
+  });
+  const liveClasses = {};
+  let liveScans = 0;
+  let falseEmpty = 0;
+  let missedLive = 0;
+  while (liveReaper.exitCode === null && liveScans < MAX_SCANS) {
+    const obs = inspectWriterScopes(liveBase);
+    const c = classify(obs);
+    liveClasses[c.klass] = (liveClasses[c.klass] || 0) + 1;
+    liveScans += 1;
+    if (c.status === 'empty') falseEmpty += 1;
+    if (c.status === 'active' && !obs.scopes.some((s) => s.pids.includes(String(process.pid)))) missedLive += 1;
+  }
+  await new Promise((resolve) => { liveReaper.once('exit', resolve); });
+  results.s7_live_writer = {
+    scans: liveScans,
+    classes: liveClasses,
+    false_empty_while_live_scope_exists: falseEmpty,
+    active_without_the_live_pid: missedLive,
+    final_status: classify(inspectWriterScopes(liveBase)).status,
+  };
+  rmSync(liveBase, { recursive: true, force: true });
+
   results.finished_at = new Date().toISOString();
 
   // -------------------------------------------------------------------------
@@ -279,6 +320,11 @@ try {
   console.log(`  S3 unreadable scope dir     : ${JSON.stringify({ first: results.s3_unreadable.first, rescan: results.s3_unreadable.rescan, existsSync_swallows_error: results.s3_unreadable.existsSync_swallows_error })}`);
   console.log(`  S4 truncated scan           : ${JSON.stringify({ klass: results.s4_truncated.klass, retain: results.s4_truncated.retain })}`);
   console.log(`  S5 clean empty base         : ${JSON.stringify(results.s5_clean)}`);
+  console.log(`\nS7 live writer during a reap storm`);
+  console.log(`  scans=${results.s7_live_writer.scans} classes=${JSON.stringify(results.s7_live_writer.classes)}`);
+  console.log(`  false 'empty' while a live scope exists: ${results.s7_live_writer.false_empty_while_live_scope_exists}`);
+  console.log(`  'active' without the live pid          : ${results.s7_live_writer.active_without_the_live_pid}`);
+  console.log(`  final status                           : ${results.s7_live_writer.final_status}`);
   console.log(`\nDecision helpers: ${JSON.stringify(results.decision_helpers)}`);
 
   if (JSON_OUT) {
