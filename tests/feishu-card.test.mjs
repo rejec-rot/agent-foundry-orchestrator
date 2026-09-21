@@ -320,3 +320,88 @@ test('card: the alert payload feeds the card through the real alert record', asy
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('card retry: an unconfirmable 200 response is never counted as delivered', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-card-retry-receipt-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await mockServer({ status: 500, reply: '{"code":1,"msg":"down"}' });
+  // The retry target answers 200 but carries NO provider status code.
+  const unconfirmable = await mockServer({ status: 200, reply: '{"ok":true}' });
+  const alert = { canonical_dir: root, cas_dir: '/cas', task_id: 'T', alert_id: 'AF-RETRY-NOCODE', occurrences: 1, severity: 'warning', boundary_state: 'PROTECTION_RETAINED_PENDING_RETRY', reason: 'scope-anomaly' };
+  try {
+    await withEnv({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu-card',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+    }, async () => {
+      const first = await notifyBoundaryAlert({ event: 'boundary_retained', alert });
+      assert.equal(first.status, 'failed');
+    });
+    assert.equal(inspectPendingNotifications({ file }).pending.length, 1, 'the failed card must be queued');
+
+    await withEnv({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu-card',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: unconfirmable.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+    }, async () => {
+      const res = await flushPendingNotifications({ file, force: true });
+      assert.equal(res.attempted, 1);
+      assert.equal(res.delivered, 0, 'a 200 without a provider code must never be delivered for a card');
+      assert.equal(res.failed, 1);
+    });
+    assert.equal(unconfirmable.requests.length, 1, 'the retry did reach the provider');
+    const events = readNotifyEvents({ file });
+    assert.equal(events.some((e) => e.status === 'sent'), false, 'no success may be audited for the retry');
+    assert.equal(events.some((e) => /cannot be confirmed/.test(e.reason ?? '')), true, 'the unconfirmable receipt must be recorded');
+    const pending = inspectPendingNotifications({ file }).pending;
+    assert.equal(pending.length, 1, 'the entry stays retryable');
+    assert.equal(pending[0].state, 'pending');
+    assert.match(pending[0].last_error, /cannot be confirmed/);
+  } finally {
+    await failing.close();
+    await unconfirmable.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('card retry: an oversized retry settles its claim, sends nothing and does not throw', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-card-retry-size-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await mockServer({ status: 500, reply: '{"code":1,"msg":"down"}' });
+  const healthy = await mockServer({ reply: '{"code":0,"msg":"success"}' });
+  const alert = { canonical_dir: root, cas_dir: '/cas', task_id: 'T', alert_id: 'AF-RETRY-BIG', occurrences: 1, severity: 'warning', boundary_state: 'PROTECTION_RETAINED_PENDING_RETRY', reason: 'scope-anomaly' };
+  try {
+    await withEnv({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu-card',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+    }, async () => {
+      const first = await notifyBoundaryAlert({ event: 'boundary_retained', alert });
+      assert.equal(first.status, 'failed');
+    });
+
+    // The retry body (about 1.1 KB) is now above the configured limit.
+    await withEnv({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu-card',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: healthy.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+      AF_BOUNDARY_NOTIFY_MAX_BODY_BYTES: '300',
+    }, async () => {
+      const res = await flushPendingNotifications({ file, force: true });
+      assert.equal(res.attempted, 1, 'the attempt is accounted for');
+      assert.equal(res.delivered, 0);
+      assert.equal(res.failed, 1);
+    });
+    assert.equal(healthy.requests.length, 0, 'an oversized retry must make zero network requests');
+
+    const pending = inspectPendingNotifications({ file }).pending;
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].claimed_at, null, 'the claim must be settled, not left in flight');
+    assert.equal(pending[0].claim_token, null);
+    assert.match(pending[0].last_error, /exceeds the limit of 300/);
+    assert.equal(pending[0].attempts, 2, 'the failed retry is counted');
+    const events = readNotifyEvents({ file });
+    assert.equal(events.some((e) => e.status === 'oversized-request-body'), true, 'the refusal must be audited');
+    assert.equal(events.some((e) => e.status === 'sent'), false);
+  } finally {
+    await failing.close();
+    await healthy.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
