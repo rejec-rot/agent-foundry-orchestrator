@@ -34,11 +34,14 @@ import {
   assetLockDir,
   classifyHolder,
   countAssetLocks,
+  listAssetLocks,
+  pathsOverlap,
   resolveAssetLockSet,
   withAssetLockSet,
 } from '../lib/asset-lock.mjs';
 import {
   expectedProtectionMetadata,
+  latestProtectionEpochFor,
   readProtectionEpoch,
   verifyProtectionExpectation,
   verifyProtectionFor,
@@ -273,3 +276,172 @@ test('lock: engage refuses and protects nothing when the asset is already locked
     rmSync(asset.root, { recursive: true, force: true });
   }
 });
+
+test('lock: an ancestor and a descendant exclude each other', () => {
+  const asset = makeAsset();
+  const child = join(asset.canonical, 'child');
+  mkdirSync(child, { recursive: true });
+  const sibling = join(asset.root, 'canonical-evil');
+  mkdirSync(sibling, { recursive: true });
+  try {
+    // Path-aware, not a bare prefix: siblings must NOT overlap.
+    assert.equal(pathsOverlap(asset.canonical, child), true);
+    assert.equal(pathsOverlap(child, asset.canonical), true, 'containment works in both directions');
+    assert.equal(pathsOverlap(asset.canonical, asset.canonical), true);
+    assert.equal(pathsOverlap(asset.canonical, sibling), false, 'a name prefix is not containment');
+
+    // Holding the parent must block a contender for the child, and vice versa.
+    const outer = withAssetLockSet({ canonicalDir: asset.canonical, dir: asset.locks, phase: 'parent' }, () => {
+      const inner = withAssetLockSet({ canonicalDir: child, dir: asset.locks, phase: 'child-contender' }, () => 'should not run');
+      assert.equal(inner.ok, false, 'the child must not be lockable while the parent is held');
+      assert.match(inner.reason, /asset-overlap/);
+      return countAssetLocks(asset.locks);
+    });
+    assert.equal(outer.ok, true);
+    assert.equal(outer.value, 1);
+
+    // Reverse direction: hold the child, contend for the parent.
+    const reverse = withAssetLockSet({ canonicalDir: child, dir: asset.locks, phase: 'child' }, () => {
+      const contender = withAssetLockSet({ canonicalDir: asset.canonical, dir: asset.locks, phase: 'parent-contender' }, () => 'should not run');
+      assert.equal(contender.ok, false);
+      assert.match(contender.reason, /asset-overlap/);
+      return true;
+    });
+    assert.equal(reverse.ok, true);
+    assert.equal(countAssetLocks(asset.locks), 0, 'all locks released');
+  } finally {
+    rmSync(asset.root, { recursive: true, force: true });
+  }
+});
+
+test('lock: an async callback keeps the lock until it settles', async () => {
+  const asset = makeFixtureLockSet();
+  try {
+    let duringRelease = null;
+    const pending = withAssetLockSet({ canonicalDir: asset.canonical, dir: asset.locks, phase: 'async' }, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return 'async-done';
+    });
+    assert.equal(typeof pending.then, 'function', 'an async callback must return a promise, never a resolved result');
+    // While the promise is pending the lock must still be on disk and must still block others.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(countAssetLocks(asset.locks), 1, 'the lock is on disk while the callback is pending');
+    // The same process is reentrant, so "still owned" is asserted on the disk lock and its
+    // classification: a live holder record, not a released one.
+    const listed = listAssetLocks(asset.locks);
+    assert.equal(listed.ok, true);
+    assert.equal(listed.locks.length, 1);
+    assert.equal(listed.locks[0].classification.state, 'live', 'the pending holder is still classified live');
+    assert.equal(listed.locks[0].holder.pid, process.pid);
+
+    const settled = await pending;
+    assert.equal(settled.ok, true);
+    assert.equal(settled.value, 'async-done');
+    duringRelease = countAssetLocks(asset.locks);
+    assert.equal(duringRelease, 0, 'the lock is released once the promise settles');
+  } finally {
+    rmSync(asset.root, { recursive: true, force: true });
+  }
+});
+
+test('lock: a mid-acquisition failure unwinds completely (files AND reentrancy state)', () => {
+  const asset = makeAsset();
+  try {
+    const entries = resolveAssetLockSet({ canonicalDir: asset.canonical, casDir: asset.cas });
+    assert.equal(entries.length, 2);
+    // A foreign lock on the SECOND digest (sorted order) makes acquisition fail halfway.
+    const blocked = entries[entries.length - 1];
+    writeFileSync(join(asset.locks, `asset-${blocked.digest}.lock`), `${JSON.stringify({
+      schema_version: 'af-asset-lock-v1', digest: blocked.digest, path: blocked.path, pid: 999999,
+      boot_id: 'other-boot', pid_start_ticks: '1', token: 'foreign',
+    })}`);
+
+    const failed = withAssetLockSet({ canonicalDir: asset.canonical, casDir: asset.cas, dir: asset.locks, phase: 'partial' }, () => 'should not run');
+    assert.equal(failed.ok, false);
+    assert.equal(countAssetLocks(asset.locks), 1, 'the partially acquired lock was rolled back, only the foreign one remains');
+
+    // Reentrancy state must be clean: the same asset is lockable again on disk.
+    rmSync(join(asset.locks, `asset-${blocked.digest}.lock`), { force: true });
+    const again = withAssetLockSet({ canonicalDir: asset.canonical, dir: asset.locks, phase: 'retry' }, () => countAssetLocks(asset.locks));
+    assert.equal(again.ok, true, 'a failed acquisition must not leave phantom reentrancy');
+    assert.equal(again.value, 1, 'a real disk lock is taken on the retry');
+    assert.equal(countAssetLocks(asset.locks), 0);
+  } finally {
+    rmSync(asset.root, { recursive: true, force: true });
+  }
+});
+
+test('lock: a nested acquisition that fails restores the outer depth', () => {
+  const asset = makeAsset();
+  const second = join(asset.root, 'second');
+  mkdirSync(second, { recursive: true });
+  try {
+    const secondEntry = resolveAssetLockSet({ canonicalDir: second })[0];
+    writeFileSync(join(asset.locks, `asset-${secondEntry.digest}.lock`), `${JSON.stringify({
+      schema_version: 'af-asset-lock-v1', digest: secondEntry.digest, path: secondEntry.path, pid: process.pid,
+      boot_id: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), pid_start_ticks: '1', token: 'foreign',
+    })}`);
+
+    const outer = withAssetLockSet({ canonicalDir: asset.canonical, dir: asset.locks, phase: 'outer' }, () => {
+      const inner = withAssetLockSet({ canonicalDir: asset.canonical, protectedPaths: [second], dir: asset.locks, phase: 'inner' }, () => 'should not run');
+      assert.equal(inner.ok, false, 'the inner acquisition must fail on the foreign lock');
+      // The outer lock must still be held exactly once (no leaked depth, no lost file).
+      return countAssetLocks(asset.locks);
+    });
+    assert.equal(outer.ok, true);
+    assert.ok(outer.value >= 1, 'the foreign lock survives the failed inner acquisition');
+    // End state: only the foreign lock remains, and it is untouched.
+    const remaining = listAssetLocks(asset.locks);
+    assert.equal(remaining.locks.length, 1, 'the outer released exactly its own lock');
+    assert.equal(remaining.locks[0].holder.token, 'foreign', 'the foreign lock was never ours to remove');
+
+    // Decisive check for a leaked reentrancy depth: a fresh acquisition must take a REAL lock
+    // (files on disk), not pass through because the in-process map still believes it holds one.
+    const retry = withAssetLockSet({ canonicalDir: asset.canonical, dir: asset.locks, phase: 'retry' }, () => countAssetLocks(asset.locks));
+    assert.equal(retry.ok, true);
+    assert.equal(retry.value, 2, 'a fresh acquisition creates its own disk lock alongside the foreign one');
+    assert.equal(countAssetLocks(asset.locks), 1, 'and releases it again');
+  } finally {
+    rmSync(asset.root, { recursive: true, force: true });
+  }
+});
+
+test('epoch: selection fails closed when any record is unreadable', () => {
+  const asset = makeAsset();
+  try {
+    // Oldest valid epoch covers the asset...
+    const valid = writeProtectionEpoch({ canonicalDir: asset.canonical, paths: [asset.canonical], dir: asset.epochs, at: '2026-09-21T01:00:00.000Z' });
+    assert.equal(latestProtectionEpochFor({ canonicalDir: asset.canonical, dir: asset.epochs }).epoch?.epoch_id, valid.epoch_id);
+    // ...then a NEWER record is corrupted: the newest epoch cannot be established.
+    writeFileSync(join(asset.epochs, 'epoch-2026-09-21T02-00-00-000Z-broken.json'), '{ truncated');
+    const damaged = latestProtectionEpochFor({ canonicalDir: asset.canonical, dir: asset.epochs });
+    assert.equal(damaged.ok, false, 'an unreadable record must not be skipped in favour of an older one');
+    assert.equal(damaged.epoch, null);
+    assert.match(damaged.reason, /could not be read/);
+    assert.equal(damaged.unreadable.length, 1);
+
+    // All records unreadable must be `ok:false`, never `missing`.
+    rmSync(join(asset.epochs, `epoch-${valid.epoch_id}.json`), { force: true });
+    const allBad = latestProtectionEpochFor({ canonicalDir: asset.canonical, dir: asset.epochs });
+    assert.equal(allBad.ok, false);
+    assert.equal(allBad.missing, false, 'unreadable is not the same as absent');
+
+    // A genuinely empty directory is missing, which is honest.
+    const empty = mkdtempSync(join(tmpdir(), 'af-u1-empty-'));
+    const missing = latestProtectionEpochFor({ canonicalDir: asset.canonical, dir: empty });
+    assert.equal(missing.ok, true);
+    assert.equal(missing.missing, true);
+    rmSync(empty, { recursive: true, force: true });
+  } finally {
+    rmSync(asset.root, { recursive: true, force: true });
+  }
+});
+
+function makeFixtureLockSet() {
+  const root = mkdtempSync(join(tmpdir(), 'af-u1-lock-'));
+  const canonical = join(root, 'canonical');
+  const locks = join(root, 'locks');
+  mkdirSync(canonical, { recursive: true });
+  mkdirSync(locks, { recursive: true });
+  return { root, canonical, locks };
+}
