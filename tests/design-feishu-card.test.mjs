@@ -120,6 +120,41 @@ test('design: the run console is read-only and keeps its required deliverables',
   }
 });
 
+test('design: the next-step architecture contract keeps its required deliverables', () => {
+  const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'SYSTEM-ARCHITECTURE-NEXT.md'), 'utf8');
+  for (const section of ['模块图', '权威数据源表', '状态字典', '证据关联规范', '接口契约', '版本与兼容规则',
+    '缺失 / 损坏 / 陈旧 / 不可读 的统一行为']) {
+    assert.match(doc, new RegExp(section), `the architecture doc must keep "${section}"`);
+  }
+  for (const rule of ['单一写者', '派生索引', '不可核验', '未关联', 'state_version',
+    'PROTECTION_RETAINED_PENDING_RECOVERY', 'RESTORE_INCOMPLETE', 'unverifiable']) {
+    assert.match(doc, new RegExp(rule), `the architecture doc must state "${rule}"`);
+  }
+  // Authority must point at the real artifacts, not invented ones.
+  for (const real of ['saveTaskWithVersion', 'boundary-alerts.jsonl', 'notify-pending.json',
+    'tasklock', 'scheduler.json', 'acceptance_evidence_id', 'refs/afr/canonical']) {
+    assert.match(doc, new RegExp(real), `the architecture doc must reference ${real}`);
+  }
+});
+
+test('design: the operations console keeps the six pages and the read-only rules', () => {
+  const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'OPERATIONS-CONSOLE-DESIGN.md'), 'utf8');
+  for (const page of ['总览', '任务列表', '任务详情', '结果与证据', '异常中心', '审计详情']) {
+    assert.match(doc, new RegExp(page), `the console doc must define the "${page}" page`);
+  }
+  for (const rule of ['只读', '不因查询失败把列表显示为"没有异常"', '缓存状态', '最近核验状态',
+    '脱敏', '不可信文本', '127.0.0.1', '无写能力', 'order_basis', 'as_of']) {
+    assert.match(doc, new RegExp(rule.replace(/"/g, '"')), `the console doc must state "${rule}"`);
+  }
+});
+
+test('design: the earlier console v1 is marked superseded but keeps its data sources', () => {
+  const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'TASK-RUN-CONSOLE-DESIGN.md'), 'utf8');
+  assert.match(doc, /已被取代/, 'the v1 console design must point at its successor');
+  assert.match(doc, /OPERATIONS-CONSOLE-DESIGN\.md/);
+  assert.match(doc, /RO1–RO7/, 'the read-only invariants must remain in the record');
+});
+
 test('design: A1a is frozen as an implementation baseline with its three hard constraints', () => {
   const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'A1A-AUTO-RECOVERY-DESIGN.md'), 'utf8');
   assert.match(doc, /冻结记录/, 'the A1a design must record the freeze');
