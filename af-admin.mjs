@@ -30,7 +30,7 @@ import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
 import { saveTaskWithVersion } from './lib/store.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
-import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload } from './lib/boundary-notify.mjs';
+import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest } from './lib/boundary-notify.mjs';
 
 const AF_ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const TASKS_DIR = process.env.AF_TASKS_DIR || join(AF_ROOT, 'tasks');
@@ -336,16 +336,14 @@ async function main() {
         console.error('error: live mode sends a real notification; re-run with --confirm after checking the target with notify-status');
         process.exit(2);
       }
-      const payload = buildNotifyPayload({
-        event: 'boundary_retained',
-        alert: { canonical_dir: target, occurrences: 1, severity: 'warning', task_id: 'NOTIFY-TEST', boundary_state: 'NOTIFY_TEST', reason },
-      });
-      const res = await notifyBoundaryAlert({
-        event: 'boundary_retained',
-        alert: { canonical_dir: target, occurrences: 1, severity: 'warning', task_id: 'NOTIFY-TEST', boundary_state: 'NOTIFY_TEST', reason },
-      });
-      console.log(`notify-test: ${res.status} (mode=${res.mode})${res.reason ? ` - ${res.reason}` : ''}`);
-      if (res.status === 'would-notify') console.log(JSON.stringify(payload, null, 2));
+      const testAlert = { canonical_dir: target, occurrences: 1, severity: 'warning', task_id: 'NOTIFY-TEST', boundary_state: 'NOTIFY_TEST', reason };
+      const payload = buildNotifyPayload({ event: 'boundary_retained', alert: testAlert });
+      const rendered = buildNotifyRequest({ event: 'boundary_retained', payload });
+      const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: testAlert });
+      console.log(`notify-test: ${res.status} (mode=${res.mode}, format=${rendered.format})${res.reason ? ` - ${res.reason}` : ''}`);
+      console.log('request headers:', JSON.stringify(Object.fromEntries(Object.entries(rendered.headers).filter(([k]) => k.toLowerCase() !== 'authorization'))));
+      console.log('request body:');
+      try { console.log(JSON.stringify(JSON.parse(rendered.body), null, 2)); } catch { console.log(rendered.body); }
       process.exit(res.status === 'sent' || res.status === 'would-notify' ? 0 : 1);
     }
     console.error(`unknown boundary subcommand: ${subCmd} (expected: recover, alerts, alert-resolve, notify-status, notify-test)`);

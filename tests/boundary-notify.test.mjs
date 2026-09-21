@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { createHmac } from 'node:crypto';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,6 +48,7 @@ const ENV_KEYS = [
   'AF_BOUNDARY_ALERTS_FILE', 'AF_BOUNDARY_NOTIFY_MODE', 'AF_BOUNDARY_NOTIFY_WEBHOOK',
   'AF_BOUNDARY_NOTIFY_COOLDOWN_MS', 'AF_BOUNDARY_NOTIFY_TIMEOUT_MS', 'AF_BOUNDARY_NOTIFY_INCLUDE_PATHS',
   'AF_BOUNDARY_NOTIFY_ON_RELEASE', 'AF_BOUNDARY_NOTIFY_TOKEN', 'AF_BOUNDARY_ALERT_ESCALATE_AFTER',
+  'AF_BOUNDARY_NOTIFY_FORMAT', 'AF_BOUNDARY_NOTIFY_FEISHU_SECRET',
 ];
 
 function withEnv(patch, fn) {
@@ -328,6 +330,83 @@ test('A1b notify: a retained lifecycle drives the notifier (dry-run, on disk)', 
   } finally {
     disengageTaskHostBoundary({ canonicalDir: repoDir, casDir, force: true });
     rmSync(scopeBase, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b notify: feishu custom-bot schema is rendered and posted', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-feishu-'));
+  const file = join(root, 'alerts.jsonl');
+  const mock = await startMockWebhook();
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: mock.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+    }, async () => {
+      const res = await notifyBoundaryAlert({
+        event: 'boundary_retained',
+        alert: alertFor(root, 3),
+        scopeDecision: { decision: 'RETAIN', reason: 'rescan-budget-exhausted', attempts: 4, anomalies: [{ class: 'broken-scope' }] },
+      });
+      assert.equal(res.status, 'sent');
+    });
+    assert.equal(mock.requests.length, 1);
+    assert.equal(mock.requests[0].headers['content-type'], 'application/json; charset=utf-8');
+    const body = JSON.parse(mock.requests[0].body);
+    assert.equal(body.msg_type, 'text');
+    assert.equal(typeof body.content.text, 'string');
+    assert.match(body.content.text, /Agent Foundry/);
+    assert.match(body.content.text, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(body.content.text, /rescan-budget-exhausted/);
+    assert.match(body.content.text, /attempts=4/);
+    assert.match(body.content.text, /broken-scope/);
+    assert.equal(body.timestamp, undefined, 'no signature fields when no secret is configured');
+    assert.equal(body.sign, undefined);
+  } finally {
+    await mock.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b notify: feishu signature is emitted and independently verifiable', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-feishu-sign-'));
+  const file = join(root, 'alerts.jsonl');
+  const mock = await startMockWebhook();
+  const secret = 'unit-test-secret';
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: mock.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_FEISHU_SECRET: secret,
+    }, async () => {
+      const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(res.status, 'sent');
+    });
+    const body = JSON.parse(mock.requests[0].body);
+    assert.match(body.timestamp, /^\d+$/, 'the timestamp must be seconds, as a string');
+    const expected = createHmac('sha256', `${body.timestamp}\n${secret}`).update('').digest('base64');
+    assert.equal(body.sign, expected, 'sign = base64(hmac_sha256(key = timestamp\\nsecret, data = ""))');
+  } finally {
+    await mock.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b notify: feishu text honours path redaction in dry-run', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-feishu-redact-'));
+  const file = join(root, 'alerts.jsonl');
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'dry-run', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_INCLUDE_PATHS: '0',
+    }, async () => {
+      const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(res.status, 'would-notify');
+    });
+    const record = readNotifyEvents({ file })[0];
+    assert.equal(record.format, 'feishu');
+    assert.doesNotMatch(record.request_body, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the outbound text must not carry the host path');
+    assert.match(record.request_body, /sha256:[0-9a-f]{16}/);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
