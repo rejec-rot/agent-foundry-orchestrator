@@ -75,6 +75,10 @@ import { runTrustedImportTask } from '../lib/trusted-import/orchestrator-adapter
 
 const CGROUP_BASE = '/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice';
 
+// Keep the whole file away from the production alert log: several lifecycle tests
+// deliberately retain a boundary, which records an alert.
+process.env.AF_BOUNDARY_ALERTS_FILE = join(mkdtempSync(join(tmpdir(), 'af-test-alerts-')), 'alerts.jsonl');
+
 test('HIB-1: Non-owner DAC boundary prevents chmod on canonical repo, CAS, and task state (EPERM)', () => {
   const root = mkdtempSync(join(tmpdir(), 'af-hib1-'));
   const canonicalDir = join(root, 'canonical');
