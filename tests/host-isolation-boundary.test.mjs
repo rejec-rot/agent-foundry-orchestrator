@@ -10,6 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  appendFileSync,
   chmodSync,
   copyFileSync,
   existsSync,
@@ -63,6 +64,8 @@ import {
   listBoundaryAlerts,
   readBoundaryAlertEvents,
   boundaryAlertsFile,
+  inspectBoundaryAlerts,
+  boundaryAlertsStateFile,
 } from '../lib/boundary-alerts.mjs';
 import {
   createWriterScope,
@@ -2528,6 +2531,191 @@ test('HIB-52 (A1b 可见性/升级/关闭): 告警可查询、可升级、恢复
     assert.match(afterOut.stdout, /none open/);
   } finally {
     if (oldAlerts !== undefined) process.env.AF_BOUNDARY_ALERTS_FILE = oldAlerts; else delete process.env.AF_BOUNDARY_ALERTS_FILE;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-53 (A1b 阻断回归): 状态文件损坏/不可读时不得报“无告警”', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib53-'));
+  const alertsFile = join(root, 'alerts.jsonl');
+  const stateFile = boundaryAlertsStateFile(alertsFile);
+  const canonicalDir = join(root, 'canonical');
+  mkdirSync(canonicalDir, { recursive: true });
+  const oldAlerts = process.env.AF_BOUNDARY_ALERTS_FILE;
+  process.env.AF_BOUNDARY_ALERTS_FILE = alertsFile;
+  const cli = join(process.cwd(), 'af-admin.mjs');
+
+  try {
+    recordBoundaryAlert({ canonicalDir, taskId: 'T-CORRUPT', reason: 'scope-anomaly' });
+
+    // (a) State file damaged, event log intact: rebuild from the log, alert stays visible.
+    writeFileSync(stateFile, '{ this is not json');
+    const rebuilt = inspectBoundaryAlerts({ file: alertsFile });
+    assert.strictEqual(rebuilt.ok, true, 'the event log is the source of truth');
+    assert.strictEqual(rebuilt.source, 'event-log');
+    assert.strictEqual(rebuilt.alerts.length, 1);
+    assert.strictEqual(rebuilt.alerts[0].canonical_dir, canonicalDir);
+    assert.match(String(rebuilt.reason ?? ''), /rebuilt/);
+    const rebuiltCli = spawnSync(process.execPath, [cli, 'boundary', 'alerts'], {
+      env: { ...process.env, AF_BOUNDARY_ALERTS_FILE: alertsFile }, encoding: 'utf8',
+    });
+    assert.strictEqual(rebuiltCli.status, 1, 'the rebuilt state still has an open alert');
+    assert.match(rebuiltCli.stdout, /1 open/);
+
+    // (b) State damaged AND event log untrustworthy: refuse to answer, never "none open".
+    writeFileSync(stateFile, 'not json at all');
+    appendFileSync(alertsFile, '{ torn line without closing brace\n');
+    const unverifiable = inspectBoundaryAlerts({ file: alertsFile });
+    assert.strictEqual(unverifiable.ok, false);
+    assert.strictEqual(unverifiable.source, 'event-log-partial');
+    assert.match(unverifiable.reason, /unparseable/);
+    assert.strictEqual(unverifiable.alerts.length, 1, 'the recoverable prefix is still reported, nothing hidden');
+    assert.throws(
+      () => listBoundaryAlerts({ file: alertsFile }),
+      (err) => err.code === 'BOUNDARY_ALERT_STATE_UNVERIFIABLE',
+      'listBoundaryAlerts must refuse rather than return an empty list',
+    );
+    const cliOut = spawnSync(process.execPath, [cli, 'boundary', 'alerts'], {
+      env: { ...process.env, AF_BOUNDARY_ALERTS_FILE: alertsFile }, encoding: 'utf8',
+    });
+    assert.strictEqual(cliOut.status, 3, 'unverifiable state must exit non-zero (distinct from "none open")');
+    assert.match(`${cliOut.stdout}${cliOut.stderr}`, /UNVERIFIABLE/);
+    assert.doesNotMatch(cliOut.stdout, /none open/);
+
+    // (c) Unreadable state file (no permissions) with no usable log: still unverifiable.
+    const root2 = mkdtempSync(join(tmpdir(), 'af-hib53b-'));
+    const alertsFile2 = join(root2, 'alerts.jsonl');
+    try {
+      writeFileSync(boundaryAlertsStateFile(alertsFile2), '{"x":1}');
+      chmodSync(boundaryAlertsStateFile(alertsFile2), 0o000);
+      const unreadable = inspectBoundaryAlerts({ file: alertsFile2 });
+      assert.strictEqual(unreadable.ok, false, 'an unreadable state file with no log is unverifiable');
+      assert.strictEqual(unreadable.source, 'unverifiable');
+    } finally {
+      try { chmodSync(boundaryAlertsStateFile(alertsFile2), 0o600); } catch { /* best effort */ }
+      rmSync(root2, { recursive: true, force: true });
+    }
+
+    // (d) A genuinely fresh deployment (neither file) is still a clean "no alerts".
+    const fresh = join(root, 'fresh.jsonl');
+    const freshInspection = inspectBoundaryAlerts({ file: fresh });
+    assert.strictEqual(freshInspection.ok, true);
+    assert.strictEqual(freshInspection.source, 'none');
+    assert.deepStrictEqual(freshInspection.alerts, []);
+  } finally {
+    if (oldAlerts !== undefined) process.env.AF_BOUNDARY_ALERTS_FILE = oldAlerts; else delete process.env.AF_BOUNDARY_ALERTS_FILE;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-54 (A1b 并发): 多进程并发记录不丢事件也不丢计数', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib54-'));
+  const alertsFile = join(root, 'alerts.jsonl');
+  const canonicalDir = join(root, 'canonical');
+  mkdirSync(canonicalDir, { recursive: true });
+  const worker = join(root, 'record.mjs');
+  const modulePath = join(process.cwd(), 'lib', 'boundary-alerts.mjs');
+  writeFileSync(worker, [
+    `import { recordBoundaryAlert } from ${JSON.stringify(modulePath)};`,
+    'const [file, dir, taskId] = process.argv.slice(2);',
+    'const res = recordBoundaryAlert({ canonicalDir: dir, taskId, reason: "concurrent", file });',
+    'process.stdout.write(JSON.stringify(res));',
+    '',
+  ].join('\n'));
+
+  const WORKERS = 8;
+  try {
+    const children = [];
+    for (let i = 0; i < WORKERS; i += 1) {
+      children.push(new Promise((resolve) => {
+        const child = spawn(process.execPath, [worker, alertsFile, canonicalDir, `T-${i}`], { stdio: ['ignore', 'pipe', 'pipe'] });
+        let out = '';
+        child.stdout.on('data', (d) => { out += d; });
+        child.on('exit', (code) => resolve({ code, out }));
+      }));
+    }
+    const results = await Promise.all(children);
+    assert.deepStrictEqual(results.map((r) => r.code), new Array(WORKERS).fill(0), 'every writer must succeed');
+
+    const events = readBoundaryAlertEvents({ file: alertsFile }).filter((e) => e.event === 'boundary_retained');
+    assert.strictEqual(events.length, WORKERS, 'no append may be lost');
+    const inspections = inspectBoundaryAlerts({ file: alertsFile });
+    assert.strictEqual(inspections.alerts.length, 1);
+    assert.strictEqual(inspections.alerts[0].occurrences, WORKERS, 'the streak must count every concurrent retain');
+    // The lock serializes writers, so occurrence numbers are unique and contiguous.
+    const numbers = events.map((e) => e.occurrences).sort((a, b) => a - b);
+    assert.deepStrictEqual(numbers, Array.from({ length: WORKERS }, (_, i) => i + 1));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-55 (A1b 连续语义): 关闭后重新触发的计数从 1 重新开始', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib55-'));
+  const alertsFile = join(root, 'alerts.jsonl');
+  const canonicalDir = join(root, 'canonical');
+  mkdirSync(canonicalDir, { recursive: true });
+  try {
+    const a = recordBoundaryAlert({ canonicalDir, taskId: 'A', reason: 'first', file: alertsFile });
+    const b = recordBoundaryAlert({ canonicalDir, taskId: 'B', reason: 'first', file: alertsFile });
+    assert.strictEqual(a.occurrences, 1);
+    assert.strictEqual(b.occurrences, 2);
+
+    resolveBoundaryAlert({ canonicalDir, reason: 'recovered', file: alertsFile });
+    const afterResolve = inspectBoundaryAlerts({ file: alertsFile, includeResolved: true });
+    assert.strictEqual(afterResolve.alerts[0].occurrences, 0, 'a resolved alert does not keep a streak');
+
+    const c = recordBoundaryAlert({ canonicalDir, taskId: 'C', reason: 'second incident', file: alertsFile });
+    assert.strictEqual(c.occurrences, 1, 'a new incident starts counting from 1 again');
+    assert.strictEqual(c.severity, 'warning');
+    const d = recordBoundaryAlert({ canonicalDir, taskId: 'D', reason: 'second incident', file: alertsFile });
+    const e = recordBoundaryAlert({ canonicalDir, taskId: 'E', reason: 'second incident', file: alertsFile });
+    assert.strictEqual(d.occurrences, 2);
+    assert.strictEqual(e.occurrences, 3);
+    assert.strictEqual(e.severity, 'escalated', 'three CONSECUTIVE retains escalate');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-56 (A1b 接线): 受控恢复成功后自动关闭告警 (不是直接调关闭函数)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib56-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  const alertsFile = join(root, 'alerts.jsonl');
+  mkdirSync(canonicalDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  writeFileSync(join(canonicalDir, 'main.js'), 'export const canonical = 1;\n');
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  const oldAlerts = process.env.AF_BOUNDARY_ALERTS_FILE;
+  const scopeBase = mkdtempSync(join(tmpdir(), 'af-hib56-scopes-'));
+  process.env.AF_CGROUP_BASE = scopeBase;
+  process.env.AF_BOUNDARY_ALERTS_FILE = alertsFile;
+
+  try {
+    engageTaskHostBoundary({ canonicalDir, casDir });
+    // Simulate the lifecycle having retained this boundary and raised its alert.
+    recordBoundaryAlert({ canonicalDir, casDir, taskId: 'T-RETAINED', reason: 'scope-anomaly' });
+    assert.strictEqual(listBoundaryAlerts({ file: alertsFile }).length, 1);
+
+    const rec = recoverRetainedBoundary({
+      canonicalDir,
+      casDir,
+      justification: 'HIB-56: operator verified no writer processes remain',
+    });
+    assert.strictEqual(rec.outcome, 'DISENGAGED');
+    assert.strictEqual(rec.delivered, true);
+
+    const after = inspectBoundaryAlerts({ file: alertsFile, includeResolved: true });
+    assert.strictEqual(after.alerts[0].open, false, 'the successful recovery must close the alert');
+    const events = readBoundaryAlertEvents({ file: alertsFile });
+    assert.strictEqual(events[events.length - 1].event, 'boundary_released');
+    assert.match(events[events.length - 1].reason, /controlled recovery/);
+  } finally {
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    if (oldAlerts !== undefined) process.env.AF_BOUNDARY_ALERTS_FILE = oldAlerts; else delete process.env.AF_BOUNDARY_ALERTS_FILE;
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    rmSync(scopeBase, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
 });

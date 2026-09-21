@@ -29,7 +29,7 @@ import {
 import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
 import { saveTaskWithVersion } from './lib/store.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
-import { listBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
+import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
 
 const AF_ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const TASKS_DIR = process.env.AF_TASKS_DIR || join(AF_ROOT, 'tasks');
@@ -277,15 +277,24 @@ async function main() {
       process.exit(res.delivered ? 0 : 1);
     }
     if (subCmd === 'alerts') {
-      // A1b: retained boundaries must be visible to an operator without reading task files.
+      // A1b: retained boundaries must be visible to an operator without reading task
+      // files, and an unverifiable state must never be reported as "no alerts".
       const includeResolved = args.includes('--include-resolved');
-      const alerts = listBoundaryAlerts({ includeResolved });
+      const inspection = inspectBoundaryAlerts({ includeResolved });
       if (args.includes('--json')) {
-        console.log(JSON.stringify({ file: boundaryAlertsFile(), alerts }, null, 2));
+        console.log(JSON.stringify({ file: boundaryAlertsFile(), ...inspection }, null, 2));
       } else {
-        console.log(formatBoundaryAlerts(alerts));
+        console.log(formatBoundaryAlerts(inspection.alerts, {
+          file: boundaryAlertsFile(),
+          unverifiable: inspection.ok ? null : inspection.reason,
+          source: inspection.source,
+        }));
       }
-      process.exit(alerts.some((a) => a.open === true) ? 1 : 0);
+      if (!inspection.ok) {
+        console.error(`error: alert state unverifiable (${inspection.reason}); do not treat this as "no alerts"`);
+        process.exit(3);
+      }
+      process.exit(inspection.alerts.some((a) => a.open === true) ? 1 : 0);
     }
     if (subCmd === 'alert-resolve') {
       const target = argValue('--canonical');
