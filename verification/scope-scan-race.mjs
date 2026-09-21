@@ -206,6 +206,17 @@ function summarisePhases(storm) {
   for (const o of storm.during) {
     if (o.signals.length > 1) signalPairs[o.signals.join('+')] = (signalPairs[o.signals.join('+')] || 0) + 1;
   }
+  // Approximate window = marker visibility at scan time. Exact window = scans whose own
+  // [t0, t1] lie fully inside [first_removal_at, last_removal_at]; the two are reported
+  // separately because the approximate one can include a scan that started earlier.
+  const first = storm.report?.first_removal_at ?? null;
+  const last = storm.report?.last_removal_at ?? null;
+  const exact = (first && last)
+    ? storm.during.filter((o) => o.t0 >= first && o.t1 <= last)
+    : [];
+  const exactUnknown = exact.filter((o) => o.status === 'unknown').length;
+  const beforeWindow = (first ? storm.during.filter((o) => o.t1 < first) : []).length;
+  const afterWindow = (last ? storm.during.filter((o) => o.t0 > last) : []).length;
   return {
     pre_storm_scans: storm.pre.length,
     pre_storm_classes: tally(storm.pre.map((o) => o.klass)),
@@ -213,6 +224,11 @@ function summarisePhases(storm) {
     classes_during_storm: tally(storm.during.map((o) => o.klass)),
     unknown_during_storm: duringUnknown,
     unknown_rate_during_storm: storm.during.length ? Number((duringUnknown / storm.during.length).toExponential(3)) : null,
+    scans_in_exact_window: exact.length,
+    unknown_in_exact_window: exactUnknown,
+    unknown_rate_exact_window: exact.length ? Number((exactUnknown / exact.length).toExponential(3)) : null,
+    scans_before_exact_window: beforeWindow,
+    scans_after_exact_window: afterWindow,
     co_occurring_signals: signalPairs,
     after_storm_scans: storm.after.length,
     classes_after_storm: tally(storm.after.map((o) => o.klass)),
@@ -260,16 +276,19 @@ try {
     fileURLToPath(import.meta.url), '--reaper', base2, '--scopes', String(SCOPES), '--marker-dir', markerRoot2,
   ], { stdio: 'ignore' });
   const convergence = { unknown_total: 0, converged_at_1: 0, converged_at_2: 0, converged_at_3: 0, never: 0 };
+  const s6Scans = [];
   let scans2 = 0;
   while (true) {
     if (existsSync(join(markerRoot2, 'done.json'))) break;
     if (reaper2.exitCode !== null) break;
     if (scans2 >= MAX_SCANS) break;
+    const t0 = Date.now();
     const first = classify(inspectWriterScopes(base2));
+    const t1 = Date.now();
     scans2 += 1;
+    let settled = 0;
     if (first.status === 'unknown') {
       convergence.unknown_total += 1;
-      let settled = 0;
       for (let k = 1; k <= 3 && settled === 0; k += 1) {
         const again = classify(inspectWriterScopes(base2));
         if (again.status !== 'unknown') settled = k;
@@ -277,12 +296,21 @@ try {
       if (settled === 0) convergence.never += 1;
       else convergence[`converged_at_${settled}`] += 1;
     }
+    s6Scans.push({ t0, t1, status: first.status, settled });
     await yieldLoop();
   }
   await waitExit(reaper2);
+  let s6Report = null;
+  try { s6Report = JSON.parse(readFileSync(join(markerRoot2, 'done.json'), 'utf8')); } catch { s6Report = null; }
+  const s6First = s6Report?.first_removal_at ?? null;
+  const s6Last = s6Report?.last_removal_at ?? null;
+  const s6Exact = (s6First && s6Last) ? s6Scans.filter((sc) => sc.t0 >= s6First && sc.t1 <= s6Last) : [];
   results.s6_rescan = {
     mode: 'simulated directories',
     scans_during_storm: scans2,
+    scans_in_exact_window: s6Exact.length,
+    unknown_in_exact_window: s6Exact.filter((sc) => sc.status === 'unknown').length,
+    unknown_before_exact_window: (s6First ? s6Scans.filter((sc) => sc.t1 < s6First && sc.status === 'unknown').length : null),
     ...convergence,
     converged_rate: convergence.unknown_total
       ? Number(((convergence.unknown_total - convergence.never) / convergence.unknown_total).toFixed(4))
@@ -560,6 +588,29 @@ try {
     acknowledge_live_scopes_used: false,
   };
 
+  // Final PASS/FAIL verdict. Counting alone is not an acceptance criterion: any
+  // missed live writer, attach failure, unexpected convergence of a persistent
+  // class, or leftover scope/residual directory must fail the run loudly.
+  const v7 = results.s7_live_writer_simulated;
+  const v8b = results.s8b_real_live_writer;
+  const v9 = results.s9_post_quiesce;
+  const checks = [
+    { id: 'attach_failures_zero', ok: results.s8a_real_cgroup_storm?.attach_failures === 0 || Boolean(results.s8a_real_cgroup_storm?.skipped), detail: results.s8a_real_cgroup_storm?.attach_failures },
+    { id: 'sim_live_pid_never_missed', ok: (v7?.live_pid_checks?.active_missing_live_pid ?? 0) === 0, detail: v7?.live_pid_checks },
+    { id: 'sim_no_false_empty', ok: (v7?.live_pid_checks?.empty_observations ?? 0) === 0, detail: v7?.live_pid_checks?.empty_observations },
+    { id: 'real_live_pid_never_missed', ok: v8b?.skipped ? true : (v8b?.live_pid_checks?.active_missing_live_pid ?? 0) === 0, detail: v8b?.live_pid_checks },
+    { id: 'real_no_false_empty', ok: v8b?.skipped ? true : (v8b?.live_pid_checks?.empty_observations ?? 0) === 0, detail: v8b?.live_pid_checks?.empty_observations },
+    { id: 'real_live_scope_present_after_storm', ok: v8b?.skipped ? true : v8b?.live_scope_still_present_after_storm === true, detail: v8b?.live_scope_still_present_after_storm },
+    { id: 'persistent_classes_never_converge', ok: ['s2_orphan', 's3_unreadable', 's4_truncated'].every((k) => results[k].converged === false && results[k].retain === true), detail: ['s2_orphan', 's3_unreadable', 's4_truncated'].map((k) => ({ k, converged: results[k].converged })) },
+    { id: 'post_quiesce_no_unknown', ok: v9?.skipped ? true : (v9?.unknown_count ?? 1) === 0, detail: v9?.unknown_count },
+    { id: 'post_quiesce_no_residual_dir', ok: v9?.skipped ? true : (v9?.residual_entries_at_measurement === 0 && v9?.residual_entries_after_wait === 0), detail: { at: v9?.residual_entries_at_measurement, after: v9?.residual_entries_after_wait } },
+    { id: 'cleanup_no_failed_paths', ok: v9?.skipped ? true : (v9?.cleanup_failed_paths ?? []).length === 0, detail: v9?.cleanup_failed_paths },
+    { id: 'no_escape_hatches_used', ok: results.decision_helpers.force_used === false && results.decision_helpers.acknowledge_live_scopes_used === false, detail: results.decision_helpers },
+  ];
+  const failed = checks.filter((c) => !c.ok);
+  results.verdict = { passed: failed.length === 0, checks, failed_checks: failed.map((c) => c.id) };
+  process.exitCode = failed.length === 0 ? 0 : 1;
+
   results.finished_at = new Date().toISOString();
 
   console.log('=== A2 quantification v3: writer-scope scan vs. concurrent reap ===\n');
@@ -584,6 +635,8 @@ try {
   console.log('\nS9 REAL post-quiesce');
   console.log(`  ${JSON.stringify(results.s9_post_quiesce)}`);
   console.log(`\nDecision helpers: ${JSON.stringify(results.decision_helpers)}`);
+  console.log(`\nHARNESS VERDICT: ${results.verdict.passed ? 'PASS' : `FAIL (${results.verdict.failed_checks.join(', ')})`}`);
+  for (const c of results.verdict.checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.id}${c.ok ? '' : ` -> ${JSON.stringify(c.detail)}`}`);
 
   if (JSON_OUT) {
     writeFileSync(JSON_OUT, `${JSON.stringify(results, null, 2)}\n`);
@@ -617,8 +670,12 @@ async function scanPhasedWithMarkers({ base, reaper, maxScans, markerDir, checkO
     if (existsSync(doneMarker)) break;
     if (reaper.exitCode !== null && !existsSync(doneMarker)) { reaperExitedWithoutMarkers = true; break; }
     if (pre.length + during.length >= maxScans) { budgetExhausted = true; break; }
+    const t0 = Date.now();
     const raw = inspectWriterScopes(base);
+    const t1 = Date.now();
     const classified = classify(raw);
+    classified.t0 = t0;
+    classified.t1 = t1;
     if (checkObservation) checkObservation(raw, classified);
     (existsSync(startedMarker) ? during : pre).push(classified);
     await yieldLoop();
@@ -629,8 +686,12 @@ async function scanPhasedWithMarkers({ base, reaper, maxScans, markerDir, checkO
   try { report = JSON.parse(readFileSync(doneMarker, 'utf8')); } catch { report = null; }
 
   for (let i = 0; i < AFTER_SAMPLES; i += 1) {
+    const t0 = Date.now();
     const raw = inspectWriterScopes(base);
+    const t1 = Date.now();
     const classified = classify(raw);
+    classified.t0 = t0;
+    classified.t1 = t1;
     if (checkObservation) checkObservation(raw, classified);
     after.push(classified);
   }
