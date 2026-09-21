@@ -30,7 +30,7 @@ import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
 import { saveTaskWithVersion } from './lib/store.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
-import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest, listPendingNotifications, flushPendingNotifications } from './lib/boundary-notify.mjs';
+import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest, inspectPendingNotifications, flushPendingNotifications } from './lib/boundary-notify.mjs';
 
 const AF_ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const TASKS_DIR = process.env.AF_TASKS_DIR || join(AF_ROOT, 'tasks');
@@ -315,11 +315,22 @@ async function main() {
       // Reports configuration only; the webhook target itself is never printed.
       const cfg = describeNotifyConfig();
       const deliveries = readNotifyEvents();
-      const pending = listPendingNotifications();
+      const inspection = inspectPendingNotifications();
+      const pending = inspection.ok ? inspection.pending : [];
       const due = pending.filter((e) => e.state === 'pending');
       const exhausted = pending.filter((e) => e.state === 'exhausted');
+      if (!inspection.ok) {
+        if (args.includes('--json')) {
+          console.log(JSON.stringify({ config: cfg, delivery_records: deliveries.length, queue: { ok: false, reason: inspection.reason } }, null, 2));
+        } else {
+          console.log(`boundary notification retry queue: UNVERIFIABLE - ${inspection.reason}`);
+          console.log('  (this is NOT "no pending deliveries": do not treat the queue as clear)');
+        }
+        console.error(`error: retry queue unverifiable (${inspection.reason}); do not treat this as "nothing pending"`);
+        process.exit(3);
+      }
       if (args.includes('--json')) {
-        console.log(JSON.stringify({ config: cfg, delivery_records: deliveries.length, pending: due, exhausted }, null, 2));
+        console.log(JSON.stringify({ config: cfg, delivery_records: deliveries.length, queue: { ok: true, file: inspection.file }, pending: due, exhausted }, null, 2));
       } else {
         console.log('boundary notification configuration');
         for (const [k, v] of Object.entries(cfg)) console.log(`  ${k}: ${v}`);
@@ -345,8 +356,16 @@ async function main() {
       }
       const res = await flushPendingNotifications({ force: args.includes('--force') });
       console.log(`notify-flush: due=${res.due} attempted=${res.attempted} delivered=${res.delivered} failed=${res.failed} exhausted=${res.exhausted}${res.skipped ? ` skipped=${res.skipped}` : ''}`);
-      const remaining = listPendingNotifications();
-      const stuck = remaining.filter((e) => e.state === 'exhausted').length;
+      if (!res.ok) {
+        console.error(`error: ${res.skipped}`);
+        process.exit(3);
+      }
+      const after = inspectPendingNotifications();
+      if (!after.ok) {
+        console.error(`error: retry queue unverifiable after flush (${after.reason})`);
+        process.exit(3);
+      }
+      const stuck = after.pending.filter((e) => e.state === 'exhausted').length;
       process.exit(stuck > 0 ? 1 : 0);
     }
     if (subCmd === 'notify-test') {

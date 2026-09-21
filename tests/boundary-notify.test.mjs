@@ -18,6 +18,7 @@ import {
   describeNotifyConfig,
   notifyLogFile,
   listPendingNotifications,
+  inspectPendingNotifications,
   flushPendingNotifications,
   notifyBackoffMs,
 } from '../lib/boundary-notify.mjs';
@@ -624,7 +625,13 @@ test('A1b retry: a failed live delivery is queued with bounded backoff and no se
     assert.equal(pending[0].attempts, 1);
     assert.equal(pending[0].max_attempts, 3);
     assert.ok(Date.parse(pending[0].next_attempt_at) > Date.now(), 'the retry must be scheduled in the future');
-    assert.ok(pending[0].request_body.includes('msg_type'), 'the rendered body is kept so a restart can resume');
+    // The queue stores the UNSIGNED payload: each attempt rebuilds the request so a
+    // rotated secret or a stale timestamp can never be replayed.
+    assert.equal(pending[0].request_body, undefined, 'the signed body must not be persisted');
+    assert.equal(pending[0].payload.schema, 'af-boundary-alert-v1');
+    assert.equal(pending[0].event, 'boundary_retained');
+    const rebuilt = JSON.parse((await import('../lib/boundary-notify.mjs')).buildNotifyRequest({ event: 'boundary_retained', payload: pending[0].payload, format: pending[0].format }).body);
+    assert.equal(rebuilt.msg_type, 'text');
     const rawPending = readFileSync(`${file}.notify-pending.json`, 'utf8');
     assert.doesNotMatch(rawPending, new RegExp(token));
     assert.doesNotMatch(rawPending, /127\.0\.0\.1/, 'the target is never stored');
@@ -730,4 +737,183 @@ test('A1b retry: backoff is exponential and capped', () => {
     assert.equal(notifyBackoffMs(4), 5000, 'the delay is capped');
     assert.equal(notifyBackoffMs(9), 5000);
   });
+});
+
+test('A1b retry: two concurrent flushes deliver an entry exactly once', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-flushrace-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await startMockWebhook({ status: 500, reply: '{"code":1,"msg":"down"}' });
+  // Slow healthy target so the second flush overlaps the first one's claim.
+  const slowGood = await new Promise((resolve) => {
+    const requests = [];
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        requests.push({ body });
+        setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"code":0,"msg":"success"}'); }, 250);
+      });
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, requests, url: `http://127.0.0.1:${server.address().port}/hook`, close: () => new Promise((r) => server.close(r)) }));
+  });
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '5',
+    }, async () => {
+      await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+    });
+
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: slowGood.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '5',
+    }, async () => {
+      const [a, b] = await Promise.all([
+        flushPendingNotifications({ file, force: true }),
+        flushPendingNotifications({ file, force: true }),
+      ]);
+      assert.equal(a.attempted + b.attempted, 1, `exactly one flush may attempt the entry, got ${a.attempted}+${b.attempted}`);
+      assert.equal(a.delivered + b.delivered, 1);
+    });
+    assert.equal(slowGood.requests.length, 1, 'the transport must be called exactly once');
+    assert.equal(inspectPendingNotifications({ file }).pending.filter((e) => e.state === 'pending').length, 0);
+  } finally {
+    await failing.close();
+    await slowGood.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b retry: a later success through the normal entry settles the failed entry', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-settle-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await startMockWebhook({ status: 500, reply: '{"code":1,"msg":"down"}' });
+  const good = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+    }, async () => {
+      const first = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(first.status, 'failed');
+    });
+    assert.equal(inspectPendingNotifications({ file }).pending.filter((e) => e.state === 'pending').length, 1);
+
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+    }, async () => {
+      const second = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(second.status, 'sent', 'the normal entry must be able to retry and succeed');
+    });
+    const after = inspectPendingNotifications({ file });
+    assert.equal(after.pending.filter((e) => e.state === 'pending').length, 0, 'the failed entry must be settled, not left pending');
+    assert.equal(inspectPendingNotifications({ file, includeDelivered: true }).pending[0].state, 'delivered');
+    // A queue flush now has nothing to send.
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu', AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0' }, async () => {
+      const res = await flushPendingNotifications({ file, force: true });
+      assert.equal(res.attempted, 0, 'a settled entry must never be delivered again');
+    });
+    assert.equal(good.requests.length, 1, 'exactly one successful delivery overall');
+  } finally {
+    await failing.close();
+    await good.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b retry: the normal entry honours the same attempt cap as the flush', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-cap-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await startMockWebhook({ status: 500, reply: '{"code":1,"msg":"down"}' });
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '2',
+    }, async () => {
+      const first = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      const second = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      const third = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(first.status, 'failed');
+      assert.equal(second.status, 'failed');
+      assert.equal(third.status, 'failed');
+      assert.match(third.reason, /retry budget exhausted/);
+      assert.equal(third.attempts, undefined, 'the refused attempt must not be counted');
+    });
+    assert.equal(failing.requests.length, 2, `max_attempts=2 must cap the transport calls, got ${failing.requests.length}`);
+    assert.equal(inspectPendingNotifications({ file }).pending[0].state, 'exhausted');
+  } finally {
+    await failing.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b retry: every attempt re-signs with the current secret and a fresh timestamp', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-resign-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await startMockWebhook({ status: 500, reply: '{"code":1,"msg":"down"}' });
+  const good = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_FEISHU_SECRET: 'old-secret',
+    }, async () => {
+      await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+    });
+
+    const rotatedAt = Date.now();
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_FEISHU_SECRET: 'rotated-secret',
+    }, async () => {
+      const res = await flushPendingNotifications({ file, force: true });
+      assert.equal(res.delivered, 1);
+    });
+
+    const body = JSON.parse(good.requests[0].body);
+    assert.equal(body.msg_type, 'text', 'the retry rebuilds the request');
+    const expected = createHmac('sha256', `${body.timestamp}\nrotated-secret`).update('').digest('base64');
+    assert.equal(body.sign, expected, 'the retry must sign with the CURRENT secret, not the stored one');
+    assert.ok(Number(body.timestamp) * 1000 >= rotatedAt - 2000, 'the timestamp must be fresh, not the one from the failed attempt');
+  } finally {
+    await failing.close();
+    await good.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b retry: a corrupt queue is unverifiable, never "nothing pending"', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-corruptq-'));
+  const file = join(root, 'alerts.jsonl');
+  const queueFile = `${file}.notify-pending.json`;
+  const mock = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
+  try {
+    writeFileSync(queueFile, '{ this is not json');
+    const inspection = inspectPendingNotifications({ file });
+    assert.equal(inspection.ok, false);
+    assert.match(inspection.reason, /not valid JSON/);
+    assert.throws(() => listPendingNotifications({ file }), (err) => err.code === 'BOUNDARY_NOTIFY_QUEUE_UNVERIFIABLE');
+
+    const cli = (argv) => {
+      try {
+        const out = execFileSync(process.execPath, [CLI, ...argv], {
+          env: { ...process.env, AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_WEBHOOK: mock.url },
+          encoding: 'utf8',
+        });
+        return { code: 0, out };
+      } catch (err) { return { code: err.status, out: `${err.stdout ?? ''}`, err: `${err.stderr ?? ''}` }; }
+    };
+    const status = cli(['boundary', 'notify-status']);
+    assert.equal(status.code, 3, 'an unverifiable queue must exit non-zero');
+    assert.match(status.out, /UNVERIFIABLE/);
+    assert.doesNotMatch(status.out, /pending retries: 0/);
+
+    const flush = cli(['boundary', 'notify-flush', '--confirm']);
+    assert.equal(flush.code, 3, 'flush must refuse on an unverifiable queue');
+    assert.equal(readFileSync(queueFile, 'utf8'), '{ this is not json', 'the damaged queue must not be overwritten');
+    assert.equal(mock.requests.length, 0, 'nothing may be sent from an unverifiable queue');
+  } finally {
+    await mock.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
