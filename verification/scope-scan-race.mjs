@@ -1,26 +1,28 @@
 // scope-scan-race.mjs - A2 quantification: writer-scope scan vs. concurrent reap
 //
-// Measures how `inspectWriterScopes()` behaves when scope directories are removed by
-// ANOTHER PROCESS while the orchestrator scans. The in-process case cannot race (a
-// synchronous scan cannot be interleaved by JS), so the reaper here is a child process,
-// exactly like a second orchestrator instance / `af-admin reclaim orphans` would be.
+// Measures `inspectWriterScopes()` while scope directories are removed by ANOTHER
+// PROCESS (an in-process reap cannot interleave with a synchronous scan). Two
+// families of scenarios:
 //
-// It does NOT change any decision: nothing is unlocked, no `force` and no
-// `acknowledgeLiveScopes` is used, and every anomaly stays fail-closed. The point is to
-// quantify the classes, their reasons, and whether a BOUNDED rescan converges.
+//   SIMULATED (plain directories + simulated cgroup.procs): S1..S7
+//   REAL cgroup (delegated cgroup v2 base, real child processes, production
+//   reapWriterScope): S8a reap storm, S8b live-writer property, S9 post-quiesce
 //
-// Scenarios:
-//   S1 burst reap race   : child process removes scope dirs while we scan in a tight loop
-//   S2 persistent orphan : scope dir present with NO cgroup.procs (never converges)
-//   S3 unreadable scope  : scope dir present, procs unreadable (permission error)
-//   S4 truncated scan    : nesting deeper than MAX_WRITER_SCOPE_DEPTH
-//   S5 clean reap        : everything reaped -> confirmed empty
-//   S6 bounded rescan    : for every `unknown` seen in S1, how many immediate rescans
-//                          (K = 1..3) reach a confirmed answer
+// This harness never changes a decision: nothing is unlocked, `force` and
+// `acknowledgeLiveScopes` are never used.
+//
+// Methodology notes (fixed after independent review):
+//   - the storm window is measured by YIELDING each iteration so the reaper's exit
+//     state is observed; scans are split into `during_storm` and `after_storm`;
+//   - `classify()` checks errno signals (EACCES/EPERM/EIO) BEFORE the broader
+//     "missing cgroup.procs" bucket, and reports co-occurring signals;
+//   - persistent classes get a uniform budget of 3 rescans, and the actual number
+//     of scans performed is reported.
 //
 // Usage:
 //   node verification/scope-scan-race.mjs [--scopes 400] [--max-scans 60000] [--json <path>]
-//   node verification/scope-scan-race.mjs --reaper <baseDir> --scopes 400   (internal)
+//   node verification/scope-scan-race.mjs --reaper <dir> --scopes N             (internal)
+//   node verification/scope-scan-race.mjs --cgroup-reaper <base> [--keep <path>] (internal)
 
 import { spawn } from 'node:child_process';
 import {
@@ -28,6 +30,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -36,6 +39,16 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { inspectWriterScopes, getActiveWriterScopes, MAX_WRITER_SCOPE_DEPTH } from '../lib/host-boundary.mjs';
+import {
+  attachWriterScope,
+  createWriterScope,
+  killTree,
+  reapWriterScope,
+  spawnManaged,
+} from '../lib/child-process.mjs';
+
+const CGROUP_BASE = process.env.AF_RACE_CGROUP_BASE
+  || '/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice';
 
 const argv = process.argv.slice(2);
 function argValue(flag, fallback = null) {
@@ -43,34 +56,73 @@ function argValue(flag, fallback = null) {
   return i !== -1 && i + 1 < argv.length ? argv[i + 1] : fallback;
 }
 
-/** Classify one scan observation into a decision-relevant class. */
+const spin = (us) => { const end = process.hrtime.bigint() + BigInt(Math.max(us, 0) * 1000); while (process.hrtime.bigint() < end) { /* spin */ } };
+const yieldLoop = () => new Promise((resolve) => { setImmediate(resolve); });
+
+/**
+ * Classify one scan observation into a decision-relevant class.
+ * errno signals win over the broader "missing cgroup.procs" bucket, because the
+ * production probe uses existsSync() which swallows EACCES/EIO/ELOOP into `false`.
+ */
 export function classify(observation) {
-  if (observation.status === 'empty') return { status: 'empty', klass: 'empty', retain: false };
-  if (observation.status === 'active') return { status: 'active', klass: 'active', retain: true };
+  if (observation.status === 'empty') return { status: 'empty', klass: 'empty', retain: false, signals: [] };
+  if (observation.status === 'active') return { status: 'active', klass: 'active', retain: true, signals: [] };
 
   const reason = observation.reason || '';
+  const signals = [];
+  if (/EACCES|EPERM/.test(reason)) signals.push('permission');
+  if (/EIO/.test(reason)) signals.push('io');
+  if (/cgroup\.procs: ENOENT/.test(reason)) signals.push('procs-vanished');
+  if (/missing cgroup\.procs/.test(reason)) signals.push('missing-procs');
+  if (/truncated at depth/.test(reason)) signals.push('truncated');
+  if (signals.length === 0 && /ENOENT/.test(reason)) signals.push('dir-vanished');
+
   let klass = 'unknown:other';
-  if (/truncated at depth/.test(reason)) klass = 'unknown:truncated';
-  else if (/missing cgroup\.procs/.test(reason)) klass = 'unknown:missing-procs';
-  else if (/cgroup\.procs: ENOENT/.test(reason)) klass = 'unknown:procs-vanished';
-  else if (/EACCES|EPERM/.test(reason)) klass = 'unknown:permission';
-  else if (/EIO/.test(reason)) klass = 'unknown:io';
-  else if (/ENOENT/.test(reason)) klass = 'unknown:dir-vanished';
-  return { status: observation.status, klass, retain: observation.status !== 'empty', reason };
+  if (signals.includes('truncated')) klass = 'unknown:truncated';
+  else if (signals.includes('permission')) klass = 'unknown:permission';
+  else if (signals.includes('io')) klass = 'unknown:io';
+  else if (signals.includes('procs-vanished')) klass = 'unknown:procs-vanished';
+  else if (signals.includes('missing-procs')) klass = 'unknown:missing-procs';
+  else if (signals.includes('dir-vanished')) klass = 'unknown:dir-vanished';
+
+  return { status: observation.status, klass, retain: observation.status !== 'empty', reason, signals };
 }
 
 // ---------------------------------------------------------------------------
-// Internal child mode: remove scope directories as fast as possible.
+// Internal child mode: remove plain (simulated) scope directories.
 // ---------------------------------------------------------------------------
 if (argv.includes('--reaper')) {
   const base = argValue('--reaper');
   const scopes = Number(argValue('--scopes', '400'));
-  // Busy-wait a randomized microsecond amount so removals interleave with the
-  // parent's scans instead of happening in one burst.
-  const spin = (us) => { const end = process.hrtime.bigint() + BigInt(us * 1000); while (process.hrtime.bigint() < end) { /* spin */ } };
   for (let i = 0; i < scopes; i += 1) {
     spin(50 + Math.floor(Math.random() * 450));
     try { rmSync(join(base, `af-writer-race-${i}`), { recursive: true, force: true }); } catch { /* already gone */ }
+  }
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// Internal child mode: reap REAL writer cgroups with production logic.
+// ---------------------------------------------------------------------------
+if (argv.includes('--cgroup-reaper')) {
+  const base = argValue('--cgroup-reaper');
+  const keep = argValue('--keep');
+  const scopes = Number(argValue('--scopes', '60'));
+  for (let i = 0; i < scopes; i += 1) {
+    spin(50 + Math.floor(Math.random() * 450));
+    const candidates = readdirSync(base).filter((n) => n.startsWith('af-writer-') && join(base, n) !== keep);
+    if (candidates.length === 0) break;
+    const path = join(base, candidates[0]);
+    const handle = {
+      kind: 'cgroup',
+      path,
+      procs_path: join(path, 'cgroup.procs'),
+      kill_path: join(path, 'cgroup.kill'),
+      attached: true,
+      verified: true,
+      reason: null,
+    };
+    try { await reapWriterScope(handle, { graceMs: 500, pollMs: 10 }); } catch { /* best effort */ }
   }
   process.exit(0);
 }
@@ -81,110 +133,141 @@ if (argv.includes('--reaper')) {
 const SCOPES = Number(argValue('--scopes', '400'));
 const MAX_SCANS = Number(argValue('--max-scans', '60000'));
 const JSON_OUT = argValue('--json');
-const base = mkdtempSync(join(tmpdir(), 'af-scope-race-'));
+const PERSISTENT_RESCANS = 3;
 
 const results = {
-  schema: 'af-scope-race-quantification-v1',
+  schema: 'af-scope-race-quantification-v2',
   started_at: new Date().toISOString(),
-  parameters: { scopes: SCOPES, max_scans: MAX_SCANS, base },
+  parameters: { scopes: SCOPES, max_scans: MAX_SCANS, persistent_rescans: PERSISTENT_RESCANS, cgroup_base: CGROUP_BASE },
+  methodology: {
+    storm_window: 'each scan iteration yields to the event loop, so the reaper exit state is observed; during_storm and after_storm scans are counted separately',
+    classifier_priority: ['truncated', 'permission(EACCES/EPERM)', 'io(EIO)', 'procs-vanished', 'missing-procs', 'dir-vanished'],
+    simulated_vs_real: 'S1..S7 use plain directories with simulated cgroup.procs; S8*/S9 use the delegated cgroup v2 base with real child processes and production reapWriterScope',
+  },
   s1_burst: null,
   s2_orphan: null,
   s3_unreadable: null,
   s4_truncated: null,
   s5_clean: null,
   s6_rescan: null,
-  s7_live_writer: null,
+  s7_live_writer_simulated: null,
+  s8a_real_cgroup_storm: null,
+  s8b_real_live_writer: null,
+  s9_post_quiesce: null,
 };
+
+const waitExit = (child) => (child.exitCode === null && child.signalCode === null
+  ? new Promise((resolve) => { child.once('exit', resolve); })
+  : Promise.resolve());
 
 const tally = (classes) => classes.reduce((acc, c) => { acc[c] = (acc[c] || 0) + 1; return acc; }, {});
 
+/** Scan a base in a yielding loop until `isDone()` is true (or the budget is hit). */
+async function scanStorm({ base, isDone, maxScans }) {
+  const during = [];
+  const started = Date.now();
+  let scans = 0;
+  while (scans < maxScans) {
+    if (isDone()) break;
+    during.push(classify(inspectWriterScopes(base)));
+    scans += 1;
+    await yieldLoop();
+  }
+  const elapsedMs = Date.now() - started;
+  const after = [];
+  for (let i = 0; i < 50; i += 1) after.push(classify(inspectWriterScopes(base)));
+  return {
+    during,
+    after,
+    elapsed_ms: elapsedMs,
+    scans_per_sec: Math.round((scans / Math.max(elapsedMs, 1)) * 1000),
+    residual_entries: (() => {
+      try { return readdirSync(base).filter((n) => n.startsWith('af-writer-')).length; } catch { return null; }
+    })(),
+  };
+}
+
+function summarise(storm) {
+  const classes = tally(storm.during.map((o) => o.klass));
+  const afterClasses = tally(storm.after.map((o) => o.klass));
+  const unknown = storm.during.filter((o) => o.status === 'unknown').length;
+  const signalPairs = {};
+  for (const o of storm.during) {
+    if (o.signals.length > 1) signalPairs[o.signals.join('+')] = (signalPairs[o.signals.join('+')] || 0) + 1;
+  }
+  return {
+    scans_during_storm: storm.during.length,
+    scans_after_storm: storm.after.length,
+    elapsed_ms: storm.elapsed_ms,
+    scans_per_sec: storm.scans_per_sec,
+    classes_during_storm: classes,
+    classes_after_storm: afterClasses,
+    unknown_during_storm: unknown,
+    unknown_rate_during_storm: storm.during.length ? Number((unknown / storm.during.length).toExponential(3)) : null,
+    co_occurring_signals: signalPairs,
+    residual_af_writer_entries_after: storm.residual_entries,
+  };
+}
+
+const base = mkdtempSync(join(tmpdir(), 'af-scope-race-'));
+let createdRealScopes = [];
+
 try {
   // -------------------------------------------------------------------------
-  // S1: burst reap race, real inspectWriterScopes, reaper in a separate process
+  // S1: burst reap race (SIMULATED dirs), separate-process reaper
   // -------------------------------------------------------------------------
   for (let i = 0; i < SCOPES; i += 1) {
     const dir = join(base, `af-writer-race-${i}`);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'cgroup.procs'), '\n');
   }
-
-  const reaper = spawn(process.execPath, [fileURLToPath(import.meta.url), '--reaper', base, '--scopes', String(SCOPES)], {
-    stdio: 'ignore',
-  });
-
-  const observations = [];
-  let scans = 0;
-  const started = Date.now();
-  while (reaper.exitCode === null && scans < MAX_SCANS) {
-    const obs = inspectWriterScopes(base);
-    const c = classify(obs);
-    observations.push(c);
-    scans += 1;
-  }
-  await new Promise((resolve) => { reaper.once('exit', resolve); });
-  const elapsedMs = Date.now() - started;
-
-  const s1Classes = tally(observations.map((o) => o.klass));
-  const s1Reasons = {};
-  for (const o of observations) {
-    if (!o.reason) continue;
-    const key = o.reason.replace(base, '<base>').slice(0, 160);
-    s1Reasons[key] = (s1Reasons[key] || 0) + 1;
-  }
-  results.s1_burst = {
-    scans,
-    elapsed_ms: elapsedMs,
-    scans_per_sec: Math.round((scans / Math.max(elapsedMs, 1)) * 1000),
-    classes: s1Classes,
-    unknown_rate: observations.length ? Number(((scans - (s1Classes.empty || 0) - (s1Classes.active || 0)) / scans).toFixed(6)) : 0,
-    top_reasons: Object.entries(s1Reasons).sort((a, b) => b[1] - a[1]).slice(0, 5),
-  };
+  const reaper = spawn(process.execPath, [fileURLToPath(import.meta.url), '--reaper', base, '--scopes', String(SCOPES)], { stdio: 'ignore' });
+  const s1 = summarise(await scanStorm({ base, isDone: () => reaper.exitCode !== null, maxScans: MAX_SCANS }));
+  await waitExit(reaper);
+  results.s1_burst = { ...s1, mode: 'simulated directories' };
 
   // -------------------------------------------------------------------------
-  // S6: bounded rescan convergence for transient `unknown`
+  // S6: bounded rescan convergence during a storm (SIMULATED)
   // -------------------------------------------------------------------------
-  // Rebuild the scopes and reap them again, but this time record, for every
-  // `unknown`, how many immediate rescans (K = 1..3) reach a confirmed answer.
   const base2 = mkdtempSync(join(tmpdir(), 'af-scope-race2-'));
   for (let i = 0; i < SCOPES; i += 1) {
     const dir = join(base2, `af-writer-race-${i}`);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'cgroup.procs'), '\n');
   }
-  const reaper2 = spawn(process.execPath, [fileURLToPath(import.meta.url), '--reaper', base2, '--scopes', String(SCOPES)], {
-    stdio: 'ignore',
-  });
-
+  const reaper2 = spawn(process.execPath, [fileURLToPath(import.meta.url), '--reaper', base2, '--scopes', String(SCOPES)], { stdio: 'ignore' });
   const convergence = { unknown_total: 0, converged_at_1: 0, converged_at_2: 0, converged_at_3: 0, never: 0 };
   let scans2 = 0;
-  while (reaper2.exitCode === null && scans2 < MAX_SCANS) {
+  while (scans2 < MAX_SCANS) {
+    if (reaper2.exitCode !== null) break;
     const first = classify(inspectWriterScopes(base2));
     scans2 += 1;
-    if (first.status !== 'unknown') continue;
-    convergence.unknown_total += 1;
-    let settled = 0;
-    for (let k = 1; k <= 3 && settled === 0; k += 1) {
-      const again = classify(inspectWriterScopes(base2));
-      if (again.status !== 'unknown') settled = k;
+    if (first.status === 'unknown') {
+      convergence.unknown_total += 1;
+      let settled = 0;
+      for (let k = 1; k <= 3 && settled === 0; k += 1) {
+        const again = classify(inspectWriterScopes(base2));
+        if (again.status !== 'unknown') settled = k;
+      }
+      if (settled === 0) convergence.never += 1;
+      else convergence[`converged_at_${settled}`] += 1;
     }
-    if (settled === 0) convergence.never += 1;
-    else convergence[`converged_at_${settled}`] += 1;
+    await yieldLoop();
   }
-  await new Promise((resolve) => { reaper2.once('exit', resolve); });
-
-  const finalScan2 = classify(inspectWriterScopes(base2));
+  await waitExit(reaper2);
   results.s6_rescan = {
-    scans: scans2,
+    mode: 'simulated directories',
+    scans_during_storm: scans2,
     ...convergence,
     converged_rate: convergence.unknown_total
       ? Number(((convergence.unknown_total - convergence.never) / convergence.unknown_total).toFixed(4))
       : null,
-    final_status_after_all_reaps: finalScan2.status,
+    final_status_after_storm: classify(inspectWriterScopes(base2)).status,
   };
   rmSync(base2, { recursive: true, force: true });
 
   // -------------------------------------------------------------------------
-  // S5: clean reap -> confirmed empty
+  // S5: clean base
   // -------------------------------------------------------------------------
   const emptyDir = mkdtempSync(join(tmpdir(), 'af-scope-empty-'));
   const s5 = inspectWriterScopes(emptyDir);
@@ -192,46 +275,41 @@ try {
   rmSync(emptyDir, { recursive: true, force: true });
 
   // -------------------------------------------------------------------------
-  // S2: persistent orphan (scope dir, no cgroup.procs) - must never converge
+  // Persistent classes S2/S3/S4 - uniform budget: first scan + 3 rescans
   // -------------------------------------------------------------------------
+  const describePersistent = (obsList) => ({
+    scans_performed: obsList.length,
+    statuses: obsList.map((o) => o.status),
+    classes: obsList.map((o) => o.klass),
+    signals: obsList.map((o) => o.signals),
+    converged: obsList.some((o) => o.status !== 'unknown'),
+    retain: obsList[0].retain,
+    first_reason: obsList[0].reason,
+  });
+
   const orphanBase = mkdtempSync(join(tmpdir(), 'af-scope-orphan-'));
   mkdirSync(join(orphanBase, 'af-writer-orphan'), { recursive: true });
-  const orphanScans = [];
-  for (let k = 1; k <= 3; k += 1) orphanScans.push(classify(inspectWriterScopes(orphanBase)));
-  results.s2_orphan = {
-    first: orphanScans[0],
-    rescans: orphanScans.slice(1).map((o) => o.status),
-    converged: orphanScans.slice(1).some((o) => o.status !== 'unknown'),
-    retain: orphanScans[0].retain,
-  };
+  const orphanObs = [];
+  for (let k = 0; k <= PERSISTENT_RESCANS; k += 1) orphanObs.push(classify(inspectWriterScopes(orphanBase)));
+  results.s2_orphan = { mode: 'simulated', ...describePersistent(orphanObs) };
   rmSync(orphanBase, { recursive: true, force: true });
 
-  // -------------------------------------------------------------------------
-  // S3: unreadable scope (procs exists but the directory denies traversal)
-  // -------------------------------------------------------------------------
   const permBase = mkdtempSync(join(tmpdir(), 'af-scope-perm-'));
   const permDir = join(permBase, 'af-writer-perm');
   mkdirSync(permDir, { recursive: true });
   writeFileSync(join(permDir, 'cgroup.procs'), '4242\n');
   chmodSync(permDir, 0o000);
-  const permFirst = classify(inspectWriterScopes(permBase));
-  const permAgain = classify(inspectWriterScopes(permBase));
-  // What the PRODUCTION probe can currently tell: existsSync() swallows EACCES.
-  const procsVisibleToExistsSync = existsSync(join(permDir, 'cgroup.procs'));
+  const permObs = [];
+  for (let k = 0; k <= PERSISTENT_RESCANS; k += 1) permObs.push(classify(inspectWriterScopes(permBase)));
   results.s3_unreadable = {
-    first: permFirst,
-    rescan: permAgain.status,
-    converged: permAgain.status !== 'unknown',
-    retain: permFirst.retain,
-    existsSync_swallows_error: procsVisibleToExistsSync === false,
-    note: 'existsSync() reports "missing" for EACCES, so the current reason cannot distinguish a reaped scope from an unreadable one',
+    mode: 'simulated',
+    ...describePersistent(permObs),
+    existsSync_swallows_error: existsSync(join(permDir, 'cgroup.procs')) === false,
+    note: 'existsSync() reports false for EACCES; with the fixed classifier priority this observation is a permission class, not "missing cgroup.procs"',
   };
   chmodSync(permDir, 0o700);
   rmSync(permBase, { recursive: true, force: true });
 
-  // -------------------------------------------------------------------------
-  // S4: truncation (deeper than MAX_WRITER_SCOPE_DEPTH)
-  // -------------------------------------------------------------------------
   const deepBase = mkdtempSync(join(tmpdir(), 'af-scope-deep-'));
   let cur = join(deepBase, 'af-writer-deep');
   mkdirSync(cur, { recursive: true });
@@ -241,30 +319,14 @@ try {
     mkdirSync(cur);
     writeFileSync(join(cur, 'cgroup.procs'), '\n');
   }
-  const deep = classify(inspectWriterScopes(deepBase));
-  results.s4_truncated = { ...deep, retain: deep.retain };
+  const deepObs = [];
+  for (let k = 0; k <= PERSISTENT_RESCANS; k += 1) deepObs.push(classify(inspectWriterScopes(deepBase)));
+  results.s4_truncated = { mode: 'simulated', ...describePersistent(deepObs) };
   rmSync(deepBase, { recursive: true, force: true });
 
   // -------------------------------------------------------------------------
-  // Decision sanity: the production helpers stay fail-closed on `unknown`
+  // S7: SIMULATED live writer during a storm (kept, but labelled simulated)
   // -------------------------------------------------------------------------
-  const unknownBase = mkdtempSync(join(tmpdir(), 'af-scope-unknown-'));
-  process.env.AF_CGROUP_BASE = unknownBase;
-  rmSync(unknownBase, { recursive: true, force: true }); // now nonexistent -> unknown
-  let getActiveThrew = false;
-  try { getActiveWriterScopes(); } catch (err) { getActiveThrew = err.code === 'WRITER_SCOPE_SCAN_UNKNOWN'; }
-  results.decision_helpers = {
-    getActiveWriterScopes_throws_on_unknown: getActiveThrew,
-    force_used: false,
-    acknowledge_live_scopes_used: false,
-  };
-
-  // -------------------------------------------------------------------------
-  // S7: a LIVE writer must never be missed, even while other scopes are reaped
-  // -------------------------------------------------------------------------
-  // A bounded rescan is only safe if it can never turn a live writer into "empty".
-  // Here one scope holds this process's own pid and is never reaped, while a storm
-  // removes neighbouring scopes; every observation must be `active` or `unknown`.
   const liveBase = mkdtempSync(join(tmpdir(), 'af-scope-live-'));
   const liveDir = join(liveBase, 'af-writer-live');
   mkdirSync(liveDir, { recursive: true });
@@ -274,57 +336,173 @@ try {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'cgroup.procs'), '\n');
   }
-  const liveReaper = spawn(process.execPath, [fileURLToPath(import.meta.url), '--reaper', liveBase, '--scopes', String(SCOPES)], {
-    stdio: 'ignore',
-  });
-  const liveClasses = {};
+  const liveReaper = spawn(process.execPath, [fileURLToPath(import.meta.url), '--reaper', liveBase, '--scopes', String(SCOPES)], { stdio: 'ignore' });
+  const liveDuring = [];
   let liveScans = 0;
-  let falseEmpty = 0;
-  let missedLive = 0;
-  while (liveReaper.exitCode === null && liveScans < MAX_SCANS) {
-    const obs = inspectWriterScopes(liveBase);
-    const c = classify(obs);
-    liveClasses[c.klass] = (liveClasses[c.klass] || 0) + 1;
+  while (liveScans < MAX_SCANS) {
+    if (liveReaper.exitCode !== null) break;
+    liveDuring.push(classify(inspectWriterScopes(liveBase)));
     liveScans += 1;
-    if (c.status === 'empty') falseEmpty += 1;
-    if (c.status === 'active' && !obs.scopes.some((s) => s.pids.includes(String(process.pid)))) missedLive += 1;
+    await yieldLoop();
   }
-  await new Promise((resolve) => { liveReaper.once('exit', resolve); });
-  results.s7_live_writer = {
-    scans: liveScans,
-    classes: liveClasses,
-    false_empty_while_live_scope_exists: falseEmpty,
-    active_without_the_live_pid: missedLive,
+  await waitExit(liveReaper);
+  results.s7_live_writer_simulated = {
+    mode: 'simulated directories (the PID is written but the process is NOT joined to a real cgroup)',
+    scans_during_storm: liveScans,
+    classes: tally(liveDuring.map((o) => o.klass)),
+    false_empty_while_live_scope_exists: liveDuring.filter((o) => o.status === 'empty').length,
     final_status: classify(inspectWriterScopes(liveBase)).status,
   };
   rmSync(liveBase, { recursive: true, force: true });
+
+  // -------------------------------------------------------------------------
+  // S8a/S8b/S9: REAL cgroup v2 base, real child processes, production reaping
+  // -------------------------------------------------------------------------
+  const realBaseAvailable = existsSync(CGROUP_BASE)
+    && existsSync(join(CGROUP_BASE, 'cgroup.procs'))
+    && existsSync(join(CGROUP_BASE, 'cgroup.controllers'));
+
+  if (!realBaseAvailable) {
+    results.s8a_real_cgroup_storm = { skipped: `no delegated cgroup v2 base at ${CGROUP_BASE}` };
+    results.s8b_real_live_writer = { skipped: 'no delegated cgroup v2 base' };
+    results.s9_post_quiesce = { skipped: 'no delegated cgroup v2 base' };
+  } else {
+    process.env.AF_CGROUP_BASE = CGROUP_BASE;
+    const REAL_SCOPES = Number(argValue('--real-scopes', '60'));
+    const preexisting = readdirSync(CGROUP_BASE).filter((n) => n.startsWith('af-writer-'));
+
+    const spawnRealWriter = () => {
+      const scope = createWriterScope({ runId: 'A2-QUANT', taskId: 'A2-QUANT' });
+      if (!scope || scope.kind !== 'cgroup') return null;
+      const child = spawnManaged('bash', ['-c', 'exec sleep 30'], { stdio: 'ignore' });
+      attachWriterScope(scope, child.pid);
+      createdRealScopes.push({ scope, child });
+      return { scope, child };
+    };
+
+    // S8a: reap storm over real cgroups
+    const realScopes = [];
+    for (let i = 0; i < REAL_SCOPES; i += 1) {
+      const w = spawnRealWriter();
+      if (w) realScopes.push(w);
+    }
+    const cgReaper = spawn(process.execPath, [fileURLToPath(import.meta.url), '--cgroup-reaper', CGROUP_BASE, '--scopes', String(realScopes.length)], { stdio: 'ignore' });
+    const s8a = summarise(await scanStorm({ base: CGROUP_BASE, isDone: () => cgReaper.exitCode !== null, maxScans: MAX_SCANS }));
+    await waitExit(cgReaper);
+    results.s8a_real_cgroup_storm = {
+      mode: 'REAL cgroup v2 (delegated base), real sleep(30) children, production reapWriterScope in a separate process',
+      scopes_created: realScopes.length,
+      preexisting_foreign_scopes: preexisting.length,
+      ...s8a,
+    };
+
+    // Cleanup any real scope the reaper did not finish.
+    for (const w of createdRealScopes) {
+      try { await reapWriterScope(w.scope, { graceMs: 500, pollMs: 10 }); } catch { /* best effort */ }
+      try { await killTree(w.child, { graceMs: 500 }); } catch { /* best effort */ }
+    }
+
+    // S8b: a REAL live writer must never be reported as empty during a storm
+    createdRealScopes = [];
+    const liveReal = spawnRealWriter();
+    const stormScopes = [];
+    for (let i = 0; i < REAL_SCOPES; i += 1) {
+      const w = spawnRealWriter();
+      if (w) stormScopes.push(w);
+    }
+    const cgReaper2 = spawn(process.execPath, [
+      fileURLToPath(import.meta.url), '--cgroup-reaper', CGROUP_BASE,
+      '--keep', liveReal ? liveReal.scope.path : '',
+      '--scopes', String(stormScopes.length),
+    ], { stdio: 'ignore' });
+    const liveRealDuring = [];
+    let liveRealScans = 0;
+    while (liveRealScans < MAX_SCANS) {
+      if (cgReaper2.exitCode !== null) break;
+      liveRealDuring.push(classify(inspectWriterScopes(CGROUP_BASE)));
+      liveRealScans += 1;
+      await yieldLoop();
+    }
+    await waitExit(cgReaper2);
+    results.s8b_real_live_writer = {
+      mode: 'REAL cgroup v2: one live scope is never reaped while neighbours are reaped',
+      live_scope_created: Boolean(liveReal),
+      live_child_pid: liveReal?.child?.pid ?? null,
+      scans_during_storm: liveRealScans,
+      classes: tally(liveRealDuring.map((o) => o.klass)),
+      false_empty_while_live_scope_exists: liveRealDuring.filter((o) => o.status === 'empty').length,
+      active_seen: liveRealDuring.some((o) => o.status === 'active'),
+    };
+
+    // S9: post-quiesce measurement (no concurrent reaping at all)
+    for (const w of createdRealScopes) {
+      if (liveReal && w.scope.path === liveReal.scope.path) continue;
+      try { await reapWriterScope(w.scope, { graceMs: 500, pollMs: 10 }); } catch { /* best effort */ }
+      try { await killTree(w.child, { graceMs: 500 }); } catch { /* best effort */ }
+    }
+    if (liveReal) {
+      try { await reapWriterScope(liveReal.scope, { graceMs: 500, pollMs: 10 }); } catch { /* best effort */ }
+      try { await killTree(liveReal.child, { graceMs: 500 }); } catch { /* best effort */ }
+    }
+
+    // S9: post-quiesce measurement (no concurrent reaping at all). Settle first so
+    // the last rmdir() has definitely completed before the quiet state is measured.
+    await new Promise((resolve) => { setTimeout(resolve, 250); });
+    const postScans = [];
+    for (let i = 0; i < 200; i += 1) {
+      postScans.push(classify(inspectWriterScopes(CGROUP_BASE)));
+      await yieldLoop();
+    }
+    results.s9_post_quiesce = {
+      mode: 'REAL cgroup v2 after every reaper finished (quiesced)',
+      scans: postScans.length,
+      classes: tally(postScans.map((o) => o.klass)),
+      unknown_count: postScans.filter((o) => o.status === 'unknown').length,
+      residual_af_writer_entries: readdirSync(CGROUP_BASE).filter((n) => n.startsWith('af-writer-')).length,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Decision helper sanity
+  // -------------------------------------------------------------------------
+  const unknownBase = mkdtempSync(join(tmpdir(), 'af-scope-unknown-'));
+  process.env.AF_CGROUP_BASE = unknownBase;
+  rmSync(unknownBase, { recursive: true, force: true });
+  let getActiveThrew = false;
+  try { getActiveWriterScopes(); } catch (err) { getActiveThrew = err.code === 'WRITER_SCOPE_SCAN_UNKNOWN'; }
+  results.decision_helpers = {
+    getActiveWriterScopes_throws_on_unknown: getActiveThrew,
+    force_used: false,
+    acknowledge_live_scopes_used: false,
+  };
 
   results.finished_at = new Date().toISOString();
 
   // -------------------------------------------------------------------------
   // Report
   // -------------------------------------------------------------------------
-  console.log('=== A2 quantification: writer-scope scan vs. concurrent reap ===\n');
-  console.log(`S1 burst reap race (separate-process reaper, ${SCOPES} scopes)`);
-  console.log(`  scans=${results.s1_burst.scans} in ${elapsedMs}ms (${results.s1_burst.scans_per_sec}/s)`);
-  console.log(`  classes: ${JSON.stringify(results.s1_burst.classes)}`);
-  console.log(`  unknown rate: ${results.s1_burst.unknown_rate}`);
-  for (const [reason, n] of results.s1_burst.top_reasons) console.log(`    x${n}  ${reason}`);
-  console.log('\nS6 bounded rescan convergence');
-  console.log(`  unknown observations: ${results.s6_rescan.unknown_total}`);
-  console.log(`  converged at K=1/2/3: ${results.s6_rescan.converged_at_1}/${results.s6_rescan.converged_at_2}/${results.s6_rescan.converged_at_3}`);
-  console.log(`  never converged: ${results.s6_rescan.never}  (rate=${results.s6_rescan.converged_rate})`);
-  console.log(`  final status after all reaps: ${results.s6_rescan.final_status_after_all_reaps}`);
-  console.log('\nPersistent classes (must stay fail-closed)');
-  console.log(`  S2 orphan dir without procs : ${JSON.stringify(results.s2_orphan)}`);
-  console.log(`  S3 unreadable scope dir     : ${JSON.stringify({ first: results.s3_unreadable.first, rescan: results.s3_unreadable.rescan, existsSync_swallows_error: results.s3_unreadable.existsSync_swallows_error })}`);
-  console.log(`  S4 truncated scan           : ${JSON.stringify({ klass: results.s4_truncated.klass, retain: results.s4_truncated.retain })}`);
-  console.log(`  S5 clean empty base         : ${JSON.stringify(results.s5_clean)}`);
-  console.log(`\nS7 live writer during a reap storm`);
-  console.log(`  scans=${results.s7_live_writer.scans} classes=${JSON.stringify(results.s7_live_writer.classes)}`);
-  console.log(`  false 'empty' while a live scope exists: ${results.s7_live_writer.false_empty_while_live_scope_exists}`);
-  console.log(`  'active' without the live pid          : ${results.s7_live_writer.active_without_the_live_pid}`);
-  console.log(`  final status                           : ${results.s7_live_writer.final_status}`);
+  console.log('=== A2 quantification v2: writer-scope scan vs. concurrent reap ===\n');
+  console.log(`S1 simulated reap storm (${SCOPES} dirs, separate-process reaper)`);
+  console.log(`  during-storm scans=${results.s1_burst.scans_during_storm} unknown=${results.s1_burst.unknown_during_storm} rate=${results.s1_burst.unknown_rate_during_storm}`);
+  console.log(`  classes(during)=${JSON.stringify(results.s1_burst.classes_during_storm)}`);
+  console.log(`  classes(after) =${JSON.stringify(results.s1_burst.classes_after_storm)}  co-occurring signals=${JSON.stringify(results.s1_burst.co_occurring_signals)}`);
+  console.log('\nS6 bounded rescan (during storm)');
+  console.log(`  unknown=${results.s6_rescan.unknown_total} k1=${results.s6_rescan.converged_at_1} k2=${results.s6_rescan.converged_at_2} k3=${results.s6_rescan.converged_at_3} never=${results.s6_rescan.never} final=${results.s6_rescan.final_status_after_storm}`);
+  console.log('\nPersistent classes (uniform budget: 1 scan + 3 rescans)');
+  for (const key of ['s2_orphan', 's3_unreadable', 's4_truncated']) {
+    const r = results[key];
+    console.log(`  ${key}: scans=${r.scans_performed} classes=${JSON.stringify(r.classes)} converged=${r.converged} retain=${r.retain}`);
+  }
+  console.log(`  s3 existsSync swallows EACCES: ${results.s3_unreadable.existsSync_swallows_error}`);
+  console.log(`  s5 clean base: ${JSON.stringify(results.s5_clean)}`);
+  console.log('\nS7 SIMULATED live writer during storm');
+  console.log(`  scans=${results.s7_live_writer_simulated.scans_during_storm} classes=${JSON.stringify(results.s7_live_writer_simulated.classes)} false_empty=${results.s7_live_writer_simulated.false_empty_while_live_scope_exists}`);
+  console.log('\nS8a REAL cgroup reap storm');
+  console.log(`  ${JSON.stringify({ scopes: results.s8a_real_cgroup_storm.scopes_created, scans: results.s8a_real_cgroup_storm.scans_during_storm, unknown: results.s8a_real_cgroup_storm.unknown_during_storm, rate: results.s8a_real_cgroup_storm.unknown_rate_during_storm, classes: results.s8a_real_cgroup_storm.classes_during_storm, skipped: results.s8a_real_cgroup_storm.skipped })}`);
+  console.log('\nS8b REAL live writer during storm');
+  console.log(`  ${JSON.stringify(results.s8b_real_live_writer)}`);
+  console.log('\nS9 REAL post-quiesce');
+  console.log(`  ${JSON.stringify(results.s9_post_quiesce)}`);
   console.log(`\nDecision helpers: ${JSON.stringify(results.decision_helpers)}`);
 
   if (JSON_OUT) {
@@ -332,5 +510,10 @@ try {
     console.log(`\nJSON written to ${JSON_OUT}`);
   }
 } finally {
+  // Never leave a real writer scope or a child behind.
+  for (const w of createdRealScopes) {
+    try { await reapWriterScope(w.scope, { graceMs: 500, pollMs: 10 }); } catch { /* best effort */ }
+    try { await killTree(w.child, { graceMs: 500 }); } catch { /* best effort */ }
+  }
   rmSync(base, { recursive: true, force: true });
 }
