@@ -41,7 +41,7 @@
 | D4 | 单次运行产物 | `runtime/runs/**` | 生命周期 | 列目录 + 逐文件严格解析；**半截文件按不可核验** |
 | D5 | 执行器运行事件 | `runtime/executor-runtime-events.jsonl` | `lib/executor-runtime-guard.mjs` | **JSONL 逐行解析**；坏行计数并标注（不丢弃整文件） |
 | D6 | 操作者活动 | `runtime/operator-activity/**` | `lib/operator-control.mjs` | 同上；标注 operator 身份与时间 |
-| D7 | 告警（权威） | `<AF_BOUNDARY_ALERTS_FILE>`（默认 `runtime/boundary-alerts.jsonl`）+ `.state.json` | `recordBoundaryAlert` / `resolveBoundaryAlert` | 复用 `inspectBoundaryAlerts()`：**事件日志为真源**、状态索引派生、损坏即 `UNVERIFIABLE`（CLI 退出码 3） |
+| D7 | 告警（权威） | `<AF_BOUNDARY_ALERTS_FILE>`（默认 `runtime/boundary-alerts.jsonl`）+ `.state.json` | `recordBoundaryAlert` / `resolveBoundaryAlert` | **控制台必须用 `readBoundaryAlertEvents()` + `reduceAlertEvents()` 纯读取 + 内存重放**（事件日志为真源、状态索引**只在内存**派生、损坏即 `UNVERIFIABLE`）；**`inspectBoundaryAlerts()` 会写回索引，属写操作，展示层禁用** |
 | D8 | 恢复审计 | `<AF_BOUNDARY_AUDIT_DIR>`（`recovery-<stamp>-{intent,result}.json`） | `recoverRetainedBoundary`（两阶段） | 按 recovery ID 归并 INTENT/RESULT；**只有 INTENT 无 RESULT** → 明确显示"恢复未完成/结果缺失" |
 | D9 | 保护快照 | `<AF_BOUNDARY_SNAPSHOT_DIR>`（`boundarySnapshotDir()`） | `protectPathsWithNonOwnerBoundary` | 存在性 + 条目数 + 解析结果；缺失 → 标注"无法精确还原" |
 | D10 | 通知投递 | `<alert log>.notify.jsonl`、`.notify-pending.json`、`.notify.json` | `lib/boundary-notify.mjs` | 复用 `readNotifyEvents()` / `inspectPendingNotifications()`：队列不可核验 → **`UNVERIFIABLE`（退出 3）** |

@@ -137,6 +137,34 @@ test('design: the next-step architecture contract keeps its required deliverable
   }
 });
 
+test('design: the three contract corrections are recorded', () => {
+  const arch = readFileSync(join(process.cwd(), 'docs', 'design', 'SYSTEM-ARCHITECTURE-NEXT.md'), 'utf8');
+  const consoleDoc = readFileSync(join(process.cwd(), 'docs', 'design', 'OPERATIONS-CONSOLE-DESIGN.md'), 'utf8');
+  // 1) index repair is a write: the console must use a pure read + in-memory replay.
+  assert.match(arch, /写操作/);
+  assert.match(arch, /纯读取 \+ 内存重放|纯读/);
+  assert.match(arch, /不得用于控制台|禁止/);
+  assert.match(arch, /只在内存/);
+  // 2) recovery phases are evidence, never a safety verdict.
+  assert.match(consoleDoc, /只呈现证据|不作结论/);
+  assert.match(consoleDoc, /结果待核对/);
+  assert.match(consoleDoc, /不得输出"未修改，可重试"|~~"未修改，可重试"~~/);
+  assert.match(consoleDoc, /必须同时检查实际恢复结果/);
+  // 3) bounded reads and exports.
+  assert.match(arch, /数据根白名单/);
+  assert.match(arch, /路径穿越拒绝/);
+  assert.match(arch, /已存在文件默认拒绝覆盖/);
+  assert.match(consoleDoc, /读取与导出不能越界/);
+  // decisions + unified exit code 3.
+  assert.match(consoleDoc, /导出默认脱敏/);
+  assert.match(consoleDoc, /不做持久化索引/);
+  assert.match(consoleDoc, /不可核验统一退出 3|不可核验统一为 3/);
+  assert.match(consoleDoc, /实施顺序/);
+  for (const b of ['B1', 'B2', 'B3', 'B4', 'B5', 'B6']) {
+    assert.match(consoleDoc, new RegExp(b), `the console doc must keep behaviour test ${b}`);
+  }
+});
+
 test('design: the operations console keeps the six pages and the read-only rules', () => {
   const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'OPERATIONS-CONSOLE-DESIGN.md'), 'utf8');
   for (const page of ['总览', '任务列表', '任务详情', '结果与证据', '异常中心', '审计详情']) {

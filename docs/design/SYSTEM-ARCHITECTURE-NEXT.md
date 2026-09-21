@@ -195,11 +195,26 @@ ALERT_CLOSED → COMPLETE`，另有 `SKIPPED_*` / `DEFERRED_*` / `ABORTED_*` / `
 |---|---|---|
 | `readTaskFile()` / `loadTask()` | 任务记录（严格解析） | 无 |
 | `readLock()` / `isLockStale()` | 租约与陈旧判定 | 无 |
-| `inspectBoundaryAlerts()` / `readBoundaryAlertEvents()` | 告警状态与事件 | 无（坏状态文件会**自动重建**，属修复非业务写） |
+| `readBoundaryAlertEvents()` + `reduceAlertEvents()`（**纯读取 + 内存重放**） | 告警事件与内存态 | **无**：不写盘、不加锁 |
+| ~~`inspectBoundaryAlerts()`~~（**不得用于控制台**） | 告警状态（含**索引修复**） | **有副作用：写操作**——实现会在读取路径调用 `writeState()` 重写派生索引；控制台/展示层**禁止**使用 |
 | `loadPathSnapshot()` | 快照内容 | 无 |
 | `readNotifyEvents()` / `inspectPendingNotifications()` | 投递记录与队列状态 | 无 |
 | `inspectWriterScopes()` / `evaluateScopeScan()` | scope 探测结果（不修改） | 无 |
 | `readRunEvents()` / 操作者活动读取 | 运行事件 | 无 |
+
+### 5.1.1 只读的严格定义（**契约修正 1**）
+
+> **判定标准**：一个入口只要可能**创建/重写/删除任何文件**（含派生索引"修复"、锁文件、缓存）或**获取锁**，
+> 就不是只读入口，**不得**被展示层调用。
+
+| 入口 | 现状 | 控制台可用性 |
+|---|---|---|
+| `inspectBoundaryAlerts()` | 读取时会 `writeState()` 重写 `.state.json`（best-effort 索引修复） | **禁止**（写操作） |
+| `readBoundaryAlertEvents()` + `reduceAlertEvents()` | 纯读事件日志 + 纯函数重放 | **可用**（首选） |
+| 派生索引（`.state.json`、`.notify.json`） | 磁盘上的可重建索引 | 首版**只在内存构建**，**不写回**；写回仅由写入方（既有 CLI/生命周期）负责 |
+
+**控制台要求**：使用**纯读取 + 内存重放**的查询入口；**不写回、不加锁**；
+磁盘派生索引只作为**只读参考**（若与事件日志不一致，以事件日志为准并在输出中标 `index_drift`）。
 
 ### 5.2 需审批/审计的操作（**不得由前端直接拼接**）
 
@@ -210,6 +225,17 @@ ALERT_CLOSED → COMPLETE`，另有 `SKIPPED_*` / `DEFERRED_*` / `ABORTED_*` / `
 | 通知测试 | `af-admin boundary notify-test` | 仅 `live` + `--confirm` |
 | 提升/授权 | 既有门禁与提升流程 | 授权 closure、四带门、硬 G |
 | 任务取消/重跑（未来） | 任务服务 | 幂等标识 + 审计；**不得绕过评审/验收/安全边界** |
+
+### 5.2.1 读取与导出的边界（**契约修正 3**）
+
+| 约束 | 规则 |
+|---|---|
+| **数据根白名单** | 只允许读取**配置的数据根**（`AF_TASKS_DIR`、`AF_LOCKS_DIR`、`AF_RUNTIME_DIR`、`AF_BOUNDARY_AUDIT_DIR`、`AF_BOUNDARY_SNAPSHOT_DIR`、告警/通知文件、`runtime/`）；根外路径一律拒绝 |
+| **记录引用校验** | `audit <ref>` 只接受**已验证的记录引用**（来自查询结果的 ID，或白名单根下、经 `realpath` 归一后仍在根内的路径）；不接受任意路径字符串 |
+| **路径穿越拒绝** | 拒绝 `..`、NUL、绝对路径越界、根外符号链接（`realpath` 归一后再校验前缀） |
+| **导出边界** | `render --out <dir>` 只能写入**显式指定的输出目录**；**禁止**覆盖/写入任务、审计、CAS、runtime、locks 等来源目录；**已存在文件默认拒绝覆盖**（需显式 `--force-overwrite`，且仍在输出目录内） |
+| **导出内容** | 默认脱敏（见控制台文档 §5）；`--no-redact` 仅影响本机路径，**凭据永不输出** |
+| 违规行为 | 一律拒绝并**非零退出**（用法/越界→`2`；越界尝试记入 stderr 提示，不留部分产物） |
 
 ### 5.3 退出码约定（跨模块统一）
 
@@ -258,9 +284,11 @@ ALERT_CLOSED → COMPLETE`，另有 `SKIPPED_*` / `DEFERRED_*` / `ABORTED_*` / `
 | 不能把不可确认显示为正常 | §6 统一行为 + §5.3 退出码 3 |
 | 不制造第二套事实来源 | §1 边界规则（单一写者、派生可重建、证据不可覆盖） |
 
-**未决问题**
+**首版决定（评审已定）**
 
-1. 任务记录 schema 的正式版本字段（当前为 `state_version` + 字段增量），是否需要一个顶层 `record_schema_version`？
-2. 执行器健康状态是否需要进入控制台"总览"（会与任务状态并列，需避免混淆）？
-3. 证据（验收输出）是否需要独立的保留策略与容量上限（与阶段 3 的磁盘策略一并定）。
-4. 资产键在 `cas_dir` 变更（迁移/重建）时如何保持关联稳定（是否需要稳定 `asset_id`）。
+1. 任务记录 schema：**沿用 `state_version` + 字段增量**，首版不引入顶层 `record_schema_version`（仅记录为后续候选）。
+2. 执行器健康：**可独立展示**，但只读既有记录，**不触发健康探针、不做真实调用**，且与任务状态**分列**不混淆。
+3. 证据保留策略：首版不设独立配额（留待阶段 3 与磁盘策略一并定）。
+4. **资产迁移后缺少明确关联的，一律标"未关联"**，不猜测（不引入启发式 `asset_id` 推断）。
+
+**仍开放**：是否需要稳定 `asset_id` 以跨迁移保持关联（阶段 2/3 再定）。
