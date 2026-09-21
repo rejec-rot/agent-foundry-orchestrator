@@ -1,0 +1,60 @@
+{
+  "schema": "af-console-overview-v1",
+  "generated_at": "2026-09-21T12:00:00.000Z",
+  "blocks": {
+    "tasks": {
+      "source": "tasks",
+      "read_status": "ok",
+      "as_of": null,
+      "count": 2,
+      "reason": null
+    },
+    "alerts": {
+      "source": "boundary-alerts",
+      "read_status": "ok",
+      "as_of": "2026-09-21T09:00:00.000Z",
+      "open": 1,
+      "reason": null
+    },
+    "notify": {
+      "source": "boundary-notify",
+      "read_status": "ok",
+      "as_of": "2026-09-21T09:00:00.000Z",
+      "pending": 0,
+      "exhausted": 1,
+      "reason": null
+    }
+  },
+  "needs_human": [],
+  "unverifiable": [],
+  "correlation": {
+    "unmatched": [],
+    "alert_count": 1,
+    "delivery_count": 2,
+    "pending_count": 0
+  },
+  "tasks": [
+    {
+      "task_id": "T-OK",
+      "state": "COMPLETED",
+      "state_version": 7,
+      "boundary_state": "DISENGAGED",
+      "lock_stale": null,
+      "needs_human": false,
+      "read_status": "ok",
+      "as_of": "2026-09-21T09:00:00.000Z",
+      "source": "tasks"
+    },
+    {
+      "task_id": "T-RETAIN",
+      "state": "FAILED",
+      "state_version": 3,
+      "boundary_state": "PROTECTION_RETAINED_PENDING_RECOVERY",
+      "lock_stale": true,
+      "needs_human": false,
+      "read_status": "ok",
+      "as_of": "2026-09-21T09:00:00.000Z",
+      "source": "tasks"
+    }
+  ]
+}

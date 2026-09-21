@@ -31,6 +31,14 @@ import { saveTaskWithVersion } from './lib/store.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
 import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest, inspectPendingNotifications, flushPendingNotifications } from './lib/boundary-notify.mjs';
+import {
+  resolveDataRoots,
+  assertWithinRoots,
+  buildOverview,
+  buildTaskView,
+  buildExceptionsView,
+  redactModel,
+} from './lib/console/read-model.mjs';
 
 const AF_ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const TASKS_DIR = process.env.AF_TASKS_DIR || join(AF_ROOT, 'tasks');
@@ -70,6 +78,7 @@ function printUsage() {
   af-admin logs rotate [--days <N>] [--events-file <path>] [--archive-dir <path>]
   af-admin reclaim orphans [--confirm] [--runs-dir <path>]
   af-admin boundary recover --canonical <dir> [--cas <dir>] --reason "<reason>" [--ack-live-scopes] [--allow-guessed-modes] [--recovered-by "<name>"]
+  af-admin console overview|tasks|task <id>|exceptions|audit <ref> [--json] [--no-redact] [--hash-paths]
   af-admin boundary alerts [--json] [--include-resolved]
   af-admin boundary alert-resolve --canonical <dir> --reason "<reason>"
   af-admin boundary notify-status [--json]
@@ -403,6 +412,71 @@ async function main() {
     console.error(`unknown boundary subcommand: ${subCmd} (expected: recover, alerts, alert-resolve, notify-status, notify-test)`);
     printUsage();
     process.exit(1);
+  } else if (mainCmd === 'console') {
+    // READ-ONLY: never writes a file, never takes a lock, never calls a mutating API.
+    // Every block carries source/read_status/as_of so a failure is never "nothing to report".
+    const sub = subCmd;
+    const json = args.includes('--json');
+    const redact = !args.includes('--no-redact');
+    const hashPaths = args.includes('--hash-paths');
+    const roots = resolveDataRoots();
+    const now = Date.now();
+    let model = null;
+    let exitCode = 0;
+    try {
+      if (sub === 'overview' || sub === 'tasks') {
+        model = buildOverview({ roots, now });
+      } else if (sub === 'task') {
+        const taskId = args[2];
+        if (!taskId) { console.error('error: console task <task_id> is required'); process.exit(2); }
+        model = buildTaskView({ taskId, roots, now });
+        if (model.blocks.task.read_status === 'missing') exitCode = 2;
+        else if (model.blocks.task.read_status !== 'ok') exitCode = 3;
+      } else if (sub === 'exceptions') {
+        model = buildExceptionsView({ roots, now });
+      } else if (sub === 'audit') {
+        // A record reference must resolve inside the configured data roots; never a raw path.
+        const ref = args[2];
+        if (!ref) { console.error('error: console audit <record-reference> is required'); process.exit(2); }
+        const containment = assertWithinRoots(ref, roots);
+        if (!containment.ok) {
+          console.error(`error: refusing to read outside the configured data roots: ${containment.reason}`);
+          process.exit(2);
+        }
+        try {
+          model = {
+            schema: 'af-console-audit-v1',
+            generated_at: new Date(now).toISOString(),
+            ref,
+            root: containment.root,
+            record: JSON.parse(readFileSync(containment.path, 'utf8')),
+          };
+        } catch (err) {
+          console.error(`error: record could not be read as JSON: ${err.message}`);
+          process.exit(3);
+        }
+      } else {
+        console.error(`unknown console subcommand: ${sub ?? '(none)'} (expected: overview, tasks, task, exceptions, audit)`);
+        process.exit(2);
+      }
+    } catch (err) {
+      console.error(`error: console query failed: ${err.message}`);
+      process.exit(3);
+    }
+
+    // Default output is redacted (paths hashed, credentials removed); --no-redact shows local
+    // paths verbatim, and credentials are still removed.
+    const { model: safe, paths_redacted, path_mode } = redactModel(model, { redact, hash: hashPaths || redact });
+    const blockUnverifiable = Object.values(model.blocks ?? {}).filter((block) => block?.read_status === 'unverifiable').length;
+    const listedUnverifiable = (model.unverifiable ?? []).length;
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ ...safe, paths_redacted, path_mode, credentials_redacted: true }, null, 2)}\n`);
+    } else {
+      console.log(`# ${model.schema} @ ${model.generated_at}`);
+      console.log(JSON.stringify(safe, null, 2));
+    }
+    if (blockUnverifiable + listedUnverifiable > 0 && exitCode === 0) exitCode = 3;
+    process.exit(exitCode);
   } else if (mainCmd === 'reclaim') {
     if (subCmd === 'orphans') {
       // Debris from a HARD kill (SIGKILL): detached children survive and sandbox
