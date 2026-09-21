@@ -30,6 +30,7 @@ import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
 import { saveTaskWithVersion } from './lib/store.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
+import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload } from './lib/boundary-notify.mjs';
 
 const AF_ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const TASKS_DIR = process.env.AF_TASKS_DIR || join(AF_ROOT, 'tasks');
@@ -70,7 +71,9 @@ function printUsage() {
   af-admin reclaim orphans [--confirm] [--runs-dir <path>]
   af-admin boundary recover --canonical <dir> [--cas <dir>] --reason "<reason>" [--ack-live-scopes] [--allow-guessed-modes] [--recovered-by "<name>"]
   af-admin boundary alerts [--json] [--include-resolved]
-  af-admin boundary alert-resolve --canonical <dir> --reason "<reason>" 
+  af-admin boundary alert-resolve --canonical <dir> --reason "<reason>"
+  af-admin boundary notify-status
+  af-admin boundary notify-test --canonical <dir> [--reason "<reason>"] [--confirm]
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
   af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
   af-admin restore-point restore --task-id <id> --revision <n> [--confirm] [--prune] [--tasks-dir <path>]`);
@@ -307,7 +310,45 @@ async function main() {
       console.log(`boundary alert resolved: ${res.resolved} (occurrences=${res.occurrences}, log=${res.file})`);
       process.exit(0);
     }
-    console.error(`unknown boundary subcommand: ${subCmd} (expected: recover, alerts, alert-resolve)`);
+    if (subCmd === 'notify-status') {
+      // Reports configuration only; the webhook target itself is never printed.
+      const cfg = describeNotifyConfig();
+      console.log('boundary notification configuration');
+      for (const [k, v] of Object.entries(cfg)) console.log(`  ${k}: ${v}`);
+      const deliveries = readNotifyEvents();
+      console.log(`  delivery records: ${deliveries.length}`);
+      for (const d of deliveries.slice(-5)) console.log(`    ${d.at} ${d.status} ${d.mode} ${d.notify_key ?? ''} ${d.reason ?? ''}`);
+      process.exit(0);
+    }
+    if (subCmd === 'notify-test') {
+      const target = argValue('--canonical');
+      const reason = argValue('--reason') || 'operator notification test';
+      if (!target) {
+        console.error('error: --canonical <dir> is required');
+        process.exit(1);
+      }
+      const cfg = describeNotifyConfig();
+      if (cfg.mode === 'off') {
+        console.error('error: AF_BOUNDARY_NOTIFY_MODE is off; set dry-run (or live, once authorised) to test');
+        process.exit(2);
+      }
+      if (cfg.mode === 'live' && !args.includes('--confirm')) {
+        console.error('error: live mode sends a real notification; re-run with --confirm after checking the target with notify-status');
+        process.exit(2);
+      }
+      const payload = buildNotifyPayload({
+        event: 'boundary_retained',
+        alert: { canonical_dir: target, occurrences: 1, severity: 'warning', task_id: 'NOTIFY-TEST', boundary_state: 'NOTIFY_TEST', reason },
+      });
+      const res = await notifyBoundaryAlert({
+        event: 'boundary_retained',
+        alert: { canonical_dir: target, occurrences: 1, severity: 'warning', task_id: 'NOTIFY-TEST', boundary_state: 'NOTIFY_TEST', reason },
+      });
+      console.log(`notify-test: ${res.status} (mode=${res.mode})${res.reason ? ` - ${res.reason}` : ''}`);
+      if (res.status === 'would-notify') console.log(JSON.stringify(payload, null, 2));
+      process.exit(res.status === 'sent' || res.status === 'would-notify' ? 0 : 1);
+    }
+    console.error(`unknown boundary subcommand: ${subCmd} (expected: recover, alerts, alert-resolve, notify-status, notify-test)`);
     printUsage();
     process.exit(1);
   } else if (mainCmd === 'reclaim') {
