@@ -80,6 +80,26 @@ test('design: the A1a design keeps the required deliverables and the no-bypass r
   }
   assert.match(doc, /不实现、不启用/, 'the design must record that it is design-only');
   assert.match(doc, /两个独立调度职责/, 'the design must state that recovery and notify-flush are independent duties');
+
+  // v2 safety-boundary revisions required by review.
+  for (const rule of [
+    '绝不因超时被接管',            // R1: no TTL preemption of a live holder
+    '不可确认',                    // R1/R2: unconfirmable identity -> refuse
+    'MUTATION_STARTED',            // R3: mutation phase evidence
+    'RECONCILE_REQUIRED',          // R3: modified / unconfirmable -> manual
+    'RECONCILE_RECORD',            // R3: physical restore done, records pending
+    '禁止再次执行权限释放',         // R3: never release again in the record state
+    'withAssetLockSet',            // R2: shared asset mutual-exclusion protocol
+    'A1a 不得',                    // R2: hard gating before the protocol exists
+    '预期保护元数据',              // clarification: expectation, not the raw snapshot
+    '任务处于终态',                // clarification: task terminal state, not just process exit
+    'RESULT 审计',                 // R4: ordering
+  ]) {
+    assert.match(doc, new RegExp(rule), `the design must record the v2 rule: ${rule}`);
+  }
+  // Every open question must now carry a decision.
+  assert.match(doc, /六个开放问题的首版决定|本轮决定/);
+  assert.doesNotMatch(doc, /## 10\. 待评审确认的开放问题/, 'open questions must have been decided');
 });
 
 test('design: the integration notes record the provider constraints and the open version question', () => {
