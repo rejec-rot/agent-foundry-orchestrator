@@ -90,7 +90,7 @@ const alertFor = (dir, occurrences, extra = {}) => ({
   canonical_dir: dir,
   cas_dir: null,
   task_id: 'T-NOTIFY',
-  alert_id: 'A-1',
+  alert_id: `A-${occurrences}`,
   occurrences,
   severity: occurrences >= 3 ? 'escalated' : 'warning',
   boundary_state: 'PROTECTION_RETAINED_PENDING_RECOVERY',
@@ -673,7 +673,9 @@ test('A1b retry: a new process resumes the queue and delivers, and backoff grows
     });
     assert.equal(good.requests.length, 1);
     assert.equal(listPendingNotifications({ file }).length, 0, 'a delivered entry leaves the queue');
-    assert.equal(listPendingNotifications({ file, includeDelivered: true })[0].state, 'delivered');
+    // The series is removed on success, so a later event on this path starts fresh.
+    assert.equal(inspectPendingNotifications({ file, includeDelivered: true }).pending.length, 0);
+    assert.equal(readNotifyEvents({ file }).some((r) => r.status === 'sent'), true, 'the delivery is still auditable');
   } finally {
     await failing.close();
     await good.close();
@@ -792,23 +794,23 @@ test('A1b retry: a later success through the normal entry settles the failed ent
   try {
     await withEnvAsync({
       AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
-      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_RETRY_BASE_MS: '1',
     }, async () => {
       const first = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
       assert.equal(first.status, 'failed');
     });
     assert.equal(inspectPendingNotifications({ file }).pending.filter((e) => e.state === 'pending').length, 1);
+    await new Promise((r) => setTimeout(r, 20)); // let the 1ms backoff window pass
 
     await withEnvAsync({
       AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
-      AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_RETRY_BASE_MS: '1',
     }, async () => {
       const second = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
       assert.equal(second.status, 'sent', 'the normal entry must be able to retry and succeed');
     });
     const after = inspectPendingNotifications({ file });
-    assert.equal(after.pending.filter((e) => e.state === 'pending').length, 0, 'the failed entry must be settled, not left pending');
-    assert.equal(inspectPendingNotifications({ file, includeDelivered: true }).pending[0].state, 'delivered');
+    assert.equal(after.pending.length, 0, 'the failed entry must be settled and removed, not left pending');
     // A queue flush now has nothing to send.
     await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu', AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0' }, async () => {
       const res = await flushPendingNotifications({ file, force: true });
@@ -832,10 +834,13 @@ test('A1b retry: the normal entry honours the same attempt cap as the flush', as
       AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '2',
     }, async () => {
       const first = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
-      const second = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
-      const third = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
       assert.equal(first.status, 'failed');
-      assert.equal(second.status, 'failed');
+      // Attempt 2 is driven by the operator flush (which may shorten the wait, never the cap).
+      const flushed = await flushPendingNotifications({ file, force: true });
+      assert.equal(flushed.attempted, 1);
+      assert.equal(flushed.exhausted, 1, 'the second failure exhausts the budget');
+      // Attempt 3 must be refused by the cap before any I/O.
+      const third = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
       assert.equal(third.status, 'failed');
       assert.match(third.reason, /retry budget exhausted/);
       assert.equal(third.attempts, undefined, 'the refused attempt must not be counted');
@@ -914,6 +919,148 @@ test('A1b retry: a corrupt queue is unverifiable, never "nothing pending"', asyn
     assert.equal(mock.requests.length, 0, 'nothing may be sent from an unverifiable queue');
   } finally {
     await mock.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b budget: a new alert on the same path starts with a fresh budget', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-newalert-'));
+  const file = join(root, 'alerts.jsonl');
+  const mock = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: mock.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '2',
+    }, async () => {
+      // Three DIFFERENT alerts on the same path: the budget belongs to the event, so a
+      // successful delivery must not consume the next alert's attempts.
+      for (const id of ['A-1', 'A-2', 'A-3']) {
+        const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1, { alert_id: id }) });
+        assert.equal(res.status, 'sent', `alert ${id} must be delivered, got ${res.status} (${res.reason})`);
+      }
+    });
+    assert.equal(mock.requests.length, 3, 'three distinct alerts must produce three deliveries');
+    assert.equal(inspectPendingNotifications({ file }).pending.length, 0, 'a delivered series is removed');
+  } finally {
+    await mock.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b budget: the normal entry obeys the retry backoff (no early resend)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-backoff-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await startMockWebhook({ status: 500, reply: '{"code":1,"msg":"down"}' });
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+      AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '5', AF_BOUNDARY_NOTIFY_RETRY_BASE_MS: '60000',
+    }, async () => {
+      const first = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(first.status, 'failed');
+      // Immediately again: the wait has not elapsed, so the normal entry must NOT send.
+      const second = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(second.status, 'suppressed');
+      assert.match(second.reason, /backoff until/);
+      // Only an explicit operator action may shorten the wait - and never the cap.
+      const forced = await flushPendingNotifications({ file, force: true });
+      assert.equal(forced.attempted, 1, 'the operator flush may bypass the wait');
+    });
+    assert.equal(failing.requests.length, 2, 'the normal entry must not add a second immediate send');
+  } finally {
+    await failing.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b retry: a crashed claim is resumable and visible, never stuck pending forever', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-crash-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await startMockWebhook({ status: 500, reply: '{"code":1,"msg":"down"}' });
+  const good = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
+  try {
+    // Simulate a process that claimed the delivery and died before settling.
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '5',
+      AF_BOUNDARY_NOTIFY_RETRY_BASE_MS: '60000',
+    }, async () => {
+      await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1), fetchImpl: async () => { throw new Error('process died during the send'); } });
+      // Craft the crashed state: claimed, no schedule, still pending.
+      const q = JSON.parse(readFileSync(`${file}.notify-pending.json`, 'utf8'));
+      const key = Object.keys(q)[0];
+      q[key].claimed_at = new Date(Date.now() - 120000).toISOString();
+      q[key].claim_token = 'dead-claim';
+      q[key].next_attempt_at = null;
+      writeFileSync(`${file}.notify-pending.json`, JSON.stringify(q, null, 2));
+    });
+
+    // The queue must be visible as needing attention...
+    const inspection = inspectPendingNotifications({ file });
+    assert.equal(inspection.pending.length, 1);
+    assert.equal(inspection.pending[0].next_attempt_at, null);
+
+    // ...and a later (healthy) flush must pick it up even though no schedule exists.
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '5',
+    }, async () => {
+      const res = await flushPendingNotifications({ file });
+      assert.equal(res.due, 1, 'a crashed last attempt must be treated as due');
+      assert.equal(res.attempted, 1);
+      assert.equal(res.delivered, 1);
+    });
+    assert.equal(good.requests.length, 1);
+    assert.equal(inspectPendingNotifications({ file }).pending.length, 0, 'the resumed delivery settles the entry');
+  } finally {
+    await failing.close();
+    await good.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b queue: unreadable path and malformed entries are unverifiable, not empty', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-schema-'));
+  const file = join(root, 'alerts.jsonl');
+  const queueFile = `${file}.notify-pending.json`;
+  try {
+    // (a) malformed entries: unknown state, bad counter, missing payload, bad dates
+    const malformed = [
+      { state: 'weird' },
+      { attempts: -1 },
+      { payload: null },
+      { next_attempt_at: 'not-a-date' },
+      { format: 'telegram' },
+    ];
+    for (const patch of malformed) {
+      const entry = {
+        notify_key: 'live|A-1|first', cooldown_key: 'live|/tmp|first', event: 'boundary_retained',
+        canonical_dir: '/tmp/x', cas_dir: null, task_id: 'T', alert_id: 'A-1', format: 'feishu', mode: 'live',
+        payload: { schema: 'af-boundary-alert-v1' }, attempts: 1, max_attempts: 5, state: 'pending',
+        first_attempt_at: new Date().toISOString(), claimed_at: null, claim_token: null,
+        next_attempt_at: null, last_error: null,
+        ...patch,
+      };
+      writeFileSync(queueFile, JSON.stringify({ 'live|A-1|first': entry }, null, 2));
+      const inspection = inspectPendingNotifications({ file });
+      assert.equal(inspection.ok, false, `a malformed entry must be unverifiable: ${JSON.stringify(patch)}`);
+      assert.match(inspection.reason, /retry queue entry/);
+    }
+
+    // (b) a queue file that cannot be inspected (directory in its place) is unverifiable
+    rmSync(queueFile, { force: true });
+    mkdirSync(queueFile);
+    const dirInspection = inspectPendingNotifications({ file });
+    assert.equal(dirInspection.ok, false);
+    assert.match(dirInspection.reason, /cannot be inspected|not a regular file/);
+    rmSync(queueFile, { recursive: true, force: true });
+
+    // (c) only a definite absence counts as an empty queue
+    const missing = inspectPendingNotifications({ file });
+    assert.equal(missing.ok, true);
+    assert.deepEqual(missing.pending, []);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

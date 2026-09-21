@@ -317,8 +317,14 @@ async function main() {
       const deliveries = readNotifyEvents();
       const inspection = inspectPendingNotifications();
       const pending = inspection.ok ? inspection.pending : [];
-      const due = pending.filter((e) => e.state === 'pending');
+      const nowMs = Date.now();
+      const due = pending.filter((e) => e.state === 'pending' && (
+        !e.next_attempt_at
+        || Date.parse(e.next_attempt_at) <= nowMs
+        || (e.claimed_at && nowMs - Date.parse(e.claimed_at) >= 60000)
+      ));
       const exhausted = pending.filter((e) => e.state === 'exhausted');
+      const stuckClaims = pending.filter((e) => e.state === 'pending' && e.claimed_at && nowMs - Date.parse(e.claimed_at) >= 60000);
       if (!inspection.ok) {
         if (args.includes('--json')) {
           console.log(JSON.stringify({ config: cfg, delivery_records: deliveries.length, queue: { ok: false, reason: inspection.reason } }, null, 2));
@@ -336,13 +342,13 @@ async function main() {
         for (const [k, v] of Object.entries(cfg)) console.log(`  ${k}: ${v}`);
         console.log(`  delivery records: ${deliveries.length}`);
         for (const d of deliveries.slice(-5)) console.log(`    ${d.at} ${d.status} ${d.mode} ${d.notify_key ?? ''} ${d.reason ?? ''}`);
-        console.log(`  pending retries: ${due.length}   exhausted: ${exhausted.length}`);
+        console.log(`  pending retries: ${due.length}   exhausted: ${exhausted.length}   stale claims: ${stuckClaims.length}`);
         for (const e of [...due, ...exhausted]) {
           console.log(`    [${e.state}] ${e.canonical_dir} attempts=${e.attempts}/${e.max_attempts} next=${e.next_attempt_at ?? 'n/a'} last_error=${e.last_error ?? 'n/a'}`);
         }
       }
       // A stuck delivery is a local, visible failure: exit non-zero so a watchdog sees it.
-      process.exit(exhausted.length > 0 || due.some((e) => e.next_attempt_at && Date.parse(e.next_attempt_at) <= Date.now()) ? 1 : 0);
+      process.exit(exhausted.length > 0 || due.length > 0 ? 1 : 0);
     }
     if (subCmd === 'notify-flush') {
       const cfg = describeNotifyConfig();
