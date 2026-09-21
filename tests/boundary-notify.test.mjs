@@ -24,7 +24,7 @@ import { disengageTaskHostBoundary } from '../lib/host-boundary.mjs';
 const CLI = join(process.cwd(), 'af-admin.mjs');
 
 /** Start a mock webhook on 127.0.0.1; records every request it receives. */
-function startMockWebhook({ status = 200, hang = false } = {}) {
+function startMockWebhook({ status = 200, hang = false, reply = '{"ok":true}' } = {}) {
   const requests = [];
   const server = createServer((req, res) => {
     let body = '';
@@ -33,7 +33,7 @@ function startMockWebhook({ status = 200, hang = false } = {}) {
       requests.push({ url: req.url, method: req.method, headers: req.headers, body });
       if (hang) return; // never respond: exercises the timeout path
       res.writeHead(status, { 'content-type': 'application/json' });
-      res.end('{"ok":true}');
+      res.end(reply);
     });
   });
   return new Promise((resolve) => {
@@ -407,6 +407,35 @@ test('A1b notify: feishu text honours path redaction in dry-run', async () => {
     assert.doesNotMatch(record.request_body, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the outbound text must not carry the host path');
     assert.match(record.request_body, /sha256:[0-9a-f]{16}/);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b notify: a 2xx answer with a non-zero provider code counts as failed', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-provider-'));
+  const file = join(root, 'alerts.jsonl');
+  // Feishu/DingTalk answer HTTP 200 even when the bot rejects the message.
+  const rejecting = await startMockWebhook({ status: 200, reply: '{"code":19002,"msg":"sign match fail"}' });
+  const accepting = await startMockWebhook({ status: 200, reply: '{"code":0,"msg":"success"}' });
+  try {
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu', AF_BOUNDARY_NOTIFY_WEBHOOK: rejecting.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0' }, async () => {
+      const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(res.status, 'failed', 'HTTP 200 + code!=0 must not be reported as sent');
+      assert.equal(res.provider_code, 19002);
+      assert.match(res.reason, /sign match fail/);
+    });
+    const record = readNotifyEvents({ file })[0];
+    assert.equal(record.status, 'failed');
+    assert.equal(record.provider_code, 19002);
+
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu', AF_BOUNDARY_NOTIFY_WEBHOOK: accepting.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0' }, async () => {
+      const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 3) });
+      assert.equal(res.status, 'sent');
+      assert.equal(res.provider_code, null);
+    });
+  } finally {
+    await rejecting.close();
+    await accepting.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
