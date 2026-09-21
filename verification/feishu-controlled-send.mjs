@@ -177,6 +177,22 @@ check('11. the CLI reports the open alert with a non-zero exit', alertsCli.code 
 const notifyCli = cli(['boundary', 'notify-status']);
 check('12. the notify CLI reports nothing stuck', notifyCli.code === 0 && /exhausted: 0/.test(notifyCli.out), `exit=${notifyCli.code}`);
 
+// --- cleanup (controlled recovery, never `force`) --------------------------------
+try {
+  rmSync(join(scopeBase, 'af-writer-broken'), { recursive: true, force: true });
+  const { recoverRetainedBoundary } = await import('../lib/host-boundary.mjs');
+  const rec = recoverRetainedBoundary({ canonicalDir: repoDir, casDir, justification: 'controlled Feishu acceptance: operator verified no writer remains' });
+  check('13. controlled recovery disengages the boundary', rec.outcome === 'DISENGAGED' && rec.delivered === true, `outcome=${rec.outcome}`);
+  const closed = inspectBoundaryAlerts({ file: alertsFile, includeResolved: true });
+  check('14. the alert is closed after recovery', closed.alerts[0]?.open === false);
+} catch (err) {
+  check('13. controlled recovery disengages the boundary', false, err.message);
+} finally {
+  try { disengageTaskHostBoundary({ canonicalDir: repoDir, casDir, force: true }); } catch { /* best effort */ }
+  rmSync(scopeBase, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
+}
+
 // --- evidence --------------------------------------------------------------------
 try {
   const manifest = {
@@ -203,21 +219,6 @@ try {
   console.error(`warning: could not write evidence: ${err.message}`);
 }
 
-// --- cleanup (controlled recovery, never `force`) --------------------------------
-try {
-  rmSync(join(scopeBase, 'af-writer-broken'), { recursive: true, force: true });
-  const { recoverRetainedBoundary } = await import('../lib/host-boundary.mjs');
-  const rec = recoverRetainedBoundary({ canonicalDir: repoDir, casDir, justification: 'controlled Feishu acceptance: operator verified no writer remains' });
-  check('13. controlled recovery disengages the boundary', rec.outcome === 'DISENGAGED' && rec.delivered === true, `outcome=${rec.outcome}`);
-  const closed = inspectBoundaryAlerts({ file: alertsFile, includeResolved: true });
-  check('14. the alert is closed after recovery', closed.alerts[0]?.open === false);
-} catch (err) {
-  check('13. controlled recovery disengages the boundary', false, err.message);
-} finally {
-  try { disengageTaskHostBoundary({ canonicalDir: repoDir, casDir, force: true }); } catch { /* best effort */ }
-  rmSync(scopeBase, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
-}
 
 const failed = checks.filter((c) => !c.ok);
 console.log(`\n${checks.length - failed.length}/${checks.length} checks passed${failed.length ? ` — FAILED: ${failed.map((c) => c.name).join('; ')}` : ''}`);
