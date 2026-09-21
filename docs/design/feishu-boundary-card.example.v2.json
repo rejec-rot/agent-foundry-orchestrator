@@ -1,0 +1,68 @@
+{
+  "msg_type": "interactive",
+  "card": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "orange",
+      "title": {
+        "tag": "plain_text",
+        "content": "Agent Foundry · 边界保护已保留"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "div",
+          "text": {
+            "tag": "plain_text",
+            "content": "需要核查 · 首次保留\n未执行解锁，等待核查作用域异常。"
+          }
+        },
+        {
+          "tag": "div",
+          "text": {
+            "tag": "plain_text",
+            "content": "仓库：agent-foundry-next\n任务：TASK-EXAMPLE-001\n连续保留：1 次"
+          }
+        },
+        {
+          "tag": "hr"
+        },
+        {
+          "tag": "div",
+          "text": {
+            "tag": "plain_text",
+            "content": "判定依据\n作用域结构异常，无法确认安全释放条件。\nRETAIN / scope-anomaly / broken-scope"
+          }
+        },
+        {
+          "tag": "div",
+          "text": {
+            "tag": "plain_text",
+            "content": "Canonical：/example/agent-foundry-next\nCAS：/example/trusted-cas"
+          }
+        },
+        {
+          "tag": "hr"
+        },
+        {
+          "tag": "div",
+          "text": {
+            "tag": "plain_text",
+            "content": "下一步\n检查写者与 scope 证据；仅在恢复条件满足后，使用带理由、留审计的受控恢复。"
+          }
+        },
+        {
+          "tag": "div",
+          "text": {
+            "tag": "plain_text",
+            "content": "示例数据 · AF-EXAMPLE-001 · 卡片 v2\n2026-09-21 14:32:08 +08:00"
+          }
+        }
+      ]
+    }
+  }
+}

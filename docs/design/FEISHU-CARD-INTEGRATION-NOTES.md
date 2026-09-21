@@ -16,14 +16,39 @@
 自定义机器人只能通过 webhook 推送，**不具有任何数据访问权限**；群内呈现由飞书客户端渲染，
 **不会与 HTML 预览完全一致**（预览只用于对齐信息层级与配色）。
 
-## 2. 待定夺：卡片 JSON 版本
+## 2. 版本现状：v1 保留为参考，v2 已交付并逐项核实
+
+`feishu-boundary-card.example.v2.json` 是按 **Card JSON 2.0** 逐项核对后新增的示例，v1 示例保留作参考。
+核实方式：逐页渲染官方文档（`card-json-v2-structure`、`普通文本`、`富文本（Markdown）`、`分割线`）后比对，
+结论如下。
+
+| 组件/字段 | v1 用法 | 2.0 结论 | 本项目取值 |
+|---|---|---|---|
+| 信封 | `card.header/elements` | 2.0 为 `schema`+`config`+`card_link`+`header`+`body.elements` | `schema:"2.0"`，组件放 `body.elements` |
+| `div` + `text.tag=plain_text` | 支持 | **2.0 支持**（普通文本组件，另有 `text_size`/`width` 等 2.0 新属性） | 全部动态字段用 `plain_text`（不用 `lark_md`，避免路径/原因注入格式） |
+| `markdown` | 支持 | **2.0 支持**（富文本语法增强） | 不使用（动态内容一律纯文本） |
+| `hr` 分割线 | 支持 | **2.0 支持**，tag 仍为 `hr` | 使用（信息分段） |
+| `note` 备注 | v1 组件 | **不在 2.0 组件列表** | **不使用**；审计标识改为普通文本 `div` |
+| `config.wide_screen_mode` | v1 常用 | 2.0 全局属性未列入该字段 | 不使用；改用 `config.update_multi=true` |
+| `update_multi` | 可选 | 2.0 **仅支持共享卡片**，须为 `true` | `true` |
+| `element_id` | 无 | 2.0 新增，卡内唯一、字母开头、≤20 字符 | **不使用**（只读展示卡无需，规避重名错误） |
+| 组件数量 | — | 单卡 **≤200 个元素/组件** | 单卡 8 个（含文本元素） |
+| 客户端要求 | — | 2.0 需较新客户端，旧客户端正文显示升级提示 | 已在接入说明中提示 |
+
+### 历史（已解决）：v1/v2 差异
+
+迁移不是"把 `elements` 搬进 `body`"这么简单，上表列出了必须逐项确认的差异：
+信封结构、`note` 消失、`wide_screen_mode` 不再使用、`update_multi` 必为 true、元素上限。
+`tests/design-feishu-card.test.mjs` 会校验 2.0 示例只含 2.0 允许的组件、且 `note`/交互组件不出现。
+
+## 2.1 待定夺（原问题，保留记录）
 
 - 示例用的是**卡片 v1**（顶层 `elements` + `config.wide_screen_mode`），文件尾注也写明"卡片 v1"。
 - 官方当前示例用的是 **`schema: "2.0"`**（`body.elements` 结构）。
 - 影响：v1 目前仍可用且满足"只读展示"需求；若希望与官方最新示例一致、避免将来 v1 退场带来的改版，
   应把示例迁移到 2.0（改动集中在 envelope：`card.schema="2.0"`、`config.update_multi`、
   `elements` 移入 `body.elements`）。
-- **未改动你的设计文件**：这属于模板取舍，等你确认后再迁移（或按 v1 保持）。
+- **已按操作者选择完成**：v2 示例已新增（`feishu-boundary-card.example.v2.json`），v1 保留继续作参考。
 
 ## 3. 必须遵守的硬约束
 
@@ -47,10 +72,16 @@
 `reason`/`scope_decision.{decision,reason,attempts,anomalies}`、`canonical_dir`/`cas_dir`、
 （建议文案由模板固定）、`alert_id`/`at`。
 
-## 5. 接入状态
+## 5. 接入状态：已实现（`AF_BOUNDARY_NOTIFY_FORMAT=feishu-card`）
 
-- 通知层当前只发送**文本**消息（`AF_BOUNDARY_NOTIFY_FORMAT=feishu` → `msg_type:text`）。
-- 卡片接入 = 新增一个 `feishu-card` 渲染分支（把 payload 映射到上述模板），保持：默认 `off`、
-  `dry-run` 零外发、`live` 需显式启用、单次授权才发送。
-- 接入前建议先用 `boundary notify-test` 在 `dry-run` 下打印完整卡片 JSON 人工核对，
-  再单独授权一次真实发送。
+- 新格式与文本格式**并存**：`feishu`（`msg_type:text`）保持兼容，`feishu-card`（`msg_type:interactive` + 2.0）为新增。
+- 发送模式仍默认 `off`；`dry-run` 零外发；`live` 需 `AF_BOUNDARY_NOTIFY_MODE=live` + webhook + `--confirm`。
+- 四态映射：`retained`→`orange`、`escalated`→`red`、`restore-incomplete`→`red`（明示"恢复未完成，保护完整性不可确认"）、`recovered`→`green`。
+- 复用既有安全链路：错误文本脱敏、自由文本路径脱敏、签名（`timestamp`+`sign`，重试时重新签）、
+  有界退避重试、**provider 回执校验**（feishu-card 与 feishu 一样必须 `code=0`，HTTP 200 不算成功）、
+  结清与终态审计。
+- 新增硬约束检查：**对最终签名后的请求体**统计 UTF-8 字节数，超限（默认 20000 字节）**拒绝发送**并记审计事件；
+  动态字段一律 `plain_text`，超长字段**有界截断并标注** `…[已截断]`，审计行注明"内容已截断 N 处"。
+- 卡片**不含任何可改变边界状态的操作组件**（无按钮/表单），符合"恢复必须走带理由与审计的受控恢复"。
+- 四态 dry-run 交付：`verification/feishu-card-states.mjs` → `real-smoke-evidence/feishu-card-states-<sha>/`
+  （四份卡片 JSON + manifest）与 `docs/design/generated/feishu-card-four-states.html`（+ 渲染 PNG）。
