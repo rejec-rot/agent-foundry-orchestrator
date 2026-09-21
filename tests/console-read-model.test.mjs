@@ -24,7 +24,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
-import { renderHuman } from '../lib/console/render.mjs';
+import { renderHuman, safeText } from '../lib/console/render.mjs';
 import {
   assertWithinRoot,
   exactDeliveryAsset,
@@ -147,7 +147,7 @@ function makeFixture({ broken = false } = {}) {
   }, null, 2)}\n`);
   writeFileSync(join(dirs.audit, 'recovery-2026-09-21T08-40-00-000Z-1-result.json'), `${JSON.stringify({
     schema_version: 'af-boundary-recovery-v1', phase: 'result', at: '2026-09-21T08:40:02.000Z',
-    outcome: 'DISENGAGED', delivered: true, report: { restored: true, mismatches: [], failures: [] },
+    paths: [repo], outcome: 'DISENGAGED', delivered: true, report: { restored: true, mismatches: [], failures: [] },
   }, null, 2)}\n`);
 
   // Fixed mtimes make the golden files deterministic.
@@ -583,8 +583,10 @@ test('G2: recovery records are filtered by the task asset, not attached wholesal
     })}\n`);
     const view = buildTaskView({ taskId: 'T-RETAIN', roots: fx.roots, now: FIXED_NOW });
     const files = view.blocks.recovery.value.records.map((record) => record.file);
-    assert.equal(files.length, 1, 'only this asset\'s recovery record may be attached');
-    assert.equal(files[0].includes('other-repo'), false);
+    // The asset's own intent+result pair attaches; nothing from another repository does.
+    assert.equal(files.length, 2, 'only this asset\'s recovery records may be attached');
+    assert.equal(files.every((file) => parseRecoveryId(file) === '2026-09-21T08-40-00-000Z-1'), true);
+    assert.equal(files.some((file) => file.includes('other-repo')), false);
   } finally {
     rmSync(fx.root, { recursive: true, force: true });
   }
@@ -806,6 +808,80 @@ test('render: unverifiable and truncation are announced in the human view', asyn
     // A truncated field is announced as an incomplete view.
     const text = renderHuman({ schema: 'af-console-task-v1', generated_at: 'x', path_mode: 'hash', truncations: [{ path: 'blocks.task.value.x', original_chars: 900, kept_chars: 100 }] });
     assert.match(text, /truncated fields: blocks\.task\.value\.x \(900→100\)/);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('U0: current recovery evidence is separated from asset history', () => {
+  const fx = makeFixture();
+  try {
+    const current = '2026-09-21T08-40-00-000Z-1';
+    const older = '2026-09-21T07-00-00-000Z-9';
+    // An older recovery attempt for the SAME asset (asset history, not current evidence).
+    for (const phase of ['intent', 'result']) {
+      writeFileSync(join(fx.dirs.audit, `recovery-${older}-${phase}.json`), `${JSON.stringify({
+        schema_version: 'af-boundary-recovery-v1', phase, at: '2026-09-21T07:00:00.000Z', paths: [fx.repo],
+      })}\n`);
+    }
+    writeFileSync(join(fx.dirs.tasks, 'T-CUR.json'), `${JSON.stringify({
+      task_id: 'T-CUR', state: 'FAILED', state_version: 1, fixture_dir: fx.repo,
+      trusted_import: { boundary_state: 'RECONCILE_RECORD', boundary_recovery_id: current },
+    })}\n`);
+
+    const view = buildTaskView({ taskId: 'T-CUR', roots: fx.roots, now: FIXED_NOW });
+    const value = view.blocks.recovery.value;
+    assert.deepEqual(value.current_recovery.map((r) => parseRecoveryId(r.file)), [current, current], 'current evidence is exactly the requested id (intent+result)');
+    assert.equal(value.asset_history.length, 2, 'other attempts for the same asset are history');
+    assert.deepEqual(value.asset_history.map((r) => parseRecoveryId(r.file)), [older, older]);
+    assert.equal(value.records.length, value.current_recovery.length, 'records stays the current set');
+
+    // The human view labels the two groups separately.
+    const human = renderHuman({ ...view, path_mode: 'hash', truncations: [] });
+    assert.match(human, /current recovery evidence: 2/);
+    assert.match(human, /asset history \(other attempts, NOT current evidence\): 2/);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('U0: an explicit recovery id never falls back to other records of the asset', () => {
+  const fx = makeFixture();
+  try {
+    writeFileSync(join(fx.dirs.tasks, 'T-MISS.json'), `${JSON.stringify({
+      task_id: 'T-MISS', state: 'FAILED', state_version: 1, fixture_dir: fx.repo,
+      trusted_import: { boundary_state: 'RECONCILE_REQUIRED', boundary_recovery_id: 'does-not-exist' },
+    })}\n`);
+    const view = buildTaskView({ taskId: 'T-MISS', roots: fx.roots, now: FIXED_NOW });
+    assert.equal(view.blocks.recovery.value.current_recovery.length, 0, 'a missing explicit id attaches nothing');
+    assert.equal(view.blocks.recovery.value.asset_history.length, 2, 'the asset\'s existing records are history only');
+    const unmatched = view.unmatched.find((entry) => entry.kind === 'recovery-id-not-found');
+    assert.equal(unmatched.requested_recovery_id, 'does-not-exist');
+    assert.deepEqual(unmatched.available_recovery_ids, ['2026-09-21T08-40-00-000Z-1'], 'the reason lists what the asset actually has');
+    assert.equal(unmatched.asset_history_count, 2);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('U0: terminal output escapes control characters and never emits raw escapes', () => {
+  assert.equal(safeText('\u001b[31mRED\u001b[0m'), '\\x1b[31mRED\\x1b[0m');
+  assert.equal(safeText('a\u0007b'), 'a\\x07b');
+  assert.equal(safeText('line1\nline2'), 'line1⏎line2');
+
+  const fx = makeFixture();
+  try {
+    const hostile = '\u001b[2J\u001b[31mFAKE-ALERT\u001b[0m\nsecond line\u0007';
+    writeFileSync(join(fx.dirs.tasks, 'T-HOSTILE.json'), `${JSON.stringify({
+      task_id: 'T-HOSTILE', state: 'FAILED', state_version: 1, fixture_dir: fx.repo,
+      trust: hostile,
+    })}\n`);
+    const model = buildTaskView({ taskId: 'T-HOSTILE', roots: fx.roots, now: FIXED_NOW });
+    const { model: redacted } = redactModel(model, { redact: true });
+    const human = renderHuman(redacted);
+    assert.equal(human.includes('\u001b'), false, 'no raw ESC may reach the terminal');
+    assert.equal(/\u0007/.test(human), false, 'no BEL may reach the terminal');
+    assert.match(human, /T-HOSTILE/);
   } finally {
     rmSync(fx.root, { recursive: true, force: true });
   }

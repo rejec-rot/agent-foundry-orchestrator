@@ -57,3 +57,4 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+locks/asset-locks/

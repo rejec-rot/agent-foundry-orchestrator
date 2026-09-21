@@ -137,6 +137,16 @@ test('design: the next-step architecture contract keeps its required deliverable
   }
 });
 
+test('design: the unattended rollout plan keeps its gates and batch order', () => {
+  const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'UNATTENDED-ROLLOUT-PLAN.md'), 'utf8');
+  for (const section of ['范围与顺序', '不可放宽的边界', '验证与交付节奏', '部署前待确认']) {
+    assert.match(doc, new RegExp(section), `the plan must keep "${section}"`);
+  }
+  for (const gate of ['U0', 'U1', 'U2', 'U3', 'U4', 'U5', 'U6', 'A1a 默认关闭', 'H1']) {
+    assert.match(doc, new RegExp(gate), `the plan must keep ${gate}`);
+  }
+});
+
 test('design: the three contract corrections are recorded', () => {
   const arch = readFileSync(join(process.cwd(), 'docs', 'design', 'SYSTEM-ARCHITECTURE-NEXT.md'), 'utf8');
   const consoleDoc = readFileSync(join(process.cwd(), 'docs', 'design', 'OPERATIONS-CONSOLE-DESIGN.md'), 'utf8');
