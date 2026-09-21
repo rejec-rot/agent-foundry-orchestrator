@@ -4,6 +4,9 @@
 // contact (real_vault_zero_touch). Fake bridges are hermetic fixtures for the
 // Governance Plane; fail-closed governance_env rules are untouched.
 import { test, after } from 'node:test';
+// MUST be first: it fixes AF_TASKS_DIR/AF_LOCKS_DIR/AF_RUNTIME_DIR before the scheduler and
+// orchestrator modules (which resolve those paths at load time) are evaluated.
+import { ORCH_ROOT } from './helpers/orch-root.mjs';
 import './helpers/executors-fixture.mjs';
 import assert from 'node:assert';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -20,7 +23,6 @@ import { executeTask } from '../orchestrator.mjs';
 import { saveTaskAtomic, readTaskFile } from '../lib/store.mjs';
 import './helpers/acceptance-allowlist.mjs';
 
-const ORCH_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const taskFile = (id) => join(ORCH_ROOT, 'tasks', `${id}.json`);
 const lockFile = (id) => join(ORCH_ROOT, 'locks', `${id}.lock`);
 const readTask = (id) => readTaskFile(taskFile(id));
@@ -37,6 +39,10 @@ after(() => {
     rmSync(lockFile(id), { force: true });
   }
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+  rmSync(ORCH_ROOT, { recursive: true, force: true });
+  delete process.env.AF_TASKS_DIR;
+  delete process.env.AF_LOCKS_DIR;
+  delete process.env.AF_RUNTIME_DIR;
 });
 function tmpDir(prefix) { const d = mkdtempSync(join(tmpdir(), prefix)); tmpDirs.push(d); return d; }
 function trackTask2(task) { trackedTaskIds.push(task.task_id); return task; }

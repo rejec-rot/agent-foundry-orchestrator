@@ -45,7 +45,7 @@ const NON_REVIVABLE_STATES = new Set(['CANCELLED']);
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const TASKS_DIR = process.env.AF_TASKS_DIR || join(ROOT, 'tasks');
-const LOCKS_DIR = join(ROOT, 'locks');
+const LOCKS_DIR = process.env.AF_LOCKS_DIR || join(ROOT, 'locks');
 const MAX_REVISIONS_DEFAULT = 3;
 
 const RUNNING_STATES = new Set(['AUTHOR_RUNNING', 'FIX_RUNNING', 'REVIEW_RUNNING', 'TRUSTED_IMPORT_RUNNING']);

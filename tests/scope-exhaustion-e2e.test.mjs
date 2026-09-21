@@ -65,26 +65,32 @@ function metadataMap(dir) {
 
 const REAPER_SOURCE = `
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync, writeSync } from 'node:fs';
-const { FIFO, TARGET, ROUNDS, EVIDENCE } = process.env;
-const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const { GATE1, GATE2, TARGET, ROUNDS, EVIDENCE } = process.env;
 const log = (o) => appendFileSync(EVIDENCE, JSON.stringify({ at: Date.now(), ...o }) + '\\n');
 for (let i = 1; i <= Number(ROUNDS); i += 1) {
+  // Phase 1: the scan has passed its readdir and parked on GATE1 (both the target and GATE2
+  // were listed, and the target has NOT been lstat'ed yet).
   const t0 = Date.now();
-  const fd = openSync(FIFO, 'w');            // rendezvous: returns while the scan is parked
-  const blockedMs = Date.now() - t0;
-  const existedBefore = existsSync(TARGET);  // the scan already listed it
+  const fd1 = openSync(GATE1, 'w');
+  const gate1Ms = Date.now() - t0;
+  const existedBefore = existsSync(TARGET);
   rmSync(TARGET, { recursive: true, force: true });
   const removed = !existsSync(TARGET);
-  writeSync(fd, ''); closeSync(fd);          // release: the scan now hits ENOENT on the target
-  sleep(1);
+  writeSync(fd1, ''); closeSync(fd1);          // release: the scan now hits ENOENT on the target
+  // Phase 2: the scan parked on GATE2, which proves its lstat(target) already happened, so
+  // re-creating the target now cannot erase the observation and is in place before the next
+  // readdir. This ordering is what removes the previous sleep-based timing dependency.
+  const t1 = Date.now();
+  const fd2 = openSync(GATE2, 'w');
+  const gate2Ms = Date.now() - t1;
   mkdirSync(TARGET, { recursive: true });
-  writeFileSync(TARGET + '/cgroup.procs', '\\n');  // present again for the next scan's readdir
-  log({ round: i, blockedMs, existedBefore, removed, recreated: existsSync(TARGET) });
-  sleep(2);
+  writeFileSync(TARGET + '/cgroup.procs', '\\n');
+  const recreated = existsSync(TARGET);
+  writeSync(fd2, ''); closeSync(fd2);
+  log({ round: i, gate1Ms, gate2Ms, existedBefore, removed, recreated });
 }
-// Disarm so nothing can ever block on the FIFO again.
-rmSync(FIFO, { force: true });
-writeFileSync(FIFO, '\\n');
+// Disarm so nothing can ever block on a FIFO again.
+for (const gate of [GATE1, GATE2]) { rmSync(gate, { force: true }); writeFileSync(gate, '\\n'); }
 log({ disarmed: true });
 `;
 
@@ -98,9 +104,33 @@ test('A2/A1b e2e: real race exhausts the DEFAULT budget in one lifecycle, then r
   const alertsFile = join(root, 'boundary-alerts.jsonl');
   const evidenceFile = join(root, 'reaper-evidence.jsonl');
   const reaperSource = join(root, 'reaper.mjs');
-  const fifoScope = join(scopeBase, 'af-writer-fifo');
-  const fifoPath = join(fifoScope, 'cgroup.procs');
-  const target = join(scopeBase, 'af-writer-target');
+  // The scan meets entries in readdir order, and on a hash-ordered filesystem (ext2/3, as
+  // /tmp is here) that order depends on the NAMES, not on creation order. So the three
+  // scope names are chosen by a bounded search until the measured order is exactly
+  // [gate1, target, gate2]; the final order is then asserted before the run.
+  const pickNames = () => {
+    const suffix = () => Math.random().toString(36).slice(2, 8);
+    return { gate1: `af-writer-${suffix()}`, target: `af-writer-${suffix()}`, gate2: `af-writer-${suffix()}` };
+  };
+  let names = null;
+  for (let attempt = 0; attempt < 200 && !names; attempt += 1) {
+    const candidate = pickNames();
+    const created = [candidate.gate1, candidate.target, candidate.gate2];
+    for (const n of created) mkdirSync(join(scopeBase, n), { recursive: true });
+    const seen = readdirSync(scopeBase).filter((n) => n.startsWith('af-writer-'));
+    if (seen.indexOf(candidate.gate1) < seen.indexOf(candidate.target)
+      && seen.indexOf(candidate.target) < seen.indexOf(candidate.gate2)) {
+      names = candidate;
+    } else {
+      for (const n of created) rmSync(join(scopeBase, n), { recursive: true, force: true });
+    }
+  }
+  assert.ok(names, 'could not find scope names whose readdir order is gate1 < target < gate2');
+  const gate1Scope = join(scopeBase, names.gate1);
+  const gate1Path = join(gate1Scope, 'cgroup.procs');
+  const target = join(scopeBase, names.target);
+  const gate2Scope = join(scopeBase, names.gate2);
+  const gate2Path = join(gate2Scope, 'cgroup.procs');
 
   for (const dir of [repoDir, casDir, candidateDir, tasksDir]) mkdirSync(dir, { recursive: true });
 
@@ -123,16 +153,12 @@ test('A2/A1b e2e: real race exhausts the DEFAULT budget in one lifecycle, then r
   execFileSync('git', ['update-ref', 'refs/afr/canonical', baseOid], { cwd: repoDir });
 
   // Synthetic scope base: [fifo, target] in readdir order.
-  mkdirSync(fifoScope, { recursive: true });
-  execFileSync('mkfifo', [fifoPath]);
-  mkdirSync(target, { recursive: true });
+  execFileSync('mkfifo', [gate1Path]);
+  execFileSync('mkfifo', [gate2Path]);
   writeFileSync(join(target, 'cgroup.procs'), '\n');
-  const order = readdirSync(scopeBase);
-  assert.equal(
-    order.indexOf('af-writer-fifo') < order.indexOf('af-writer-target'),
-    true,
-    `the FIFO scope must precede the target in readdir order, got ${order.join(', ')}`,
-  );
+  const order = readdirSync(scopeBase).filter((n) => n.startsWith('af-writer-'));
+  assert.deepEqual(order, [names.gate1, names.target, names.gate2],
+    `the scan must meet gate1, then the target, then gate2: got ${order.join(', ')}`);
 
   const taskId = 'TASK-A2-E2E-EXHAUSTION';
   const taskPath = join(tasksDir, `${taskId}.json`);
@@ -173,7 +199,7 @@ test('A2/A1b e2e: real race exhausts the DEFAULT budget in one lifecycle, then r
     writeFileSync(reaperSource, REAPER_SOURCE);
     reaper = spawnManaged(process.execPath, [reaperSource], {
       stdio: ['ignore', 'ignore', 'inherit'],
-      env: { ...process.env, FIFO: fifoPath, TARGET: target, ROUNDS: String(ROUNDS), EVIDENCE: evidenceFile },
+      env: { ...process.env, GATE1: gate1Path, GATE2: gate2Path, TARGET: target, ROUNDS: String(ROUNDS), EVIDENCE: evidenceFile },
     });
 
     await runTrustedImportTask(task, {
@@ -205,8 +231,9 @@ test('A2/A1b e2e: real race exhausts the DEFAULT budget in one lifecycle, then r
     assert.deepEqual(armed.map((r) => r.round), [1, 2, 3, 4]);
     assert.equal(armed.every((r) => r.existedBefore === true), true, 'each scan must have listed the target before it was removed');
     assert.equal(armed.every((r) => r.removed === true && r.recreated === true), true, 'each round removes then re-creates the target');
-    assert.equal(rounds[rounds.length - 1].disarmed, true, 'the FIFO must be disarmed so later scans cannot block');
-    assert.equal(readFileSync(fifoPath, 'utf8'), '\n', 'the FIFO is a regular file again after disarming');
+    assert.equal(rounds[rounds.length - 1].disarmed, true, 'both gates must be disarmed so later scans cannot block');
+    assert.equal(readFileSync(gate1Path, 'utf8'), '\n', 'gate1 is a regular file again after disarming');
+    assert.equal(readFileSync(gate2Path, 'utf8'), '\n', 'gate2 is a regular file again after disarming');
 
     // 1. RETAIN under the DEFAULT budget, driven by a real race.
     const ti = task.trusted_import;
@@ -259,8 +286,9 @@ test('A2/A1b e2e: real race exhausts the DEFAULT budget in one lifecycle, then r
     assert.match(cliRun.stdout, new RegExp(repoDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 
     // 5. Cleanup through the CONTROLLED recovery (never `force`), then verify closure.
-    rmSync(fifoScope, { recursive: true, force: true });
+    rmSync(gate1Scope, { recursive: true, force: true });
     rmSync(target, { recursive: true, force: true });
+    rmSync(gate2Scope, { recursive: true, force: true });
     const recovered = recoverRetainedBoundary({
       canonicalDir: repoDir,
       casDir,
