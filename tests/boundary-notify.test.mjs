@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-import { recordBoundaryAlert } from '../lib/boundary-alerts.mjs';
+import { recordBoundaryAlert, readBoundaryAlertEvents } from '../lib/boundary-alerts.mjs';
 import {
   notifyBoundaryAlert,
   readNotifyEvents,
@@ -19,6 +19,7 @@ import {
   notifyLogFile,
   listPendingNotifications,
   inspectPendingNotifications,
+  buildNotifyRequest,
   flushPendingNotifications,
   notifyBackoffMs,
 } from '../lib/boundary-notify.mjs';
@@ -1256,6 +1257,101 @@ test('A1b settle: a delivery whose bookkeeping fails is not reported as settled'
     assert.equal(events.some((e) => e.status === 'settle-failed'), true, 'the inconsistency must be auditable');
   } finally {
     await mock.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b payload: a non-string path never renders as "[object Object]"', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-nonstring-'));
+  const file = join(root, 'alerts.jsonl');
+  try {
+    // A CAS instance (or any object) mistakenly passed as cas_dir must become null, not
+    // "[object Object]" in the alert log or in an outbound notification.
+    const res = recordBoundaryAlert({
+      canonicalDir: root,
+      casDir: { casDir: '/tmp/af-cas-should-not-appear', objectsDir: '/tmp/x' },
+      taskId: 'T-NONSTRING',
+      reason: 'scope-anomaly',
+      file,
+    });
+    assert.deepEqual(res.input_anomalies, ['cas_dir-not-a-string']);
+
+    const events = readBoundaryAlertEvents({ file });
+    assert.equal(events[0].cas_dir, null, 'the object must not be stored as cas_dir');
+    assert.deepEqual(events[0].input_anomalies, ['cas_dir-not-a-string']);
+    const raw = readFileSync(file, 'utf8');
+    assert.doesNotMatch(raw, /\[object Object\]/);
+    assert.doesNotMatch(raw, /af-cas-should-not-appear/, 'no internals of the object may leak into the log');
+
+    const payload = buildNotifyPayload({ event: 'boundary_retained', alert: { canonical_dir: root, cas_dir: { bogus: true }, task_id: 12345, occurrences: 1 } });
+    assert.equal(payload.cas_dir, null);
+    assert.equal(payload.task_id, null, 'a non-string task id is not rendered either');
+    const body = buildNotifyRequest({ event: 'boundary_retained', payload, format: 'feishu' }).body;
+    assert.doesNotMatch(body, /\[object Object\]/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b lifecycle: the delivered message carries real paths, not objects', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-paths-'));
+  const repoDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  const candidateDir = join(root, 'candidate');
+  const scopeBase = mkdtempSync(join(tmpdir(), 'af-notify-paths-scopes-'));
+  const file = join(root, 'alerts.jsonl');
+  const taskId = 'TASK-PATHS';
+  const taskPath = join(root, 'task.json');
+  for (const d of [repoDir, casDir, candidateDir]) mkdirSync(d, { recursive: true });
+  execFileSync('git', ['init', '-b', 'main'], { cwd: repoDir, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.name', 'T'], { cwd: repoDir, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repoDir, stdio: 'pipe' });
+  mkdirSync(join(repoDir, 'src'));
+  mkdirSync(join(repoDir, 'tests'));
+  writeFileSync(join(repoDir, 'src', 'value.mjs'), "export const value = 'v1';\n");
+  writeFileSync(join(repoDir, 'tests', 'gate.test.mjs'), "import assert from 'node:assert/strict';\nimport { value } from '../src/value.mjs';\nimport { test } from 'node:test';\ntest('g', () => assert.equal(value, 'v2'));\n");
+  execFileSync('git', ['add', '.'], { cwd: repoDir, stdio: 'pipe' });
+  execFileSync('git', ['commit', '-m', 'baseline'], { cwd: repoDir, stdio: 'pipe' });
+  execFileSync('git', ['update-ref', 'refs/afr/canonical', execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf8' }).trim()], { cwd: repoDir });
+  mkdirSync(join(scopeBase, 'af-writer-broken'), { recursive: true });
+
+  const task = {
+    task_id: taskId, fixture_dir: repoDir, state: 'CREATED', host_isolation: true,
+    author_executor: 'codex', reviewer_executor: 'claude',
+    acceptance_cmd: { command: 'node', args: ['--test', 'tests/gate.test.mjs'] }, acceptance_binding: null,
+    trusted_import: {
+      enabled: true, candidate_dir: candidateDir, cas_dir: casDir, proposed_required: ['src/**'],
+      policy: { allowed_root: ['src/**', 'tests/**'], forbidden: [], protected_paths: [], projection: { exclude: [] }, import: { deny: [] } },
+      acceptance: { tier: 'TierA', acceptance_profile_digest: 'd', acceptance_assets_digest: 'a', dependency_fixture_id: 'f' },
+    },
+  };
+  try {
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_CGROUP_BASE: scopeBase, AF_BOUNDARY_NOTIFY_MODE: 'dry-run', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu' }, async () => {
+      await runTrustedImportTask(task, {
+        runAuthor: async (rev, { cwd }) => {
+          writeFileSync(join(cwd, 'src', 'value.mjs'), "export const value = 'v2';\n");
+          return { executor_run_id: 'RUN-P', writer_termination: { process_started: true, process_group_alive: false, termination_confirmed: true, scope_verified: true, scope_kind: 'cgroup' } };
+        },
+        runReview: async () => {
+          task.last_review_termination_evidence = { process_started: true, process_group_alive: false, termination_confirmed: true, scope_verified: true, scope_kind: 'cgroup' };
+          return { decision: 'PASS', summary: 'ok' };
+        },
+        saveTask: (t) => writeFileSync(taskPath, `${JSON.stringify(t, null, 2)}\n`),
+      });
+    });
+    const record = readNotifyEvents({ file })[0];
+    assert.equal(record.status, 'would-notify');
+    assert.doesNotMatch(record.request_body, /\[object Object\]/, 'the outbound message must not contain an object rendering');
+    const parsed = JSON.parse(record.request_body);
+    assert.match(parsed.content.text, new RegExp(casDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the CAS path must be a real path');
+    const onDisk = JSON.parse(readFileSync(taskPath, 'utf8'));
+    assert.equal(onDisk.trusted_import.boundary_alert.occurrences, 1);
+    const alertEvent = readBoundaryAlertEvents({ file })[0];
+    assert.equal(alertEvent.cas_dir, casDir, 'the alert log must store the CAS path string');
+    assert.equal(alertEvent.input_anomalies, undefined, 'no input anomaly is expected here');
+  } finally {
+    disengageTaskHostBoundary({ canonicalDir: repoDir, casDir, force: true });
+    rmSync(scopeBase, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
 });
