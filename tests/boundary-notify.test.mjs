@@ -17,6 +17,9 @@ import {
   buildNotifyPayload,
   describeNotifyConfig,
   notifyLogFile,
+  listPendingNotifications,
+  flushPendingNotifications,
+  notifyBackoffMs,
 } from '../lib/boundary-notify.mjs';
 import { runTrustedImportTask } from '../lib/trusted-import/orchestrator-adapter.mjs';
 import { disengageTaskHostBoundary } from '../lib/host-boundary.mjs';
@@ -49,6 +52,7 @@ const ENV_KEYS = [
   'AF_BOUNDARY_NOTIFY_COOLDOWN_MS', 'AF_BOUNDARY_NOTIFY_TIMEOUT_MS', 'AF_BOUNDARY_NOTIFY_INCLUDE_PATHS',
   'AF_BOUNDARY_NOTIFY_ON_RELEASE', 'AF_BOUNDARY_NOTIFY_TOKEN', 'AF_BOUNDARY_ALERT_ESCALATE_AFTER',
   'AF_BOUNDARY_NOTIFY_FORMAT', 'AF_BOUNDARY_NOTIFY_FEISHU_SECRET',
+  'AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS', 'AF_BOUNDARY_NOTIFY_RETRY_BASE_MS', 'AF_BOUNDARY_NOTIFY_RETRY_MAX_MS',
 ];
 
 function withEnv(patch, fn) {
@@ -337,7 +341,7 @@ test('A1b notify: a retained lifecycle drives the notifier (dry-run, on disk)', 
 test('A1b notify: feishu custom-bot schema is rendered and posted', async () => {
   const root = mkdtempSync(join(tmpdir(), 'af-notify-feishu-'));
   const file = join(root, 'alerts.jsonl');
-  const mock = await startMockWebhook();
+  const mock = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
   try {
     await withEnvAsync({
       AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
@@ -371,7 +375,7 @@ test('A1b notify: feishu custom-bot schema is rendered and posted', async () => 
 test('A1b notify: feishu signature is emitted and independently verifiable', async () => {
   const root = mkdtempSync(join(tmpdir(), 'af-notify-feishu-sign-'));
   const file = join(root, 'alerts.jsonl');
-  const mock = await startMockWebhook();
+  const mock = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
   const secret = 'unit-test-secret';
   try {
     await withEnvAsync({
@@ -438,4 +442,292 @@ test('A1b notify: a 2xx answer with a non-zero provider code counts as failed', 
     await accepting.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('A1b notify: provider errors echoing the target or token are sanitised before storage', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-echo-'));
+  const file = join(root, 'alerts.jsonl');
+  const token = 'tk_super_secret_token_value';
+  const leaking = await startMockWebhook({
+    status: 200,
+    reply: JSON.stringify({ code: 19002, msg: `bad token ${token} while calling https://open.feishu.cn/open-apis/bot/v2/hook/SECRET-PATH` }),
+  });
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: leaking.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_TOKEN: token,
+    }, async () => {
+      const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(res.status, 'failed');
+      assert.doesNotMatch(res.reason, new RegExp(token), 'the token must not survive in the returned reason');
+      assert.doesNotMatch(res.reason, /SECRET-PATH/, 'the echoed URL path must not survive');
+    });
+    const raw = readFileSync(notifyLogFile(file), 'utf8');
+    assert.doesNotMatch(raw, new RegExp(token), 'the token must never reach the delivery log');
+    assert.doesNotMatch(raw, /SECRET-PATH/, 'the echoed URL must never reach the delivery log');
+    assert.doesNotMatch(raw, new RegExp(leaking.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the webhook URL must never reach the delivery log');
+  } finally {
+    await leaking.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b notify: a transport error containing the URL is sanitised too', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-throw-'));
+  const file = join(root, 'alerts.jsonl');
+  const url = 'https://open.feishu.cn/open-apis/bot/v2/hook/THROW-SECRET';
+  try {
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu', AF_BOUNDARY_NOTIFY_WEBHOOK: url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0' }, async () => {
+      const res = await notifyBoundaryAlert({
+        event: 'boundary_retained',
+        alert: alertFor(root, 1),
+        fetchImpl: async () => { throw new Error(`request to ${url} failed`); },
+      });
+      assert.equal(res.status, 'failed');
+      assert.doesNotMatch(res.reason, /THROW-SECRET/);
+    });
+    const raw = readFileSync(notifyLogFile(file), 'utf8');
+    assert.doesNotMatch(raw, /THROW-SECRET/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b notify: a path inside the free-text reason is redacted when paths are off', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-reason-'));
+  const file = join(root, 'alerts.jsonl');
+  const secretRepo = '/home/reject/very-secret-repo';
+  try {
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'dry-run', AF_BOUNDARY_NOTIFY_INCLUDE_PATHS: '0' }, async () => {
+      await notifyBoundaryAlert({
+        event: 'boundary_retained',
+        alert: alertFor(root, 1, { reason: `scope anomaly detected at ${secretRepo}/src` }),
+      });
+    });
+    const record = readNotifyEvents({ file })[0];
+    // Redaction governs EGRESS: the outbound payload and body must be path-free, while the
+    // local record keeps the real path so an operator can act on it.
+    assert.equal(record.canonical_dir, root, 'the local audit record keeps the real path');
+    const outbound = `${JSON.stringify(record.payload)}${record.request_body ?? ''}`;
+    assert.doesNotMatch(outbound, /very-secret-repo/, 'a path quoted in the reason must not leave the host');
+    assert.doesNotMatch(outbound, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the canonical path must not leave the host');
+    assert.ok(JSON.stringify(record.payload.reason).includes('sha256:'), 'the path is replaced by its digest');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b notify: an unverifiable 200 response is never recorded as sent', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-unverifiable-'));
+  const file = join(root, 'alerts.jsonl');
+  const notJson = await startMockWebhook({ status: 200, reply: 'OK' });
+  const noCode = await startMockWebhook({ status: 200, reply: '{"ok":true}' });
+  const plain = await startMockWebhook({ status: 200, reply: 'OK' });
+  try {
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu', AF_BOUNDARY_NOTIFY_WEBHOOK: notJson.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0' }, async () => {
+      const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(res.status, 'failed', 'a non-JSON body cannot confirm a Feishu delivery');
+      assert.match(res.reason, /cannot be confirmed/);
+    });
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu', AF_BOUNDARY_NOTIFY_WEBHOOK: noCode.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0' }, async () => {
+      const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 3) });
+      assert.equal(res.status, 'failed', 'a body without a provider status code cannot confirm delivery');
+    });
+    // A generic endpoint has no provider code to check: HTTP 200 remains sufficient.
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'generic', AF_BOUNDARY_NOTIFY_WEBHOOK: plain.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0' }, async () => {
+      const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 5) });
+      assert.equal(res.status, 'sent');
+    });
+    const statuses = readNotifyEvents({ file }).map((r) => r.status);
+    assert.ok(!statuses.slice(0, 2).includes('sent'), `unverifiable responses must not be sent: ${statuses.join(',')}`);
+  } finally {
+    await notJson.close();
+    await noCode.close();
+    await plain.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b notify: a dry-run never consumes the live cooldown', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-modekey-'));
+  const file = join(root, 'alerts.jsonl');
+  const mock = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
+  try {
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'dry-run', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu', AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '600000' }, async () => {
+      const dry = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(dry.status, 'would-notify');
+    });
+    assert.equal(mock.requests.length, 0);
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu', AF_BOUNDARY_NOTIFY_WEBHOOK: mock.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '600000' }, async () => {
+      const live = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(live.status, 'sent', 'the live delivery must not be suppressed by the dry-run record');
+    });
+    assert.equal(mock.requests.length, 1, 'exactly one real delivery happened');
+  } finally {
+    await mock.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b notify: concurrent calls for one event claim the delivery exactly once', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-concurrent-'));
+  const file = join(root, 'alerts.jsonl');
+  // Slow responder so both callers overlap while the claim is held.
+  const slow = await new Promise((resolve) => {
+    const requests = [];
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        requests.push({ body });
+        setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"code":0,"msg":"success"}'); }, 250);
+      });
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, requests, url: `http://127.0.0.1:${server.address().port}/hook`, close: () => new Promise((r) => server.close(r)) }));
+  });
+  try {
+    await withEnvAsync({ AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu', AF_BOUNDARY_NOTIFY_WEBHOOK: slow.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0' }, async () => {
+      const [a, b] = await Promise.all([
+        notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) }),
+        notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) }),
+      ]);
+      const statuses = [a.status, b.status].sort();
+      assert.deepEqual(statuses, ['sent', 'suppressed'], `one caller must be suppressed, got ${statuses.join(',')}`);
+      const suppressed = [a, b].find((r) => r.status === 'suppressed');
+      assert.equal(suppressed.reason, 'concurrent-claim');
+    });
+    assert.equal(slow.requests.length, 1, 'exactly one HTTP request may be made');
+  } finally {
+    await slow.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b retry: a failed live delivery is queued with bounded backoff and no secrets', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-retry-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await startMockWebhook({ status: 500, reply: '{"code":19002,"msg":"boom"}' });
+  const token = 'tk_retry_secret';
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_TOKEN: token,
+      AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '3', AF_BOUNDARY_NOTIFY_RETRY_BASE_MS: '5000',
+    }, async () => {
+      const res = await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      assert.equal(res.status, 'failed');
+    });
+
+    const pending = listPendingNotifications({ file });
+    assert.equal(pending.length, 1, 'the failed delivery must be queued for retry');
+    assert.equal(pending[0].state, 'pending');
+    assert.equal(pending[0].attempts, 1);
+    assert.equal(pending[0].max_attempts, 3);
+    assert.ok(Date.parse(pending[0].next_attempt_at) > Date.now(), 'the retry must be scheduled in the future');
+    assert.ok(pending[0].request_body.includes('msg_type'), 'the rendered body is kept so a restart can resume');
+    const rawPending = readFileSync(`${file}.notify-pending.json`, 'utf8');
+    assert.doesNotMatch(rawPending, new RegExp(token));
+    assert.doesNotMatch(rawPending, /127\.0\.0\.1/, 'the target is never stored');
+    assert.equal(pending[0].last_error, 'non-2xx response: 500', 'the recorded error describes the failure without the target');
+  } finally {
+    await failing.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b retry: a new process resumes the queue and delivers, and backoff grows', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-resume-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await startMockWebhook({ status: 500, reply: '{"code":1,"msg":"down"}' });
+  const good = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
+  try {
+    // First "process": the delivery fails and is queued.
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '4',
+      AF_BOUNDARY_NOTIFY_RETRY_BASE_MS: '1000',
+    }, async () => {
+      await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      await flushPendingNotifications({ file, now: Date.now() + 10000 }); // still failing (same target)
+    });
+    const afterTwo = listPendingNotifications({ file })[0];
+    assert.equal(afterTwo.attempts, 2);
+    const secondDelay = Date.parse(afterTwo.next_attempt_at) - Date.now();
+    assert.ok(secondDelay > 1000, `backoff must grow: ${secondDelay}ms`);
+
+    // Second "process" (fresh state read) points at a healthy target and resumes.
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '4',
+    }, async () => {
+      const res = await flushPendingNotifications({ file, now: Date.now() + 600000 });
+      assert.equal(res.attempted, 1);
+      assert.equal(res.delivered, 1);
+    });
+    assert.equal(good.requests.length, 1);
+    assert.equal(listPendingNotifications({ file }).length, 0, 'a delivered entry leaves the queue');
+    assert.equal(listPendingNotifications({ file, includeDelivered: true })[0].state, 'delivered');
+  } finally {
+    await failing.close();
+    await good.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b retry: attempts are bounded and exhaustion is visible without the webhook', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-exhaust-'));
+  const file = join(root, 'alerts.jsonl');
+  const failing = await startMockWebhook({ status: 500, reply: '{"code":1,"msg":"down"}' });
+  const cli = CLI;
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '2',
+    }, async () => {
+      await notifyBoundaryAlert({ event: 'boundary_retained', alert: alertFor(root, 1) });
+      const first = await flushPendingNotifications({ file, now: Date.now() + 60000 });
+      assert.equal(first.exhausted, 1, 'the second failure exhausts the budget');
+      const pending = listPendingNotifications({ file });
+      assert.equal(pending[0].state, 'exhausted');
+      assert.equal(pending[0].next_attempt_at, null, 'no further attempt is scheduled');
+      const again = await flushPendingNotifications({ file, now: Date.now() + 600000, force: true });
+      assert.equal(again.attempted, 0, 'an exhausted entry is never retried again');
+    });
+
+    // Visible locally: notify-status exits non-zero while a delivery is stuck.
+    const status = (() => {
+      try {
+        const out = execFileSync(process.execPath, [cli, 'boundary', 'notify-status'], {
+          env: { ...process.env, AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_WEBHOOK: failing.url },
+          encoding: 'utf8',
+        });
+        return { code: 0, out };
+      } catch (err) { return { code: err.status, out: `${err.stdout ?? ''}` }; }
+    })();
+    assert.equal(status.code, 1, 'a stuck delivery must fail the status check loudly');
+    assert.match(status.out, /exhausted: 1/);
+    // In dry-run/off the flush refuses instead of silently doing nothing.
+    const refused = (() => {
+      try {
+        execFileSync(process.execPath, [cli, 'boundary', 'notify-flush', '--confirm'], {
+          env: { ...process.env, AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'dry-run' }, encoding: 'utf8',
+        });
+        return 0;
+      } catch (err) { return err.status; }
+    })();
+    assert.equal(refused, 2, 'retries only run in live mode');
+  } finally {
+    await failing.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b retry: backoff is exponential and capped', () => {
+  return withEnvAsync({ AF_BOUNDARY_NOTIFY_RETRY_BASE_MS: '1000', AF_BOUNDARY_NOTIFY_RETRY_MAX_MS: '5000' }, () => {
+    assert.equal(notifyBackoffMs(1), 1000);
+    assert.equal(notifyBackoffMs(2), 2000);
+    assert.equal(notifyBackoffMs(3), 4000);
+    assert.equal(notifyBackoffMs(4), 5000, 'the delay is capped');
+    assert.equal(notifyBackoffMs(9), 5000);
+  });
 });

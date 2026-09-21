@@ -30,7 +30,7 @@ import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
 import { saveTaskWithVersion } from './lib/store.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
-import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest } from './lib/boundary-notify.mjs';
+import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest, listPendingNotifications, flushPendingNotifications } from './lib/boundary-notify.mjs';
 
 const AF_ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const TASKS_DIR = process.env.AF_TASKS_DIR || join(AF_ROOT, 'tasks');
@@ -72,7 +72,8 @@ function printUsage() {
   af-admin boundary recover --canonical <dir> [--cas <dir>] --reason "<reason>" [--ack-live-scopes] [--allow-guessed-modes] [--recovered-by "<name>"]
   af-admin boundary alerts [--json] [--include-resolved]
   af-admin boundary alert-resolve --canonical <dir> --reason "<reason>"
-  af-admin boundary notify-status
+  af-admin boundary notify-status [--json]
+  af-admin boundary notify-flush [--force] [--confirm]
   af-admin boundary notify-test --canonical <dir> [--reason "<reason>"] [--confirm]
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
   af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
@@ -313,12 +314,40 @@ async function main() {
     if (subCmd === 'notify-status') {
       // Reports configuration only; the webhook target itself is never printed.
       const cfg = describeNotifyConfig();
-      console.log('boundary notification configuration');
-      for (const [k, v] of Object.entries(cfg)) console.log(`  ${k}: ${v}`);
       const deliveries = readNotifyEvents();
-      console.log(`  delivery records: ${deliveries.length}`);
-      for (const d of deliveries.slice(-5)) console.log(`    ${d.at} ${d.status} ${d.mode} ${d.notify_key ?? ''} ${d.reason ?? ''}`);
-      process.exit(0);
+      const pending = listPendingNotifications();
+      const due = pending.filter((e) => e.state === 'pending');
+      const exhausted = pending.filter((e) => e.state === 'exhausted');
+      if (args.includes('--json')) {
+        console.log(JSON.stringify({ config: cfg, delivery_records: deliveries.length, pending: due, exhausted }, null, 2));
+      } else {
+        console.log('boundary notification configuration');
+        for (const [k, v] of Object.entries(cfg)) console.log(`  ${k}: ${v}`);
+        console.log(`  delivery records: ${deliveries.length}`);
+        for (const d of deliveries.slice(-5)) console.log(`    ${d.at} ${d.status} ${d.mode} ${d.notify_key ?? ''} ${d.reason ?? ''}`);
+        console.log(`  pending retries: ${due.length}   exhausted: ${exhausted.length}`);
+        for (const e of [...due, ...exhausted]) {
+          console.log(`    [${e.state}] ${e.canonical_dir} attempts=${e.attempts}/${e.max_attempts} next=${e.next_attempt_at ?? 'n/a'} last_error=${e.last_error ?? 'n/a'}`);
+        }
+      }
+      // A stuck delivery is a local, visible failure: exit non-zero so a watchdog sees it.
+      process.exit(exhausted.length > 0 || due.some((e) => e.next_attempt_at && Date.parse(e.next_attempt_at) <= Date.now()) ? 1 : 0);
+    }
+    if (subCmd === 'notify-flush') {
+      const cfg = describeNotifyConfig();
+      if (cfg.mode !== 'live') {
+        console.error(`error: retries only run in live mode (mode=${cfg.mode})`);
+        process.exit(2);
+      }
+      if (!args.includes('--confirm')) {
+        console.error('error: notify-flush sends real notifications; re-run with --confirm');
+        process.exit(2);
+      }
+      const res = await flushPendingNotifications({ force: args.includes('--force') });
+      console.log(`notify-flush: due=${res.due} attempted=${res.attempted} delivered=${res.delivered} failed=${res.failed} exhausted=${res.exhausted}${res.skipped ? ` skipped=${res.skipped}` : ''}`);
+      const remaining = listPendingNotifications();
+      const stuck = remaining.filter((e) => e.state === 'exhausted').length;
+      process.exit(stuck > 0 ? 1 : 0);
     }
     if (subCmd === 'notify-test') {
       const target = argValue('--canonical');
