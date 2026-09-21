@@ -29,6 +29,7 @@ import {
 import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
 import { saveTaskWithVersion } from './lib/store.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
+import { listBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
 
 const AF_ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const TASKS_DIR = process.env.AF_TASKS_DIR || join(AF_ROOT, 'tasks');
@@ -68,6 +69,8 @@ function printUsage() {
   af-admin logs rotate [--days <N>] [--events-file <path>] [--archive-dir <path>]
   af-admin reclaim orphans [--confirm] [--runs-dir <path>]
   af-admin boundary recover --canonical <dir> [--cas <dir>] --reason "<reason>" [--ack-live-scopes] [--allow-guessed-modes] [--recovered-by "<name>"]
+  af-admin boundary alerts [--json] [--include-resolved]
+  af-admin boundary alert-resolve --canonical <dir> --reason "<reason>" 
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
   af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
   af-admin restore-point restore --task-id <id> --revision <n> [--confirm] [--prune] [--tasks-dir <path>]`);
@@ -273,7 +276,29 @@ async function main() {
       }
       process.exit(res.delivered ? 0 : 1);
     }
-    console.error(`unknown boundary subcommand: ${subCmd} (expected: recover)`);
+    if (subCmd === 'alerts') {
+      // A1b: retained boundaries must be visible to an operator without reading task files.
+      const includeResolved = args.includes('--include-resolved');
+      const alerts = listBoundaryAlerts({ includeResolved });
+      if (args.includes('--json')) {
+        console.log(JSON.stringify({ file: boundaryAlertsFile(), alerts }, null, 2));
+      } else {
+        console.log(formatBoundaryAlerts(alerts));
+      }
+      process.exit(alerts.some((a) => a.open === true) ? 1 : 0);
+    }
+    if (subCmd === 'alert-resolve') {
+      const target = argValue('--canonical');
+      const reason = argValue('--reason');
+      if (!target || !reason || !reason.trim()) {
+        console.error('error: --canonical <dir> and --reason "<reason>" are required');
+        process.exit(1);
+      }
+      const res = resolveBoundaryAlert({ canonicalDir: target, reason: reason.trim() });
+      console.log(`boundary alert resolved: ${res.resolved} (occurrences=${res.occurrences}, log=${res.file})`);
+      process.exit(0);
+    }
+    console.error(`unknown boundary subcommand: ${subCmd} (expected: recover, alerts, alert-resolve)`);
     printUsage();
     process.exit(1);
   } else if (mainCmd === 'reclaim') {

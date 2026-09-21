@@ -58,6 +58,13 @@ import {
 import { CodexAdapter, executorScratchDir } from '../lib/adapters.mjs';
 import { executorEnv } from '../lib/executor-env.mjs';
 import {
+  recordBoundaryAlert,
+  resolveBoundaryAlert,
+  listBoundaryAlerts,
+  readBoundaryAlertEvents,
+  boundaryAlertsFile,
+} from '../lib/boundary-alerts.mjs';
+import {
   createWriterScope,
   attachWriterScope,
   reapWriterScope,
@@ -2329,6 +2336,194 @@ test('HIB-49 (A2-AC7 链路): 生命周期因 scope 异常保留保护并把决�
     disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
     if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
     rmSync(scopeBase, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-50 (A2 默认预算): 默认 3 次重扫耗尽才保留 (确定注入扫描器)', () => {
+  // The DEFAULT budget (maxRescans = 3) must exhaust after 4 attempts. A real race
+  // cannot guarantee four consecutive reaped observations, so the scanner is injected;
+  // the rule and the budget under test are the production ones.
+  const empty = { status: 'empty', scopes: [], anomalies: [], reaped: 0 };
+  const reaped = { status: 'empty', scopes: [], anomalies: [], reaped: 1 };
+
+  const alwaysReaped = decideWriterScopesEmpty({
+    base: '/nonexistent-base', quiesceConfirmed: true, sleepSync: () => {},
+    scan: () => ({ ...reaped }),
+  });
+  assert.strictEqual(alwaysReaped.decision, 'RETAIN');
+  assert.strictEqual(alwaysReaped.reason, 'rescan-budget-exhausted');
+  assert.strictEqual(alwaysReaped.attempts, 4, 'default budget = 3 rescans + the final attempt');
+
+  let calls = 0;
+  const convergesLate = decideWriterScopesEmpty({
+    base: '/nonexistent-base', quiesceConfirmed: true, sleepSync: () => {},
+    scan: () => { calls += 1; return calls < 4 ? { ...reaped } : { ...empty }; },
+  });
+  assert.strictEqual(convergesLate.decision, 'UNLOCK');
+  assert.strictEqual(convergesLate.attempts, 4, 'three real rescans then a clean scan');
+  assert.strictEqual(calls, 4);
+
+  // Without the seam the production scanner is used, and a quiet base unlocks in one scan.
+  const base = mkdtempSync(join(tmpdir(), 'af-hib50-'));
+  try {
+    const real = decideWriterScopesEmpty({ base, quiesceConfirmed: true, sleepSync: () => {} });
+    assert.strictEqual(real.decision, 'UNLOCK');
+    assert.strictEqual(real.attempts, 1);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('HIB-51 (A1b 闭环): 保留决策与告警写盘后可重新读取', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib51-'));
+  const tasksDir = join(root, 'tasks');
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  const candidateDir = join(root, 'candidate');
+  const scopeBase = mkdtempSync(join(tmpdir(), 'af-hib51-scopes-'));
+  const alertsFile = join(root, 'boundary-alerts.jsonl');
+  mkdirSync(tasksDir, { recursive: true });
+  mkdirSync(canonicalDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  mkdirSync(candidateDir, { recursive: true });
+
+  execFileSync('git', ['init', '-b', 'main'], { cwd: canonicalDir, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.name', 'Tester'], { cwd: canonicalDir, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.email', 'tester@test.local'], { cwd: canonicalDir, stdio: 'pipe' });
+  mkdirSync(join(canonicalDir, 'src'));
+  mkdirSync(join(canonicalDir, 'tests'));
+  writeFileSync(join(canonicalDir, 'src', 'value.mjs'), "export const value = 'v1';\n");
+  writeFileSync(
+    join(canonicalDir, 'tests', 'gate.test.mjs'),
+    `import assert from 'node:assert/strict';\nimport { value } from '../src/value.mjs';\nimport { test } from 'node:test';\ntest('gate', () => assert.equal(value, 'v2'));\n`,
+  );
+  execFileSync('git', ['add', '.'], { cwd: canonicalDir, stdio: 'pipe' });
+  execFileSync('git', ['commit', '-m', 'baseline'], { cwd: canonicalDir, stdio: 'pipe' });
+  const baseOid = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: canonicalDir, encoding: 'utf8' }).trim();
+  execFileSync('git', ['update-ref', 'refs/afr/canonical', baseOid], { cwd: canonicalDir });
+  mkdirSync(join(scopeBase, 'af-writer-broken'), { recursive: true });
+
+  const taskId = 'TASK-HIB-51-ALERT-ROUNDTRIP';
+  const taskPath = join(tasksDir, `${taskId}.json`);
+  const task = {
+    task_id: taskId,
+    fixture_dir: canonicalDir,
+    state: 'CREATED',
+    host_isolation: true,
+    author_executor: 'codex',
+    reviewer_executor: 'claude',
+    acceptance_cmd: { command: 'node', args: ['--test', 'tests/gate.test.mjs'] },
+    acceptance_binding: null,
+    trusted_import: {
+      enabled: true,
+      candidate_dir: candidateDir,
+      cas_dir: casDir,
+      proposed_required: ['src/**'],
+      policy: { allowed_root: ['src/**', 'tests/**'], forbidden: [], protected_paths: [], projection: { exclude: [] }, import: { deny: [] } },
+      acceptance: { tier: 'TierA', acceptance_profile_digest: 'digest-hib-51', acceptance_assets_digest: 'assets-hib-51', dependency_fixture_id: 'dep-hib-51' },
+    },
+  };
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  const oldAlerts = process.env.AF_BOUNDARY_ALERTS_FILE;
+  process.env.AF_CGROUP_BASE = scopeBase;
+  process.env.AF_BOUNDARY_ALERTS_FILE = alertsFile;
+
+  try {
+    await runTrustedImportTask(task, {
+      runAuthor: async (rev, { cwd }) => {
+        writeFileSync(join(cwd, 'src', 'value.mjs'), "export const value = 'v2';\n");
+        return {
+          executor_run_id: 'RUN-AUTHOR-HIB51',
+          writer_termination: { process_started: true, process_group_alive: false, termination_confirmed: true, scope_verified: true, scope_kind: 'cgroup' },
+        };
+      },
+      runReview: async () => {
+        task.last_review_termination_evidence = { process_started: true, process_group_alive: false, termination_confirmed: true, scope_verified: true, scope_kind: 'cgroup' };
+        return { decision: 'PASS', summary: 'value is v2 and the gate passes' };
+      },
+      // File-backed store: the decision must survive a real write + re-read.
+      saveTask: (t) => writeFileSync(taskPath, `${JSON.stringify(t, null, 2)}\n`),
+    });
+
+    assert.strictEqual(existsSync(taskPath), true, 'the task record must exist on disk');
+    const onDisk = JSON.parse(readFileSync(taskPath, 'utf8'));           // re-read
+    assert.strictEqual(onDisk.trusted_import.boundary_state, 'PROTECTION_RETAINED_PENDING_RECOVERY');
+    assert.strictEqual(onDisk.trusted_import.boundary_scope_decision.decision, 'RETAIN');
+    assert.strictEqual(onDisk.trusted_import.boundary_scope_decision.reason, 'scope-anomaly');
+    assert.strictEqual(onDisk.trusted_import.boundary_scope_decision.attempts, 1);
+    assert.strictEqual(onDisk.trusted_import.boundary_scope_decision.quiesce_confirmed, true);
+    assert.ok(onDisk.trusted_import.boundary_alert, 'the retention must carry its alert');
+    assert.strictEqual(onDisk.trusted_import.boundary_alert.severity, 'warning');
+    assert.strictEqual(onDisk.trusted_import.boundary_alert.occurrences, 1);
+
+    // The alert log is durable and re-readable, and the lifecycle is traceable from it.
+    assert.strictEqual(boundaryAlertsFile(), alertsFile);
+    const events = readBoundaryAlertEvents({ file: alertsFile });
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].event, 'boundary_retained');
+    assert.strictEqual(events[0].task_id, taskId);
+    assert.strictEqual(events[0].scope_decision.reason, 'scope-anomaly');
+    const open = listBoundaryAlerts({ file: alertsFile });
+    assert.strictEqual(open.length, 1);
+    assert.strictEqual(open[0].canonical_dir, canonicalDir);
+  } finally {
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    if (oldAlerts !== undefined) process.env.AF_BOUNDARY_ALERTS_FILE = oldAlerts; else delete process.env.AF_BOUNDARY_ALERTS_FILE;
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    rmSync(scopeBase, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-52 (A1b 可见性/升级/关闭): 告警可查询、可升级、恢复后自动关闭', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib52-'));
+  const alertsFile = join(root, 'alerts.jsonl');
+  const canonicalDir = join(root, 'canonical');
+  mkdirSync(canonicalDir, { recursive: true });
+  const oldAlerts = process.env.AF_BOUNDARY_ALERTS_FILE;
+  process.env.AF_BOUNDARY_ALERTS_FILE = alertsFile;
+  const cli = join(process.cwd(), 'af-admin.mjs');
+
+  try {
+    const first = recordBoundaryAlert({ canonicalDir, taskId: 'T1', reason: 'scope-anomaly', boundaryState: 'PROTECTION_RETAINED_PENDING_RECOVERY' });
+    const second = recordBoundaryAlert({ canonicalDir, taskId: 'T2', reason: 'scope-anomaly', boundaryState: 'PROTECTION_RETAINED_PENDING_RECOVERY' });
+    const third = recordBoundaryAlert({ canonicalDir, taskId: 'T3', reason: 'scope-anomaly', boundaryState: 'PROTECTION_RETAINED_PENDING_RECOVERY' });
+    assert.strictEqual(first.severity, 'warning');
+    assert.strictEqual(second.severity, 'warning');
+    assert.strictEqual(third.severity, 'escalated', 'repeated retains must escalate instead of retrying silently');
+    assert.strictEqual(third.escalated, true);
+    assert.strictEqual(third.occurrences, 3);
+
+    // Visible: the operator CLI reports it and exits non-zero while an alert is open.
+    const cliOut = spawnSync(process.execPath, [cli, 'boundary', 'alerts'], {
+      env: { ...process.env, AF_BOUNDARY_ALERTS_FILE: alertsFile }, encoding: 'utf8',
+    });
+    assert.strictEqual(cliOut.status, 1, 'an open alert must make the CLI exit non-zero');
+    assert.match(cliOut.stdout, /boundary alerts: 1 open/);
+    assert.match(cliOut.stdout, /occurrences=3/);
+    assert.match(cliOut.stdout, /\[escalated\]/);
+
+    // Queryable programmatically, with the full history re-readable.
+    assert.strictEqual(listBoundaryAlerts({ file: alertsFile }).length, 1);
+    assert.strictEqual(readBoundaryAlertEvents({ file: alertsFile }).length, 3);
+
+    // Closed automatically once the path is released, and recorded as such.
+    const resolved = resolveBoundaryAlert({ canonicalDir, reason: 'recovered by operator' });
+    assert.strictEqual(resolved.resolved, true);
+    assert.strictEqual(listBoundaryAlerts({ file: alertsFile }).length, 0);
+    assert.strictEqual(listBoundaryAlerts({ file: alertsFile, includeResolved: true })[0].open, false);
+    const events = readBoundaryAlertEvents({ file: alertsFile });
+    assert.strictEqual(events[events.length - 1].event, 'boundary_released');
+
+    const afterOut = spawnSync(process.execPath, [cli, 'boundary', 'alerts'], {
+      env: { ...process.env, AF_BOUNDARY_ALERTS_FILE: alertsFile }, encoding: 'utf8',
+    });
+    assert.strictEqual(afterOut.status, 0, 'no open alert means a clean exit');
+    assert.match(afterOut.stdout, /none open/);
+  } finally {
+    if (oldAlerts !== undefined) process.env.AF_BOUNDARY_ALERTS_FILE = oldAlerts; else delete process.env.AF_BOUNDARY_ALERTS_FILE;
     rmSync(root, { recursive: true, force: true });
   }
 });
