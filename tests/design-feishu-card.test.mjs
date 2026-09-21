@@ -102,6 +102,32 @@ test('design: the A1a design keeps the required deliverables and the no-bypass r
   assert.doesNotMatch(doc, /## 10\. 待评审确认的开放问题/, 'open questions must have been decided');
 });
 
+test('design: the run console is read-only and keeps its required deliverables', () => {
+  const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'TASK-RUN-CONSOLE-DESIGN.md'), 'utf8');
+  for (const section of ['数据源清单', '只读保证', '关联键与图谱', '时间线模型', '视图与字段',
+    '不可核验、新鲜度与一致性', '失败验收矩阵', '安全与出口', '与 A1a、通知的关系', '测试计划']) {
+    assert.match(doc, new RegExp(section), `the console design must keep the "${section}" section`);
+  }
+  // Read-only invariants and the no-guess / no-merge rules must stay stated.
+  for (const rule of ['只读', '不导入任何写 API', '不获取任何锁', '不调用有副作用的命令',
+    '未关联', '绝不猜测', 'UNVERIFIABLE', '合成单一', 'order_basis', 'as_of']) {
+    assert.match(doc, new RegExp(rule), `the console design must state: ${rule}`);
+  }
+  // Grounded in the real artifacts rather than invented ones.
+  for (const source of ['tasks', 'tasklock', 'scheduler.json', 'executor-runtime-events.jsonl',
+    'operator-activity', 'boundary-alerts.jsonl', 'notify-pending.json', 'inspectBoundaryAlerts', 'inspectPendingNotifications']) {
+    assert.match(doc, new RegExp(source), `the console design must reference the real source ${source}`);
+  }
+});
+
+test('design: A1a is frozen as an implementation baseline with its three hard constraints', () => {
+  const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'A1A-AUTO-RECOVERY-DESIGN.md'), 'utf8');
+  assert.match(doc, /冻结记录/, 'the A1a design must record the freeze');
+  for (const rule of ['H1', 'H2', 'H3', '持久化', '单调序号', '并发竞态']) {
+    assert.match(doc, new RegExp(rule), `the freeze must record the hard constraint ${rule}`);
+  }
+});
+
 test('design: the integration notes record the provider constraints and the open version question', () => {
   const notes = readFileSync(join(process.cwd(), 'docs', 'design', 'FEISHU-CARD-INTEGRATION-NOTES.md'), 'utf8');
   for (const fact of ['20 KB', '100 次/分钟', '11232', '自定义关键词', 'schema: "2.0"', 'feishu-card']) {
