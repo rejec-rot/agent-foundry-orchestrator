@@ -474,7 +474,7 @@ test('HIB-13: Author 阶段受控越权写入拦截: unauthorized writes to Cano
     writeFileSync(editFile, 'export const fix = 2;');
     assert.strictEqual(readFileSync(editFile, 'utf8'), 'export const fix = 2;');
   } finally {
-    const disengage = disengageTaskHostBoundary({ canonicalDir, casDir });
+    const disengage = disengageTaskHostBoundary({ canonicalDir, casDir, quiesceConfirmed: true });
     assert.strictEqual(disengage.disengaged, true, 'verified-empty scope base must allow a clean disengage');
     if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
     rmSync(emptyScopeBase, { recursive: true, force: true });
@@ -1002,7 +1002,7 @@ test('HIB-23: 缺少保护前快照时拒绝猜测式恢复 (BOUNDARY_SNAPSHOT_M
     );
 
     // The lifecycle path must react the same way: retain, do not unlock.
-    const res = disengageTaskHostBoundary({ canonicalDir, casDir: null });
+    const res = disengageTaskHostBoundary({ canonicalDir, casDir: null, quiesceConfirmed: true });
     assert.strictEqual(res.disengaged, false);
     assert.match(res.reason, /BOUNDARY_SNAPSHOT_MISSING/);
     assert.strictEqual(statSync(canonicalDir).uid, 0, 'boundary must be retained when restore cannot be exact');
@@ -1265,7 +1265,7 @@ test('HIB-28: 恢复失配/操作失败时 disengage 报告 RESTORE_INCOMPLETE �
     entry.mode = '99';
     writeFileSync(snapshot.file, JSON.stringify(parsed));
 
-    const res = disengageTaskHostBoundary({ canonicalDir, casDir: null });
+    const res = disengageTaskHostBoundary({ canonicalDir, casDir: null, quiesceConfirmed: true });
     assert.strictEqual(res.disengaged, false, 'a failed/partial restore must never claim success');
     assert.strictEqual(res.outcome, 'RESTORE_INCOMPLETE');
     assert.match(res.reason, /BOUNDARY_RESTORE_INCOMPLETE/);
@@ -1435,7 +1435,7 @@ test('HIB-30: 恢复已修改部分条目后容器失败 → RESTORE_INCOMPLETE 
     assert.ok(thrown.report.mismatches.length > 0, 'the failure report must carry the mismatch detail');
     assert.strictEqual(statSync(canonicalDir).uid, process.getuid(), 'at least one entry was already released before the failure');
 
-    const res = disengageTaskHostBoundary({ canonicalDir, casDir });
+    const res = disengageTaskHostBoundary({ canonicalDir, casDir, quiesceConfirmed: true });
     assert.strictEqual(res.disengaged, false, 'a partial release must not report a clean unlock');
     assert.strictEqual(res.outcome, 'RESTORE_INCOMPLETE', 'a mid-restore failure must not claim protection is intact');
     assert.match(res.reason, /BOUNDARY_RESTORE_INCOMPLETE/);
@@ -1474,7 +1474,7 @@ test('HIB-31: 容器在任何修改之前就失败 → 保护完整保留 (PROTE
     writeFileSync(join(fakeBin, 'docker'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
     process.env.PATH = fakeBin;
 
-    const res = disengageTaskHostBoundary({ canonicalDir, casDir });
+    const res = disengageTaskHostBoundary({ canonicalDir, casDir, quiesceConfirmed: true });
     assert.strictEqual(res.disengaged, false);
     assert.strictEqual(res.outcome, 'PROTECTION_RETAINED', 'an untouched boundary must be reported as retained');
     assert.match(res.reason, /BOUNDARY_RELEASE_FAILED/);
@@ -1528,7 +1528,7 @@ test('HIB-32: 完整性检查读取异常时不得判定保护完整 (EACCES →
     process.env.PATH = fakeBin;
 
     // ... but an entry that cannot be read is not evidence of an intact boundary.
-    const res = disengageTaskHostBoundary({ canonicalDir, casDir });
+    const res = disengageTaskHostBoundary({ canonicalDir, casDir, quiesceConfirmed: true });
     assert.strictEqual(res.disengaged, false);
     assert.strictEqual(res.outcome, 'RESTORE_INCOMPLETE', 'an unverifiable entry must never be reported as intact protection');
     assert.match(res.reason, /BOUNDARY_RELEASE_FAILED/);
@@ -1970,6 +1970,21 @@ test('HIB-40 (A2-AC1): 扫描中消失的 scope 只触发有界重扫, 预算耗
     { decision: 'UNLOCK', reason: null },
   );
 
+  // Unknown or incomplete input is refused, never read as "nothing is running".
+  assert.deepStrictEqual(
+    evaluateScopeScan({ status: 'unknown', scopes: [], anomalies: [{ class: 'broken-scope' }], reaped: 0 }, { attempt: 1, maxRescans: 3 }),
+    { decision: 'RETAIN', reason: 'scope-anomaly' },
+  );
+  assert.deepStrictEqual(
+    evaluateScopeScan({ status: 'unknown', scopes: [], anomalies: [], reaped: 0 }, { attempt: 1, maxRescans: 3 }),
+    { decision: 'RETAIN', reason: 'scan-unknown' },
+  );
+  for (const bad of [null, undefined, {}, { status: 'weird' }, { status: 'empty', scopes: [], anomalies: [] }, { status: 'empty' }, { status: 'active', scopes: [], anomalies: [], reaped: 0 }]) {
+    const verdict = evaluateScopeScan(bad, { attempt: 1, maxRescans: 3 });
+    assert.strictEqual(verdict.decision, 'RETAIN', `incomplete input must not unlock: ${JSON.stringify(bad)}`);
+    assert.match(verdict.reason, /scan-(invalid|inconsistent|unknown)/);
+  }
+
   const base = mkdtempSync(join(tmpdir(), 'af-hib40-'));
   try {
     const decision = decideWriterScopesEmpty({ base, quiesceConfirmed: true, sleepSync: noSleep });
@@ -2128,11 +2143,19 @@ test('HIB-47 (A2-AC8): quiesce 未确认时判定入口直接拒绝且不扫描'
   const oldCgroup = process.env.AF_CGROUP_BASE;
   try {
     // Even a perfectly empty base must not unlock without quiesce evidence.
-    const decision = decideWriterScopesEmpty({ base, quiesceConfirmed: false, sleepSync: () => {} });
-    assert.strictEqual(decision.decision, 'RETAIN');
-    assert.strictEqual(decision.reason, 'quiesce-not-confirmed');
-    assert.strictEqual(decision.attempts, 0, 'no scan may be performed without quiesce evidence');
-    assert.strictEqual(decision.scan, null);
+    for (const [label, opts] of [
+      ['explicit false', { quiesceConfirmed: false }],
+      ['omitted', {}],
+      ['null', { quiesceConfirmed: null }],
+      ['undefined', { quiesceConfirmed: undefined }],
+      ['truthy non-boolean', { quiesceConfirmed: 1 }],
+    ]) {
+      const decision = decideWriterScopesEmpty({ base, sleepSync: () => {}, ...opts });
+      assert.strictEqual(decision.decision, 'RETAIN', `${label} quiesce evidence must not unlock`);
+      assert.strictEqual(decision.reason, 'quiesce-not-confirmed', `${label} must be refused as unconfirmed`);
+      assert.strictEqual(decision.attempts, 0, `${label}: no scan may be performed without quiesce evidence`);
+      assert.strictEqual(decision.scan, null, `${label}: the base must not even be inspected`);
+    }
 
     process.env.AF_CGROUP_BASE = base;
     protectPathsWithNonOwnerBoundary([canonicalDir]);
@@ -2145,6 +2168,167 @@ test('HIB-47 (A2-AC8): quiesce 未确认时判定入口直接拒绝且不扫描'
     if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
     disengageTaskHostBoundary({ canonicalDir, force: true });
     rmSync(base, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('HIB-48 (A2-AC1/AC7 链路): 真实竞态 → 重扫 → 预算耗尽 → RETAIN (真实 I/O)', async () => {
+  // The chain must be exercised with REAL concurrent deletions, not only with
+  // constructed scan objects: a separate process (the A2 harness reaper) removes the
+  // scope directories while the decision entry scans.
+  const harness = join(process.cwd(), 'verification', 'scope-scan-race.mjs');
+  const SCOPES = 400;
+  let sawRescan = null;
+  let sawExhaustion = null;
+  const unlockViolations = [];
+
+  for (let round = 1; round <= 3 && (!sawRescan || !sawExhaustion); round += 1) {
+    const base = mkdtempSync(join(tmpdir(), `af-hib48-${round}-`));
+    for (let i = 0; i < SCOPES; i += 1) {
+      const dir = join(base, `af-writer-race-${i}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'cgroup.procs'), '\n');
+    }
+    const reaper = spawn(process.execPath, [harness, '--reaper', base, '--scopes', String(SCOPES)], { stdio: 'ignore' });
+    try {
+      const deadline = Date.now() + 20000;
+      let calls = 0;
+      while (Date.now() < deadline && (!sawRescan || !sawExhaustion) && reaper.exitCode === null) {
+        calls += 1;
+        // Budget 0 makes a single real reaped-observation an exhausted budget, which
+        // is exactly the production branch that must retain instead of unlocking.
+        const tight = decideWriterScopesEmpty({ base, maxRescans: 0, backoffMs: 0, quiesceConfirmed: true, sleepSync: () => {} });
+        if (tight.reason === 'rescan-budget-exhausted') sawExhaustion = tight;
+        if (tight.decision === 'UNLOCK') {
+          const scan = tight.scan;
+          if (scan.reaped !== 0 || (scan.anomalies ?? []).length !== 0 || (scan.scopes ?? []).length !== 0) {
+            unlockViolations.push({ scan });
+          }
+        }
+        // Budget 3 lets a real reaped observation trigger an actual rescan.
+        const roomy = decideWriterScopesEmpty({ base, maxRescans: 3, backoffMs: 0, quiesceConfirmed: true, sleepSync: () => {} });
+        if (roomy.attempts >= 2) sawRescan = roomy;
+        if (roomy.reason === 'rescan-budget-exhausted') sawExhaustion = roomy;
+      }
+    } finally {
+      try { reaper.kill('SIGKILL'); } catch { /* best effort */ }
+      rmSync(base, { recursive: true, force: true });
+    }
+  }
+
+  assert.ok(sawRescan, 'a real reaped observation must trigger an actual rescan (attempts >= 2)');
+  assert.ok(sawExhaustion, 'the real race must be able to exhaust the rescan budget');
+  assert.strictEqual(sawExhaustion.decision, 'RETAIN');
+  assert.strictEqual(sawExhaustion.attempts >= 1, true);
+  assert.deepStrictEqual(unlockViolations, [], 'UNLOCK is only allowed on a scan with zero observations');
+});
+
+test('HIB-49 (A2-AC7 链路): 生命周期因 scope 异常保留保护并把决策持久化', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-hib49-'));
+  const canonicalDir = join(root, 'canonical');
+  const casDir = join(root, 'cas');
+  const candidateDir = join(root, 'candidate');
+  const scopeBase = mkdtempSync(join(tmpdir(), 'af-hib49-scopes-'));
+  mkdirSync(canonicalDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
+  mkdirSync(candidateDir, { recursive: true });
+
+  execFileSync('git', ['init', '-b', 'main'], { cwd: canonicalDir, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.name', 'Tester'], { cwd: canonicalDir, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.email', 'tester@test.local'], { cwd: canonicalDir, stdio: 'pipe' });
+  mkdirSync(join(canonicalDir, 'src'));
+  mkdirSync(join(canonicalDir, 'tests'));
+  writeFileSync(join(canonicalDir, 'src', 'value.mjs'), "export const value = 'v1';\n");
+  writeFileSync(
+    join(canonicalDir, 'tests', 'gate.test.mjs'),
+    `import assert from 'node:assert/strict';\nimport { value } from '../src/value.mjs';\nimport { test } from 'node:test';\ntest('gate', () => assert.equal(value, 'v2'));\n`,
+  );
+  execFileSync('git', ['add', '.'], { cwd: canonicalDir, stdio: 'pipe' });
+  execFileSync('git', ['commit', '-m', 'baseline'], { cwd: canonicalDir, stdio: 'pipe' });
+  const baseOid = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: canonicalDir, encoding: 'utf8' }).trim();
+  execFileSync('git', ['update-ref', 'refs/afr/canonical', baseOid], { cwd: canonicalDir });
+  // A scope directory that exists but has no cgroup.procs: a real on-disk anomaly.
+  mkdirSync(join(scopeBase, 'af-writer-broken'), { recursive: true });
+
+  const task = {
+    task_id: 'TASK-HIB-49-SCOPE-ANOMALY',
+    fixture_dir: canonicalDir,
+    state: 'CREATED',
+    host_isolation: true,
+    author_executor: 'codex',
+    reviewer_executor: 'claude',
+    acceptance_cmd: { command: 'node', args: ['--test', 'tests/gate.test.mjs'] },
+    acceptance_binding: null,
+    trusted_import: {
+      enabled: true,
+      candidate_dir: candidateDir,
+      cas_dir: casDir,
+      proposed_required: ['src/**'],
+      policy: {
+        allowed_root: ['src/**', 'tests/**'],
+        forbidden: [],
+        protected_paths: [],
+        projection: { exclude: [] },
+        import: { deny: [] },
+      },
+      acceptance: {
+        tier: 'TierA',
+        acceptance_profile_digest: 'digest-hib-49',
+        acceptance_assets_digest: 'assets-hib-49',
+        dependency_fixture_id: 'dep-hib-49',
+      },
+    },
+  };
+
+  const oldCgroup = process.env.AF_CGROUP_BASE;
+  process.env.AF_CGROUP_BASE = scopeBase;
+
+  try {
+    const res = await runTrustedImportTask(task, {
+      runAuthor: async (rev, { cwd }) => {
+        writeFileSync(join(cwd, 'src', 'value.mjs'), "export const value = 'v2';\n");
+        return {
+          executor_run_id: 'RUN-AUTHOR-HIB49',
+          writer_termination: {
+            process_started: true,
+            process_group_alive: false,
+            termination_confirmed: true,
+            scope_verified: true,
+            scope_kind: 'cgroup',
+          },
+        };
+      },
+      runReview: async () => {
+        task.last_review_termination_evidence = {
+          process_started: true,
+          process_group_alive: false,
+          termination_confirmed: true,
+          scope_verified: true,
+          scope_kind: 'cgroup',
+        };
+        return { decision: 'PASS', summary: 'value is v2 and the gate passes' };
+      },
+      saveTask: (t) => Object.assign(task, t),
+    });
+
+    // Even a completed candidate must NOT unlock while an unreadable scope anomaly exists.
+    assert.strictEqual(res.trusted_import.boundary_state, 'PROTECTION_RETAINED_PENDING_RECOVERY');
+    const decision = res.trusted_import.boundary_scope_decision;
+    assert.ok(decision, 'the retention must persist its scope decision');
+    assert.strictEqual(decision.decision, 'RETAIN');
+    assert.strictEqual(decision.reason, 'scope-anomaly');
+    assert.strictEqual(decision.quiesce_confirmed, true, 'the lifecycle asserted quiesce before deciding');
+    assert.strictEqual(decision.attempts, 1, 'an anomaly is not retried away');
+    assert.strictEqual(decision.anomalies[0].class, 'broken-scope');
+    assert.match(res.trusted_import.boundary_retained_reason, /broken-scope/);
+    assert.strictEqual(statSync(canonicalDir).uid, 0, 'the boundary must stay applied');
+
+    // Visible alerting itself is still unimplemented (A1b): only traceability is proven.
+    assert.strictEqual(task.trusted_import.boundary_scope_decision.reason, 'scope-anomaly');
+  } finally {
+    disengageTaskHostBoundary({ canonicalDir, casDir, force: true });
+    if (oldCgroup !== undefined) process.env.AF_CGROUP_BASE = oldCgroup; else delete process.env.AF_CGROUP_BASE;
+    rmSync(scopeBase, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
 });
