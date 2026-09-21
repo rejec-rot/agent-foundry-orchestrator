@@ -1064,3 +1064,87 @@ test('A1b queue: unreadable path and malformed entries are unverifiable, not emp
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('A1b retry: a crashed last attempt becomes a persisted terminal state', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-terminal-'));
+  const file = join(root, 'alerts.jsonl');
+  const queueFile = `${file}.notify-pending.json`;
+  const good = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
+  try {
+    // max_attempts = 1: the single attempt is claimed and the process "dies" before settling.
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '1',
+    }, async () => {
+      const res = await notifyBoundaryAlert({
+        event: 'boundary_retained',
+        alert: alertFor(root, 1),
+        fetchImpl: async () => { throw new Error('process died during the send'); },
+      });
+      assert.equal(res.status, 'failed');
+    });
+    // Craft the crashed state: claim held, no schedule, still marked pending.
+    const q = JSON.parse(readFileSync(queueFile, 'utf8'));
+    const key = Object.keys(q)[0];
+    q[key].state = 'pending';
+    q[key].attempts = 1;
+    q[key].max_attempts = 1;
+    q[key].claimed_at = new Date(Date.now() - 120000).toISOString();
+    q[key].claim_token = 'dead-claim';
+    q[key].next_attempt_at = null;
+    writeFileSync(queueFile, JSON.stringify(q, null, 2));
+
+    // Sweep 1: the cap refuses the send and the terminal state must be persisted.
+    const first = await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '1',
+    }, async () => flushPendingNotifications({ file }));
+    assert.equal(first.due, 1);
+    assert.equal(first.attempted, 0, 'the cap must prevent any further send');
+    assert.equal(first.exhausted, 1);
+    assert.equal(good.requests.length, 0, 'nothing may be sent once the budget is spent');
+
+    // Restart re-read: the terminal state is on disk, the claim is released, the attempt
+    // audit is kept, and the unknown outcome is recorded rather than asserted.
+    const onDisk = JSON.parse(readFileSync(queueFile, 'utf8'));
+    const entry = onDisk[key];
+    assert.equal(entry.state, 'exhausted');
+    assert.equal(entry.claimed_at, null, 'the dead claim must be released');
+    assert.equal(entry.claim_token, null);
+    assert.equal(entry.next_attempt_at, null);
+    assert.equal(entry.attempts, 1, 'the original attempt audit is preserved');
+    assert.equal(entry.max_attempts, 1);
+    assert.equal(entry.outcome_unknown, true, 'the last attempt outcome must be marked unknown');
+    assert.match(entry.last_error, /outcome unknown/);
+    assert.equal(entry.terminal_reason, 'retry-budget-exhausted');
+
+    // Sweep 2: it is no longer due, but it is still visible as needing manual attention.
+    const second = await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: good.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0', AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '1',
+    }, async () => flushPendingNotifications({ file }));
+    assert.equal(second.due, 0, 'a terminal entry must not be listed as due again');
+    assert.equal(second.exhausted, 0);
+
+    const inspection = inspectPendingNotifications({ file });
+    assert.equal(inspection.pending.length, 1, 'the terminal entry stays visible');
+    assert.equal(inspection.pending[0].state, 'exhausted');
+
+    const status = (() => {
+      try {
+        const out = execFileSync(process.execPath, [CLI, 'boundary', 'notify-status'], {
+          env: { ...process.env, AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_WEBHOOK: good.url },
+          encoding: 'utf8',
+        });
+        return { code: 0, out };
+      } catch (err) { return { code: err.status, out: `${err.stdout ?? ''}` }; }
+    })();
+    assert.equal(status.code, 1, 'a terminal delivery still needs a human');
+    assert.match(status.out, /exhausted: 1/);
+    const events = readNotifyEvents({ file });
+    assert.equal(events.some((e) => e.status === 'exhausted' && e.outcome_unknown === true), true, 'the terminal transition is audited');
+  } finally {
+    await good.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
