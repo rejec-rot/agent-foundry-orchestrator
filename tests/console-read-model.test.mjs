@@ -26,10 +26,12 @@ import { join, relative } from 'node:path';
 
 import {
   assertWithinRoot,
+  exactDeliveryAsset,
   assertWithinRoots,
   buildExceptionsView,
   buildOverview,
   buildTaskView,
+  correlateAlertsAndNotify,
   readAlertBlock,
   readNotifyBlock,
   redactModel,
@@ -478,6 +480,178 @@ test('read-model surfaces queue failures separately from deliveries', () => {
     assert.equal(block.value.exhausted.length, 1);
     assert.equal(block.value.pending.length, 0);
     assert.equal(block.value.queue_ok, true);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('G1: credentials are masked by field name, by Bearer text and in opaque values', () => {
+  const { model } = redactModel({
+    api_key: 'DUMMY_PRIVATE_VALUE',
+    authorization: 'Bearer DUMMY_BEARER_VALUE',
+    headers: { 'x-api-key': 'DUMMY_PRIVATE_VALUE' },
+    log_line: 'Authorization: Bearer DUMMY_BEARER_VALUE and api_key=DUMMY_PRIVATE_VALUE',
+    json_blob: '{"api_key": "DUMMY_PRIVATE_VALUE", "client_secret": "DUMMY_PRIVATE_VALUE"}',
+    nested: [{ password: 'p', private_key: 'k', session_id: 's' }],
+    harmless: 'plain text stays',
+  }, { redact: true });
+  const text = JSON.stringify(model);
+  for (const secret of ['DUMMY_PRIVATE_VALUE', 'DUMMY_BEARER_VALUE']) {
+    assert.equal(text.includes(secret), false, `${secret} must never survive redaction`);
+  }
+  assert.equal(model.api_key, '<redacted-field>');
+  assert.equal(model.harmless, 'plain text stays');
+  assert.match(model.log_line, /Bearer <redacted>/);
+});
+
+test('G1: paths with CJK characters and spaces are hashed by default', () => {
+  const { model } = redactModel({
+    file: '/tmp/私有目录/secret.txt',
+    note: 'see /tmp/我的 目录/子目录/secret.txt for details',
+    key: 'live|/tmp/私有目录/secret.txt|first',
+  }, { redact: true });
+  const text = JSON.stringify(model);
+  assert.equal(text.includes('私有目录'), false, 'a CJK path must be redacted by default');
+  assert.equal(text.includes('我的 目录'), false, 'a path containing a space must be redacted');
+  assert.match(model.file, /^sha256:/);
+  assert.match(model.key, /\|sha256:[0-9a-f]{16}\|/);
+});
+
+test('G1: truncation is recorded, never a silent shrink', () => {
+  // 700 chars must survive the old 500-char cap of redactSecrets...
+  const long = 'x'.repeat(700);
+  const { model: untouched, truncations: none } = redactModel({ note: long }, { redact: true });
+  assert.equal(untouched.note.length, 700, 'a 700-char value must not be silently shortened');
+  assert.deepEqual(none, []);
+
+  // ...and above the documented budget it is cut WITH a marker and a record.
+  const { model, truncations } = redactModel({ note: long, nested: { deep: long } }, { redact: true, maxChars: 100 });
+  assert.match(model.note, /…\[已截断 600 字符\]/);
+  assert.equal(model.note.startsWith('x'.repeat(100)), true);
+  assert.equal(truncations.length, 2, 'every truncated field is recorded');
+  assert.deepEqual(truncations.map((t) => t.kept_chars), [100, 100]);
+  assert.deepEqual(truncations.map((t) => t.original_chars), [700, 700]);
+  assert.equal(truncations.some((t) => t.path === 'nested.deep'), true, 'the record points at the field');
+});
+
+test('G2: association uses the exact asset, never a substring', () => {
+  assert.equal(exactDeliveryAsset({ notify_key: 'live|/srv/repo|first' }), '/srv/repo');
+  assert.equal(exactDeliveryAsset({ notify_key: 'live|/srv/repo-other|first' }), '/srv/repo-other');
+  assert.equal(exactDeliveryAsset({ notify_key: 'no-separators' }), null);
+  assert.equal(exactDeliveryAsset({ notify_key: 'live||first' }), null);
+
+  const alertBlock = { value: { alerts: [{ alert_id: 'AF-1', canonical_dir: '/srv/repo', open: true }] } };
+  const otherOnly = { value: { deliveries: [{ notify_key: 'live|/srv/repo-other|first', status: 'sent' }], pending: [] } };
+  const correlation = correlateAlertsAndNotify(alertBlock, otherOnly);
+  assert.equal(
+    correlation.unmatched.some((entry) => entry.kind === 'alert-without-delivery' && entry.canonical_dir === '/srv/repo'),
+    true,
+    'a neighbouring repo must not satisfy /srv/repo',
+  );
+  assert.equal(correlation.unmatched.some((entry) => entry.kind === 'delivery-without-alert' && entry.asset === '/srv/repo-other'), true);
+});
+
+test('G2: a task without asset keys attaches nothing instead of everything', () => {
+  const fx = makeFixture();
+  try {
+    writeFileSync(join(fx.dirs.tasks, 'T-NOKEY.json'), `${JSON.stringify({ task_id: 'T-NOKEY', state: 'FAILED', state_version: 1 })}\n`);
+    const view = buildTaskView({ taskId: 'T-NOKEY', roots: fx.roots, now: FIXED_NOW });
+    assert.equal(view.blocks.alerts.value.alerts.length, 0, 'alerts must not be attached without an asset/alert key');
+    assert.equal(view.blocks.notify.value.deliveries.length, 0, 'deliveries must not be attached without a key');
+    assert.equal(view.blocks.recovery.value.records.length, 0, 'recovery records must not be attached without a key');
+    assert.equal(view.unmatched.some((entry) => entry.kind === 'task-without-asset-key'), true);
+
+    // A task WITH a key gets only its own evidence.
+    const own = buildTaskView({ taskId: 'T-RETAIN', roots: fx.roots, now: FIXED_NOW });
+    assert.equal(own.blocks.alerts.value.alerts.length, 1);
+    assert.equal(own.blocks.alerts.value.alerts[0].canonical_dir, fx.repo);
+    assert.equal(own.blocks.notify.value.deliveries.length, 2, 'both deliveries belong to this asset');
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('G2: recovery records are filtered by the task asset, not attached wholesale', () => {
+  const fx = makeFixture();
+  try {
+    writeFileSync(join(fx.dirs.audit, 'recovery-2026-09-21T09-00-00-000Z-2-intent.json'), `${JSON.stringify({
+      schema_version: 'af-boundary-recovery-v1', phase: 'intent', at: '2026-09-21T09:00:00.000Z', paths: ['/srv/other-repo'],
+    })}\n`);
+    const view = buildTaskView({ taskId: 'T-RETAIN', roots: fx.roots, now: FIXED_NOW });
+    const files = view.blocks.recovery.value.records.map((record) => record.file);
+    assert.equal(files.length, 1, 'only this asset\'s recovery record may be attached');
+    assert.equal(files[0].includes('other-repo'), false);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('G3: a damaged delivery log is unverifiable, not a silently shorter list', () => {
+  const fx = makeFixture();
+  try {
+    const clean = buildOverview({ roots: fx.roots, now: FIXED_NOW });
+    assert.equal(clean.blocks.notify.read_status, 'ok');
+    writeFileSync(`${fx.alertsFile}.notify.jsonl`, `${readFileSync(`${fx.alertsFile}.notify.jsonl`, 'utf8')}{ torn delivery line\n`);
+    const damaged = buildOverview({ roots: fx.roots, now: FIXED_NOW });
+    assert.equal(damaged.blocks.notify.read_status, 'unverifiable');
+    assert.match(damaged.blocks.notify.reason, /unparseable line/);
+    assert.equal(runCli(fx.env, ['overview', '--json']).code, 3, 'a damaged delivery log must exit 3');
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('G3: every per-task source failure reaches the exceptions report', () => {
+  const fx = makeFixture({ broken: true });
+  try {
+    const view = buildExceptionsView({ roots: fx.roots, now: FIXED_NOW });
+    const sources = view.unverifiable.map((entry) => entry.source);
+    assert.equal(sources.includes('task:T-BROKEN'), true, 'a damaged task must appear in the unverifiable list');
+    assert.equal(view.retained_boundaries.some((entry) => entry.task_id === 'T-BROKEN'), false, 'an unreadable task has no boundary evidence to report');
+
+    // A lock that cannot be read is reported too, and never silently dropped.
+    writeFileSync(join(fx.dirs.locks, 'T-BROKEN.lock'), '{ broken lock');
+    const after = buildExceptionsView({ roots: fx.roots, now: FIXED_NOW });
+    assert.equal(after.unverifiable.some((entry) => entry.source === 'lock:T-BROKEN'), true);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('G3: access errors are unverifiable, only a definite absence is missing', () => {
+  const fx = makeFixture();
+  try {
+    // A task file that exists but cannot be read (no read permission).
+    const denied = join(fx.dirs.tasks, 'T-DENIED.json');
+    writeFileSync(denied, '{"task_id":"T-DENIED","state":"FAILED"}');
+    chmodSync(denied, 0o000);
+    try {
+      const block = buildTaskView({ taskId: 'T-DENIED', roots: fx.roots, now: FIXED_NOW }).blocks.task;
+      assert.equal(block.read_status, 'unverifiable', 'an unreadable record must not be reported as missing');
+      assert.match(block.reason, /EACCES|permission/);
+    } finally {
+      chmodSync(denied, 0o644);
+    }
+
+    // A data root that exists but cannot be listed.
+    const unreadableDir = join(fx.root, 'unreadable-tasks');
+    mkdirSync(unreadableDir, { recursive: true });
+    writeFileSync(join(unreadableDir, 'T-X.json'), '{}');
+    chmodSync(unreadableDir, 0o000);
+    try {
+      const roots = { ...fx.roots, tasks: unreadableDir };
+      const index = buildOverview({ roots, now: FIXED_NOW }).blocks.tasks;
+      assert.equal(index.read_status, 'unverifiable');
+      assert.match(index.reason, /cannot be inspected|unreadable/);
+    } finally {
+      chmodSync(unreadableDir, 0o755);
+    }
+
+    // A genuinely absent task is `missing`, which is NOT unverifiable and NOT an error list entry.
+    const absent = buildTaskView({ taskId: 'T-NOPE', roots: fx.roots, now: FIXED_NOW });
+    assert.equal(absent.blocks.task.read_status, 'missing');
+    const overview = buildOverview({ roots: fx.roots, now: FIXED_NOW });
+    assert.equal(overview.unverifiable.length, 0, 'missing sources must not be reported as unverifiable');
   } finally {
     rmSync(fx.root, { recursive: true, force: true });
   }

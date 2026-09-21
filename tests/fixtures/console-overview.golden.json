@@ -27,6 +27,7 @@
   },
   "needs_human": [],
   "unverifiable": [],
+  "missing": [],
   "correlation": {
     "unmatched": [],
     "alert_count": 1,
