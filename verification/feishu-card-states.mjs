@@ -15,6 +15,7 @@ import {
   FEISHU_CARD_MAX_ELEMENTS,
   FEISHU_CARD_TAGS,
   buildNotifyPayload,
+  inspectPendingNotifications,
   notifyBoundaryAlert,
   notifyMaxBodyBytes,
   readNotifyEvents,
@@ -22,6 +23,20 @@ import {
 
 const argv = process.argv.slice(2);
 const evidenceArg = argv.indexOf('--evidence-dir') >= 0 ? argv[argv.indexOf('--evidence-dir') + 1] : null;
+const live = argv.includes('--live');
+const confirmed = argv.includes('--confirm');
+const webhook = process.env.AF_BOUNDARY_NOTIFY_WEBHOOK || null;
+if (live && !confirmed) {
+  console.error('error: --live sends real cards; re-run with --confirm after reviewing the dry-run output');
+  process.exit(2);
+}
+if (live && !webhook) {
+  console.error('error: --live requires AF_BOUNDARY_NOTIFY_WEBHOOK (passed only via the environment)');
+  process.exit(2);
+}
+const mode = live ? 'live' : 'dry-run';
+const onlyArg = argv.indexOf('--only') >= 0 ? argv[argv.indexOf('--only') + 1] : null;
+const only = onlyArg ? new Set(onlyArg.split(',')) : null;
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: process.cwd(), encoding: 'utf8' }).trim();
 const evidenceDir = evidenceArg ?? join(process.cwd(), '..', 'real-smoke-evidence', `feishu-card-states-${revision.slice(0, 7)}`);
 const previewDir = join(process.cwd(), 'docs', 'design', 'generated');
@@ -32,10 +47,13 @@ mkdirSync(evidenceDir, { recursive: true });
 mkdirSync(previewDir, { recursive: true });
 
 process.env.AF_BOUNDARY_ALERTS_FILE = alertsFile;
-process.env.AF_BOUNDARY_NOTIFY_MODE = 'dry-run';
+process.env.AF_BOUNDARY_NOTIFY_MODE = mode;
 process.env.AF_BOUNDARY_NOTIFY_FORMAT = 'feishu-card';
 process.env.AF_BOUNDARY_NOTIFY_ON_RELEASE = '1';
-process.env.AF_BOUNDARY_NOTIFY_COOLDOWN_MS = '0';
+// Acceptance run: exactly one attempt per card (no retry can produce a second message) and a
+// long cooldown (no repeat delivery for the same path+kind).
+process.env.AF_BOUNDARY_NOTIFY_COOLDOWN_MS = live ? String(24 * 60 * 60 * 1000) : '0';
+if (live) process.env.AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS = '1';
 
 const STATES = [
   {
@@ -46,8 +64,9 @@ const STATES = [
     expectText: [/需要核查/, /未执行解锁/],
     event: 'boundary_retained',
     alert: {
-      canonical_dir: '/srv/agent-foundry-next', cas_dir: '/srv/trusted-cas', task_id: 'TASK-FEISHU-001', alert_id: 'AF-CARD-0001',
-      occurrences: 1, severity: 'warning', boundary_state: 'PROTECTION_RETAINED_PENDING_RECOVERY', reason: 'scope-anomaly',
+      canonical_dir: '/srv/fixture-retained', cas_dir: '/srv/trusted-cas-retained', task_id: 'TASK-CARD-ACCEPT-1', alert_id: 'AF-ACCEPT-0001',
+      occurrences: 1, severity: 'warning', boundary_state: 'PROTECTION_RETAINED_PENDING_RECOVERY',
+      reason: '【验收测试·非真实故障】卡片通道验收 1/4：保护保留态',
     },
     scopeDecision: { decision: 'RETAIN', reason: 'scope-anomaly', attempts: 1, quiesce_confirmed: true, anomalies: [{ class: 'broken-scope', code: 'ENOENT' }] },
   },
@@ -59,8 +78,9 @@ const STATES = [
     expectText: [/优先处理/, /人工排查/],
     event: 'boundary_retained',
     alert: {
-      canonical_dir: '/srv/agent-foundry-next', cas_dir: '/srv/trusted-cas', task_id: 'TASK-FEISHU-003', alert_id: 'AF-CARD-0003',
-      occurrences: 3, severity: 'escalated', boundary_state: 'PROTECTION_RETAINED_PENDING_RECOVERY', reason: 'rescan-budget-exhausted',
+      canonical_dir: '/srv/fixture-escalated', cas_dir: '/srv/trusted-cas-escalated', task_id: 'TASK-CARD-ACCEPT-2', alert_id: 'AF-ACCEPT-0002',
+      occurrences: 3, severity: 'escalated', boundary_state: 'PROTECTION_RETAINED_PENDING_RECOVERY',
+      reason: '【验收测试·非真实故障】卡片通道验收 2/4：告警升级态',
     },
     scopeDecision: { decision: 'RETAIN', reason: 'rescan-budget-exhausted', attempts: 4, quiesce_confirmed: true, anomalies: [] },
   },
@@ -72,8 +92,9 @@ const STATES = [
     expectText: [/保护完整性不可确认/, /不得假定已解锁/],
     event: 'boundary_retained',
     alert: {
-      canonical_dir: '/srv/agent-foundry-next', cas_dir: '/srv/trusted-cas', task_id: 'TASK-FEISHU-004', alert_id: 'AF-CARD-0004',
-      occurrences: 1, severity: 'warning', boundary_state: 'RESTORE_INCOMPLETE', reason: 'release could not be verified: ownership mismatch',
+      canonical_dir: '/srv/fixture-restore-incomplete', cas_dir: '/srv/trusted-cas-restore', task_id: 'TASK-CARD-ACCEPT-3', alert_id: 'AF-ACCEPT-0003',
+      occurrences: 1, severity: 'warning', boundary_state: 'RESTORE_INCOMPLETE',
+      reason: '【验收测试·非真实故障】卡片通道验收 3/4：恢复未完成态（release could not be verified: ownership mismatch）',
     },
     scopeDecision: null,
   },
@@ -85,8 +106,9 @@ const STATES = [
     expectText: [/恢复已验证/, /告警已关闭/],
     event: 'boundary_released',
     alert: {
-      canonical_dir: '/srv/agent-foundry-next', cas_dir: '/srv/trusted-cas', task_id: 'TASK-FEISHU-001', alert_id: 'AF-CARD-0001',
-      occurrences: 0, severity: 'warning', boundary_state: 'DISENGAGED', reason: 'controlled recovery verified',
+      canonical_dir: '/srv/fixture-recovered', cas_dir: '/srv/trusted-cas-recovered', task_id: 'TASK-CARD-ACCEPT-4', alert_id: 'AF-ACCEPT-0004',
+      occurrences: 0, severity: 'warning', boundary_state: 'DISENGAGED',
+      reason: '【验收测试·非真实故障】卡片通道验收 4/4：已验证恢复态',
     },
     scopeDecision: null,
   },
@@ -99,11 +121,28 @@ function check(name, ok, detail = '') {
 }
 
 // --- render each state through the real notifier (dry-run) ------------------------
+const selected = only ? STATES.filter((s) => only.has(s.key)) : STATES;
+if (only && selected.length !== only.size) {
+  console.error(`error: --only matched ${selected.length} of ${only.size} states`);
+  process.exit(2);
+}
 const rendered = [];
-for (const state of STATES) {
+for (const state of selected) {
   const result = await notifyBoundaryAlert({ event: state.event, alert: state.alert, scopeDecision: state.scopeDecision });
-  check(`${state.label}：dry-run 渲染`, result.status === 'would-notify', `status=${result.status}${result.reason ? ` (${result.reason})` : ''}`);
+  const expected = live ? 'sent' : 'would-notify';
+  check(`${state.label}：${live ? '实发' : 'dry-run 渲染'}`, result.status === expected, `status=${result.status}${result.reason ? ` (${result.reason})` : ''}`);
+  if (live) {
+    check(`${state.label}：单次尝试，无重试`, result.attempts === 1, `attempts=${result.attempts}/${result.max_attempts}`);
+    check(`${state.label}：provider 回执确认`, result.provider_code === null || result.provider_code === 0, `http=${result.http_status} code=${result.provider_code ?? 'none'}`);
+    check(`${state.label}：结清成功`, result.settled === true, `settled=${result.settled}`);
+  }
   rendered.push({ ...state, result });
+}
+if (live) {
+  const pendingAfter = inspectPendingNotifications({ file: alertsFile });
+  check('实发后重试队列为空（无待重试/无耗尽）', pendingAfter.ok === true && pendingAfter.pending.length === 0, `pending=${pendingAfter.pending.length}`);
+  const sentEvents = readNotifyEvents({ file: alertsFile }).filter((r) => r.status === 'sent');
+  check(`投递日志记录 ${selected.length} 次 sent`, sentEvents.length === selected.length, `sent=${sentEvents.length}`);
 }
 
 const records = readNotifyEvents({ file: alertsFile });
@@ -115,7 +154,7 @@ for (const state of rendered) {
   const record = records.find((r) => r.format === 'feishu-card'
     && r.payload?.event === state.event
     && r.payload?.alert_id === state.alert.alert_id);
-  check(`${state.label}：dry-run 有投递记录`, Boolean(record), record ? `${record.status}` : 'missing');
+  check(`${state.label}：${live ? '投递' : 'dry-run'}记录`, Boolean(record) && (!live || record.status === 'sent'), record ? `${record.status}` : 'missing');
   if (!record) continue;
   const body = JSON.parse(record.request_body);
   const card = body.card;
@@ -147,7 +186,8 @@ for (const state of rendered) {
   check(`${state.label}：动态字段均为纯文本`, dynamicPlain);
   check(`${state.label}：无非法/可交互组件`, badTag === null, badTag ? `tag=${badTag}` : '');
   check(`${state.label}：元素数 ≤ ${FEISHU_CARD_MAX_ELEMENTS}`, elementCount <= FEISHU_CARD_MAX_ELEMENTS, `elements=${elementCount}`);
-  check(`${state.label}：签名后请求体 ≤ ${limit} 字节`, record.bytes <= limit, `${record.bytes} bytes`);
+  const recordBytes = record.bytes ?? Buffer.byteLength(record.request_body ?? '', 'utf8');
+  check(`${state.label}：签名后请求体 ≤ ${limit} 字节`, recordBytes <= limit, `${recordBytes} bytes`);
   check(`${state.label}：无 [object Object]`, !text.includes('[object Object]'));
   check(`${state.label}：无外部按钮/恢复操作`, !/recover-boundary|取消保护|直接解锁|force/.test(text));
 
@@ -222,15 +262,18 @@ const failed = checks.filter((c) => !c.ok);
 writeFileSync(join(evidenceDir, 'card-states-manifest.json'), `${JSON.stringify({
   schema: 'af-feishu-card-states-v1',
   revision,
-  mode: 'dry-run',
+  mode,
   generated_at: new Date().toISOString(),
   limit_bytes: limit,
+  states: selected.map((s) => s.key),
   cards: cards.map((c) => ({ key: c.key, label: c.label, template: c.template, title: c.title, bytes: c.bytes, elements: c.elements })),
+  deliveries: rendered.map((r) => ({ key: r.key, alert_id: r.alert.alert_id, task_id: r.alert.task_id, status: r.result.status, attempts: r.result.attempts ?? null, settled: r.result.settled ?? null, http_status: r.result.http_status ?? null, provider_code: r.result.provider_code ?? null })),
   preview: { html: previewPath, screenshot },
   checks,
   passed: failed.length === 0,
 }, null, 2)}\n`);
 
+console.log(`mode: ${mode}`);
 console.log(`\n${checks.length - failed.length}/${checks.length} checks passed${failed.length ? ` — FAILED: ${failed.map((c) => c.name).join('; ')}` : ''}`);
 console.log(`evidence: ${evidenceDir}`);
 console.log(`preview : ${previewPath}`);
