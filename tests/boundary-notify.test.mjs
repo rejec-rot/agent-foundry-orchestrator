@@ -595,7 +595,7 @@ test('A1b notify: concurrent calls for one event claim the delivery exactly once
       const statuses = [a.status, b.status].sort();
       assert.deepEqual(statuses, ['sent', 'suppressed'], `one caller must be suppressed, got ${statuses.join(',')}`);
       const suppressed = [a, b].find((r) => r.status === 'suppressed');
-      assert.equal(suppressed.reason, 'concurrent-claim');
+      assert.equal(suppressed.reason, 'in-flight-claim', 'a live claim by another caller suppresses this one');
     });
     assert.equal(slow.requests.length, 1, 'exactly one HTTP request may be made');
   } finally {
@@ -1145,6 +1145,117 @@ test('A1b retry: a crashed last attempt becomes a persisted terminal state', asy
     assert.equal(events.some((e) => e.status === 'exhausted' && e.outcome_unknown === true), true, 'the terminal transition is audited');
   } finally {
     await good.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b race: a sweep must not terminate an in-flight last attempt', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-inflight-'));
+  const file = join(root, 'alerts.jsonl');
+  const queueFile = `${file}.notify-pending.json`;
+  const mock = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
+  let releaseSend;
+  const gate = new Promise((resolve) => { releaseSend = resolve; });
+  let transportCalls = 0;
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: mock.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+      AF_BOUNDARY_NOTIFY_MAX_ATTEMPTS: '1', AF_BOUNDARY_NOTIFY_CLAIM_TTL_MS: '60000',
+    }, async () => {
+      // The one allowed attempt is claimed and its transport hangs.
+      const inFlight = notifyBoundaryAlert({
+        event: 'boundary_retained',
+        alert: alertFor(root, 1),
+        fetchImpl: async () => {
+          transportCalls += 1;
+          await gate;
+          return { ok: true, status: 200, text: async () => '{"code":0,"msg":"success"}' };
+        },
+      });
+      // Wait (bounded) for the claim to appear instead of assuming a fixed delay: under a
+      // loaded full-suite run 20ms is not a guarantee. The TTL is 60s, so the race window
+      // is unaffected by waiting here.
+      const claimDeadline = Date.now() + 5000;
+      let claimed = {};
+      for (;;) {
+        try { claimed = JSON.parse(readFileSync(queueFile, 'utf8')); } catch { claimed = {}; }
+        const firstEntry = Object.values(claimed)[0];
+        if (firstEntry?.claim_token) break;
+        if (Date.now() > claimDeadline) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      const key = Object.keys(claimed)[0];
+      const claimBefore = claimed[key].claim_token;
+      assert.ok(claimBefore, 'the in-flight attempt must hold a claim');
+      const claimedAtBefore = claimed[key].claimed_at;
+
+      // A routine sweep, and even a forced one, must leave the live claim alone.
+      const routine = await flushPendingNotifications({ file });
+      assert.equal(routine.attempted, 0, 'the sweep must not start a parallel send');
+      assert.equal(routine.exhausted, 0, 'a valid claim must not be declared exhausted');
+      assert.equal(routine.in_flight, 1, 'the sweep must report the in-flight attempt');
+      const forced = await flushPendingNotifications({ file, force: true });
+      assert.equal(forced.attempted, 0, '--force must not bypass a live claim either');
+      assert.equal(forced.exhausted, 0);
+
+      const during = JSON.parse(readFileSync(queueFile, 'utf8'));
+      assert.equal(during[key].state, 'pending', 'the entry must still be pending while the attempt runs');
+      assert.equal(during[key].claim_token, claimBefore, 'the live claim must be untouched');
+      assert.equal(during[key].claimed_at, claimedAtBefore);
+      const statusCheck = (() => {
+        try {
+          const out = execFileSync(process.execPath, [CLI, 'boundary', 'notify-status'], {
+            env: { ...process.env, AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_WEBHOOK: mock.url },
+            encoding: 'utf8',
+          });
+          return { code: 0, out };
+        } catch (err) { return { code: err.status, out: `${err.stdout ?? ''}` }; }
+      })();
+      assert.match(statusCheck.out, /exhausted: 0/, 'an in-flight attempt is not an exhausted delivery');
+
+      releaseSend();
+      const res = await inFlight;
+      assert.equal(res.status, 'sent', 'the in-flight attempt must be allowed to finish successfully');
+      assert.equal(res.settled, true, 'and it must settle cleanly');
+    });
+    assert.equal(transportCalls, 1, 'exactly one transport call, made by the in-flight attempt');
+    assert.equal(inspectPendingNotifications({ file }).pending.length, 0, 'the queue is cleared once the attempt settles');
+  } finally {
+    releaseSend?.();
+    await mock.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('A1b settle: a delivery whose bookkeeping fails is not reported as settled', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-notify-settlefail-'));
+  const file = join(root, 'alerts.jsonl');
+  const mock = await startMockWebhook({ reply: '{"code":0,"msg":"success"}' });
+  try {
+    await withEnvAsync({
+      AF_BOUNDARY_ALERTS_FILE: file, AF_BOUNDARY_NOTIFY_MODE: 'live', AF_BOUNDARY_NOTIFY_FORMAT: 'feishu',
+      AF_BOUNDARY_NOTIFY_WEBHOOK: mock.url, AF_BOUNDARY_NOTIFY_COOLDOWN_MS: '0',
+    }, async () => {
+      // The transport succeeds, but the claimed entry disappears before it can be settled.
+      const res = await notifyBoundaryAlert({
+        event: 'boundary_retained',
+        alert: alertFor(root, 1),
+        fetchImpl: async () => {
+          rmSync(`${file}.notify-pending.json`, { force: true });
+          return { ok: true, status: 200, text: async () => '{"code":0,"msg":"success"}' };
+        },
+      });
+      assert.equal(res.transport_status, 'sent', 'the transport did succeed');
+      assert.equal(res.settled, false, 'the bookkeeping did not');
+      assert.equal(res.status, 'failed', 'an unsettled delivery must not be reported as delivered');
+      assert.match(res.settle_reason, /entry missing/);
+    });
+    const events = readNotifyEvents({ file });
+    assert.equal(events.some((e) => e.status === 'settle-failed'), true, 'the inconsistency must be auditable');
+  } finally {
+    await mock.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
