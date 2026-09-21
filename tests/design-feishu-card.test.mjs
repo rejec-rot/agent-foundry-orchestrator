@@ -69,6 +69,19 @@ test('design: the HTML preview renders all three states with the same hierarchy'
   }
 });
 
+test('design: the A1a design keeps the required deliverables and the no-bypass rules', () => {
+  const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'A1A-AUTO-RECOVERY-DESIGN.md'), 'utf8');
+  for (const section of ['状态转换表', '配置说明', '故障验收矩阵', '停用与回滚流程', '职责隔离', '成功标准']) {
+    assert.match(doc, new RegExp(section), `the design must keep the "${section}" section`);
+  }
+  // Fail-closed rules that must never be relaxed by an implementation.
+  for (const rule of ['RESTORE_INCOMPLETE', 'acknowledgeLiveScopes', 'allowGuessedModes', 'force', 'AF_A1A_MODE', 'dry-run']) {
+    assert.match(doc, new RegExp(rule), `the design must state the ${rule} rule`);
+  }
+  assert.match(doc, /不实现、不启用/, 'the design must record that it is design-only');
+  assert.match(doc, /两个独立调度职责/, 'the design must state that recovery and notify-flush are independent duties');
+});
+
 test('design: the integration notes record the provider constraints and the open version question', () => {
   const notes = readFileSync(join(process.cwd(), 'docs', 'design', 'FEISHU-CARD-INTEGRATION-NOTES.md'), 'utf8');
   for (const fact of ['20 KB', '100 次/分钟', '11232', '自定义关键词', 'schema: "2.0"', 'feishu-card']) {
