@@ -445,3 +445,99 @@ function makeFixtureLockSet() {
   mkdirSync(locks, { recursive: true });
   return { root, canonical, locks };
 }
+
+test('lock: two INDEPENDENT async calls in one process stay mutually exclusive', async () => {
+  const asset = makeAsset();
+  try {
+    let secondEntered = false;
+    let releaseFirst;
+    const gate = new Promise((resolve) => { releaseFirst = resolve; });
+
+    // First, independent call: hangs inside its callback.
+    const first = withAssetLockSet({ canonicalDir: asset.canonical, dir: asset.locks, phase: 'first' }, async () => {
+      await gate;
+      return 'first-done';
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    // Second call from the OUTER context: not nested in the first callback, so it must NOT be
+    // treated as reentrant - the process-level map is not a licence to overlap.
+    const second = withAssetLockSet({ canonicalDir: asset.canonical, dir: asset.locks, phase: 'second' }, () => {
+      secondEntered = true;
+      return 'second-done';
+    });
+    assert.equal(second.ok, false, 'an independent call must not enter while another holds the asset');
+    assert.equal(secondEntered, false, 'the independent callback must never run');
+    assert.match(second.reason, /held-by-live-owner|asset-overlap/);
+    assert.equal(countAssetLocks(asset.locks), 1, 'the first holder still owns the disk lock');
+
+    releaseFirst();
+    const settled = await first;
+    assert.equal(settled.ok, true);
+    assert.equal(settled.value, 'first-done');
+    assert.equal(countAssetLocks(asset.locks), 0, 'the lock is released once the first settles');
+
+    // ...and a genuinely NESTED call inside the holder context still passes through.
+    const nested = await withAssetLockSet({ canonicalDir: asset.canonical, dir: asset.locks, phase: 'outer' }, async () => {
+      const inner = withAssetLockSet({ canonicalDir: asset.canonical, dir: asset.locks, phase: 'inner' }, () => 'inner-ran');
+      assert.equal(inner.ok, true, 'a nested call in the holder context is allowed');
+      return inner.value;
+    });
+    assert.equal(nested.ok, true);
+    assert.equal(nested.value, 'inner-ran');
+    assert.equal(countAssetLocks(asset.locks), 0);
+  } finally {
+    rmSync(asset.root, { recursive: true, force: true });
+  }
+});
+
+test('lock: simultaneous cross-process parent/child contention admits exactly one', async () => {
+  const asset = makeAsset();
+  const child = join(asset.canonical, 'child');
+  mkdirSync(child, { recursive: true });
+  const go = join(asset.root, 'go');
+  const events = join(asset.root, 'events.log');
+  const worker = join(asset.root, 'contender.mjs');
+  const moduleUrl = new URL('../lib/asset-lock.mjs', import.meta.url).href;
+  writeFileSync(worker, [
+    `import { appendFileSync, existsSync } from 'node:fs';`,
+    `import { withAssetLockSet } from ${JSON.stringify(moduleUrl)};`,
+    'const [dir, target, goFile, eventsFile, label] = process.argv.slice(2);',
+    'while (!existsSync(goFile)) { /* spin until the parent says go */ }',
+    'const res = withAssetLockSet({ canonicalDir: target, dir, phase: label }, () => {',
+    '  appendFileSync(eventsFile, `enter ${label}\\n`);',
+    '  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120);',
+    '  appendFileSync(eventsFile, `exit ${label}\\n`);',
+    '  return label;',
+    '});',
+    'appendFileSync(eventsFile, `result ${label} ${res.ok} ${res.reason ?? ""}\\n`);',
+    '',
+  ].join('\n'));
+
+  const contenders = [
+    spawn(process.execPath, [worker, asset.locks, asset.canonical, go, events, 'parent'], { stdio: 'ignore' }),
+    spawn(process.execPath, [worker, asset.locks, child, go, events, 'child'], { stdio: 'ignore' }),
+  ];
+  try {
+    // Let both processes reach the spin loop, then release them simultaneously.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    writeFileSync(go, 'go\n');
+    await Promise.all(contenders.map((proc) => new Promise((resolve) => proc.on('exit', resolve))));
+
+    const lines = readFileSync(events, 'utf8').trim().split('\n');
+    const enters = lines.filter((line) => line.startsWith('enter '));
+    const results = lines.filter((line) => line.startsWith('result '));
+    assert.equal(results.length, 2, `both contenders must report a result: ${lines.join(' | ')}`);
+    assert.equal(enters.length, 1, `parent and child must never overlap: ${lines.join(' | ')}`);
+    const parsed = results.map((line) => {
+      const [, label, ok] = line.split(' ');
+      return { label, ok: ok === 'true' };
+    });
+    assert.equal(parsed.filter((entry) => entry.ok).length, 1, `exactly one contender wins: ${lines.join(' | ')}`);
+    assert.equal(parsed.filter((entry) => !entry.ok).length, 1, `the other is refused: ${lines.join(' | ')}`);
+    assert.equal(countAssetLocks(asset.locks), 0, 'nothing is left behind');
+  } finally {
+    for (const proc of contenders) if (proc.exitCode === null) proc.kill('SIGKILL');
+    rmSync(asset.root, { recursive: true, force: true });
+  }
+});
