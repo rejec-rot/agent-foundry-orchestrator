@@ -24,9 +24,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
+import { renderHuman } from '../lib/console/render.mjs';
 import {
   assertWithinRoot,
   exactDeliveryAsset,
+  buildEvidenceView,
+  parseRecoveryId,
   assertWithinRoots,
   buildExceptionsView,
   buildOverview,
@@ -81,6 +84,7 @@ function makeFixture({ broken = false } = {}) {
     trusted_import: {
       boundary_state: 'PROTECTION_RETAINED_PENDING_RECOVERY',
       boundary_retained_reason: 'scope-anomaly',
+      boundary_alert: { alert_id: 'AF-1', occurrences: 1 },
       boundary_scope_decision: { decision: 'RETAIN', reason: 'scope-anomaly', attempts: 1, anomalies: [{ class: 'broken-scope', code: 'ENOENT' }] },
     },
   }, null, 2)}\n`);
@@ -652,6 +656,156 @@ test('G3: access errors are unverifiable, only a definite absence is missing', (
     assert.equal(absent.blocks.task.read_status, 'missing');
     const overview = buildOverview({ roots: fx.roots, now: FIXED_NOW });
     assert.equal(overview.unverifiable.length, 0, 'missing sources must not be reported as unverifiable');
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('G2b: two tasks on the same repository never share alert evidence', () => {
+  const fx = makeFixture();
+  try {
+    // Second task on the SAME repo with its own alert id: the alert must not be shared.
+    const alertIdB = 'AF-2';
+    writeFileSync(join(fx.dirs.tasks, 'T-SECOND.json'), `${JSON.stringify({
+      task_id: 'T-SECOND', state: 'FAILED', state_version: 1, fixture_dir: fx.repo,
+      trusted_import: { boundary_state: 'PROTECTION_RETAINED_PENDING_RECOVERY', boundary_alert: { alert_id: alertIdB } },
+    })}\n`);
+    writeFileSync(fx.alertsFile, `${readFileSync(fx.alertsFile, 'utf8')}${JSON.stringify({
+      event: 'boundary_retained', alert_id: alertIdB, at: '2026-09-21T08:45:00.000Z', canonical_dir: fx.repo,
+      cas_dir: null, task_id: 'T-SECOND', boundary_state: 'PROTECTION_RETAINED_PENDING_RECOVERY',
+      reason: 'scope-anomaly', occurrences: 1, severity: 'warning', threshold: 3,
+    })}\n`);
+
+    // The alert log keeps ONE current entry per path (occurrences accumulate), so after the
+    // second retention the path's current entry is AF-2. A task that recorded AF-1 must attach
+    // NOTHING and say why - attaching the path's current entry would import another task's
+    // evidence.
+    const first = buildTaskView({ taskId: 'T-RETAIN', roots: fx.roots, now: FIXED_NOW });
+    assert.equal(first.blocks.alerts.value.alerts.length, 0, 'a non-matching explicit alert id must not fall back to the path');
+    const unmatchedAlert = first.unmatched.find((entry) => entry.kind === 'task-without-alert');
+    assert.equal(unmatchedAlert.requested_alert_id, 'AF-1');
+    assert.deepEqual(unmatchedAlert.available_alert_ids, ['AF-2'], 'the reason lists what the path currently holds');
+
+    const second = buildTaskView({ taskId: 'T-SECOND', roots: fx.roots, now: FIXED_NOW });
+    assert.deepEqual(second.blocks.alerts.value.alerts.map((a) => a.alert_id), [alertIdB], 'the task holding the current entry attaches it');
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('G2c: recovery ids match exactly - a prefix must not collide', () => {
+  assert.equal(parseRecoveryId('/a/recovery-2026-09-21T08-40-00-000Z-1-intent.json'), '2026-09-21T08-40-00-000Z-1');
+  assert.equal(parseRecoveryId('/a/recovery-2026-09-21T08-40-00-000Z-10-result.json'), '2026-09-21T08-40-00-000Z-10');
+  assert.equal(parseRecoveryId('/a/not-a-recovery.json'), null);
+
+  const fx = makeFixture();
+  try {
+    const base = '2026-09-21T08-40-00-000Z-1';
+    // A second record whose id has the first as a strict prefix.
+    writeFileSync(join(fx.dirs.audit, `recovery-${base}0-intent.json`), `${JSON.stringify({
+      schema_version: 'af-boundary-recovery-v1', phase: 'intent', at: '2026-09-21T08:50:00.000Z', paths: ['/srv/other-repo'],
+    })}\n`);
+    writeFileSync(join(fx.dirs.tasks, 'T-REC.json'), `${JSON.stringify({
+      task_id: 'T-REC', state: 'FAILED', state_version: 1,
+      trusted_import: { boundary_state: 'RECONCILE_REQUIRED', boundary_recovery_id: base },
+    })}\n`);
+
+    const view = buildTaskView({ taskId: 'T-REC', roots: fx.roots, now: FIXED_NOW });
+    const files = view.blocks.recovery.value.records.map((record) => record.file);
+    // The fixture holds one intent+result pair for this id, so both exact matches attach...
+    assert.equal(files.length, 2, 'the intent and result records of the exact id attach');
+    assert.equal(files.every((file) => parseRecoveryId(file) === base), true);
+    // ...while the sibling whose id merely starts with it must NOT.
+    assert.equal(files.some((file) => file.endsWith(`recovery-${base}0-intent.json`)), false, 'a prefix collision must not match');
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('G2d: a task with only a recovery id still correlates (and stays honest about the rest)', () => {
+  const fx = makeFixture();
+  try {
+    const recoveryId = '2026-09-21T08-40-00-000Z-1';
+    writeFileSync(join(fx.dirs.tasks, 'T-RECONLY.json'), `${JSON.stringify({
+      task_id: 'T-RECONLY', state: 'FAILED', state_version: 1,
+      trusted_import: { boundary_state: 'RECONCILE_REQUIRED', boundary_recovery_id: recoveryId },
+    })}\n`);
+    const view = buildTaskView({ taskId: 'T-RECONLY', roots: fx.roots, now: FIXED_NOW });
+    assert.equal(view.blocks.recovery.value.records.length, 2, 'the matching intent+result records are attached');
+    assert.equal(view.blocks.alerts.value.alerts.length, 0, 'without an asset or alert id, no alert may be attached');
+    assert.equal(view.blocks.notify.value.deliveries.length, 0);
+    assert.equal(view.unmatched.some((entry) => entry.kind === 'task-without-asset-key'), false, 'a recovery id is a usable key');
+    assert.equal(view.keys.recovery_id, recoveryId);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('G2e: pending and exhausted deliveries are filtered like deliveries', () => {
+  const fx = makeFixture();
+  try {
+    const queuePath = `${fx.alertsFile}.notify-pending.json`;
+    const queue = JSON.parse(readFileSync(queuePath, 'utf8'));
+    const own = Object.values(queue)[0];
+    queue[`live|/srv/repo-other|escalated`] = { ...own, notify_key: 'live|/srv/repo-other|escalated', canonical_dir: '/srv/repo-other', alert_id: 'AF-OTHER' };
+    writeFileSync(queuePath, `${JSON.stringify(queue, null, 2)}\n`);
+
+    const view = buildTaskView({ taskId: 'T-RETAIN', roots: fx.roots, now: FIXED_NOW });
+    assert.equal(view.blocks.notify.value.exhausted.length, 1, 'only this task\'s exhausted entry belongs here');
+    assert.equal(view.blocks.notify.value.exhausted[0].canonical_dir, fx.repo);
+    assert.equal(view.blocks.notify.value.pending.length, 0);
+    // The global view still shows both, so filtering never hides the other task's problem.
+    const exceptions = buildExceptionsView({ roots: fx.roots, now: FIXED_NOW });
+    assert.equal(exceptions.exhausted_deliveries.length, 2);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('six-view CLI: each view renders and reports its exit status', () => {
+  const fx = makeFixture();
+  try {
+    const record = join(fx.dirs.tasks, 'T-OK.json');
+    for (const [args, expected] of [
+      [['overview'], 0],
+      [['tasks'], 0],
+      [['task', 'T-OK'], 0],
+      [['task', 'T-MISSING'], 2],
+      [['evidence', 'T-OK'], 0],
+      [['evidence', 'T-MISSING'], 2],
+      [['exceptions'], 0],
+      [['audit', record], 0],
+      [['audit', '/etc/passwd'], 2],
+      [['not-a-view'], 2],
+    ]) {
+      const res = runCli(fx.env, args);
+      assert.equal(res.code, expected, `${args.join(' ')} → ${res.code} (${res.stderr})`);
+    }
+
+    // Human output is readable, carries the redaction notice and never a credential.
+    const human = runCli(fx.env, ['exceptions']);
+    assert.match(human.stdout, /af-console-exceptions-v1/);
+    assert.match(human.stdout, /credentials always redacted/);
+    assert.equal(human.stdout.includes(TOKEN), false);
+    assert.equal(human.stdout.includes('SECRET-HOOK-PATH'), false);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('render: unverifiable and truncation are announced in the human view', async () => {
+  const fx = makeFixture({ broken: true });
+  try {
+    writeFileSync(fx.alertsFile, `${readFileSync(fx.alertsFile, 'utf8')}{ torn alert line\n`);
+    const res = runCli(fx.env, ['overview']);
+    assert.equal(res.code, 3);
+    assert.match(res.stdout, /! UNVERIFIABLE/);
+    assert.match(res.stdout, /do not read this as "nothing to report"/);
+    assert.match(res.stdout, /boundary-alerts/);
+
+    // A truncated field is announced as an incomplete view.
+    const text = renderHuman({ schema: 'af-console-task-v1', generated_at: 'x', path_mode: 'hash', truncations: [{ path: 'blocks.task.value.x', original_chars: 900, kept_chars: 100 }] });
+    assert.match(text, /truncated fields: blocks\.task\.value\.x \(900→100\)/);
   } finally {
     rmSync(fx.root, { recursive: true, force: true });
   }

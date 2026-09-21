@@ -36,9 +36,11 @@ import {
   assertWithinRoots,
   buildOverview,
   buildTaskView,
+  buildEvidenceView,
   buildExceptionsView,
   redactModel,
 } from './lib/console/read-model.mjs';
+import { renderHuman } from './lib/console/render.mjs';
 
 const AF_ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const TASKS_DIR = process.env.AF_TASKS_DIR || join(AF_ROOT, 'tasks');
@@ -78,7 +80,7 @@ function printUsage() {
   af-admin logs rotate [--days <N>] [--events-file <path>] [--archive-dir <path>]
   af-admin reclaim orphans [--confirm] [--runs-dir <path>]
   af-admin boundary recover --canonical <dir> [--cas <dir>] --reason "<reason>" [--ack-live-scopes] [--allow-guessed-modes] [--recovered-by "<name>"]
-  af-admin console overview|tasks|task <id>|exceptions|audit <ref> [--json] [--no-redact] [--hash-paths]
+  af-admin console overview|tasks|task <id>|evidence <id>|exceptions|audit <ref> [--json] [--no-redact] [--hash-paths]
   af-admin boundary alerts [--json] [--include-resolved]
   af-admin boundary alert-resolve --canonical <dir> --reason "<reason>"
   af-admin boundary notify-status [--json]
@@ -432,6 +434,12 @@ async function main() {
         model = buildTaskView({ taskId, roots, now });
         if (model.blocks.task.read_status === 'missing') exitCode = 2;
         else if (model.blocks.task.read_status !== 'ok') exitCode = 3;
+      } else if (sub === 'evidence') {
+        const taskId = args[2];
+        if (!taskId) { console.error('error: console evidence <task_id> is required'); process.exit(2); }
+        model = buildEvidenceView({ taskId, roots, now });
+        if (model.blocks.task.read_status === 'missing') exitCode = 2;
+        else if (model.blocks.task.read_status !== 'ok') exitCode = 3;
       } else if (sub === 'exceptions') {
         model = buildExceptionsView({ roots, now });
       } else if (sub === 'audit') {
@@ -456,7 +464,7 @@ async function main() {
           process.exit(3);
         }
       } else {
-        console.error(`unknown console subcommand: ${sub ?? '(none)'} (expected: overview, tasks, task, exceptions, audit)`);
+        console.error(`unknown console subcommand: ${sub ?? '(none)'} (expected: overview, tasks, task, evidence, exceptions, audit)`);
         process.exit(2);
       }
     } catch (err) {
@@ -472,8 +480,8 @@ async function main() {
     if (json) {
       process.stdout.write(`${JSON.stringify({ ...safe, paths_redacted, path_mode, credentials_redacted: true }, null, 2)}\n`);
     } else {
-      console.log(`# ${model.schema} @ ${model.generated_at}`);
-      console.log(JSON.stringify(safe, null, 2));
+      // Human view: same redacted model (with the redaction metadata), rendered for a terminal.
+      console.log(renderHuman({ ...safe, paths_redacted, path_mode, credentials_redacted: true }));
     }
     if (blockUnverifiable + listedUnverifiable > 0 && exitCode === 0) exitCode = 3;
     process.exit(exitCode);
