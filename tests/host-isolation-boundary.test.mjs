@@ -1827,7 +1827,7 @@ test('HIB-38: CLI 成功恢复写入 intent 与 result 审计并退出 0', () =>
   }
 });
 
-test('HIB-39: RESULT 写入失败的故障注入: 审计不完整不得算成功, 但恢复状态必须如实上报', async () => {
+test('HIB-39: RESULT 写入失败的故障注入 (修改已开始): 审计不完整不得算成功, 但恢复状态必须如实上报', async () => {
   const root = mkdtempSync(join(tmpdir(), 'af-hib39-'));
   const canonicalDir = join(root, 'canonical');
   const casDir = join(root, 'cas');
@@ -1875,10 +1875,12 @@ test('HIB-39: RESULT 写入失败的故障注入: 审计不完整不得算成功
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
 
-    // Event-driven injection: as soon as the INTENT record appears, wait until it is
-    // COMPLETE (parses as phase:"intent"), prove no RESULT exists yet, then make the
-    // audit directory unwritable so only the later RESULT write can fail.
-    let observedIntent = null;
+    // Event-driven injection: as soon as the MUTATION_STARTED marker appears, wait until it is
+    // COMPLETE (parses as phase:"mutation-started"), prove no RESULT exists yet, then make the
+    // audit directory unwritable so only the later RESULT write can fail. Injecting after the
+    // gate (not before it) is what makes this a RESULT-write fault: before the gate the transaction
+    // must refuse to touch the boundary at all, so it could never exercise the release path.
+    let observedMarker = null;
     let resultFilesAtInjection = null;
     let injected = false;
     let injectResolve;
@@ -1888,23 +1890,23 @@ test('HIB-39: RESULT 写入失败的故障注入: 审计不完整不得算成功
     watcher = watch(auditDir, (eventType, filename) => {
       if (injected || !filename) return;
       const name = String(filename);
-      if (!name.endsWith('-intent.json')) return;
+      if (!name.endsWith('-mutation-started.json')) return;
       injected = true;
       (async () => {
-        const intentPath = join(auditDir, name);
+        const markerPath = join(auditDir, name);
         const deadline = Date.now() + 5000;
         let record = null;
         while (Date.now() < deadline) {
           try {
-            const parsed = JSON.parse(readFileSync(intentPath, 'utf8'));
-            if (parsed?.phase === 'intent') { record = parsed; break; }
+            const parsed = JSON.parse(readFileSync(markerPath, 'utf8'));
+            if (parsed?.phase === 'mutation-started') { record = parsed; break; }
           } catch { /* not fully written yet */ }
           await new Promise((resolve) => { setTimeout(resolve, 2); });
         }
-        if (!record) throw new Error('the INTENT record never became complete');
+        if (!record) throw new Error('the MUTATION_STARTED record never became complete');
         resultFilesAtInjection = readdirSync(auditDir).filter((f) => f.endsWith('-result.json'));
         chmodSync(auditDir, 0o500); // owner loses write permission: RESULT can no longer be created
-        observedIntent = record;
+        observedMarker = record;
         injectResolve(record);
       })().catch((err) => injectReject(err));
     });
@@ -1922,24 +1924,27 @@ test('HIB-39: RESULT 写入失败的故障注入: 审计不完整不得算成功
     });
     await Promise.race([injected$, timeout]);
 
-    assert.ok(observedIntent, 'the INTENT record must be observed and injected upon');
+    assert.ok(observedMarker, 'the MUTATION_STARTED marker must be observed and injected upon');
     assert.deepStrictEqual(resultFilesAtInjection, [], 'injection must happen before RESULT is written');
     assert.notStrictEqual(exitCode, 0, 'an unaudited recovery result must never exit 0');
 
     // 1. not delivered, 2. names the incomplete audit, 3. exit code non-zero (asserted above),
-    // 4. the ACTUAL boundary state is still reported truthfully - the release really happened.
+    // 4. the ACTUAL boundary state is still reported truthfully - the release really happened, and
+    //    because a MUTATION_STARTED marker exists without a RESULT the transaction is
+    //    RECONCILE_RECORD (physical restore done, record missing): a retry must never release again.
     assert.match(stdout, /delivered\s*:\s*false/, 'the CLI must not report delivery');
     assert.match(stdout, /BOUNDARY_AUDIT_INCOMPLETE/, 'the CLI must name the incomplete audit');
-    assert.match(stdout, /boundary recovery:\s*DISENGAGED/, 'the real recovery outcome must be reported, not hidden');
+    assert.match(stdout, /boundary recovery:\s*RECONCILE_RECORD/, 'a restore whose record is missing must be reported as record-incomplete, not as a clean unlock');
     assert.match(stdout, /recovered\s*:\s*true/, 'the release did happen and must be reported as such');
     assert.doesNotMatch(stdout, /PROTECTION_RETAINED/, 'a successful release must not be misreported as retained protection');
     assert.strictEqual(statSync(canonicalDir).uid, process.getuid(), 'the release must actually have happened');
     assert.deepStrictEqual(metadataMapOf(canonicalDir), before, 'ownership/group/mode must be restored entry by entry');
 
-    // INTENT kept, RESULT absent.
+    // INTENT and the MUTATION_STARTED marker kept, RESULT absent.
     const files = readdirSync(auditDir);
     const intents = files.filter((f) => f.endsWith('-intent.json'));
     assert.strictEqual(intents.length, 1, 'the INTENT record must survive');
+    assert.strictEqual(files.filter((f) => f.endsWith('-mutation-started.json')).length, 1, 'the MUTATION_STARTED marker must survive');
     assert.strictEqual(files.filter((f) => f.endsWith('-result.json')).length, 0, 'the RESULT write must have failed');
 
     if (process.env.AF_HIB39_ARTIFACT_DIR) {
