@@ -31,6 +31,7 @@ import { saveTaskWithVersion } from './lib/store.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
 import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest, inspectPendingNotifications, flushPendingNotifications } from './lib/boundary-notify.mjs';
+import { a1aConfig, a1aStatus, formatA1aStatus, explainA1aAsset, formatA1aExplanation, runA1aSweep } from './lib/a1a.mjs';
 import {
   resolveDataRoots,
   assertWithinRoots,
@@ -86,6 +87,9 @@ function printUsage() {
   af-admin boundary notify-status [--json]
   af-admin boundary notify-flush [--force] [--confirm]
   af-admin boundary notify-test --canonical <dir> [--reason "<reason>"] [--confirm]
+  af-admin a1a status [--json]
+  af-admin a1a explain --canonical <dir> --cas <dir> [--task <id>] [--json]
+  af-admin a1a sweep [--json] [--confirm]
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
   af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
   af-admin restore-point restore --task-id <id> --revision <n> [--confirm] [--prune] [--tasks-dir <path>]`);
@@ -412,6 +416,57 @@ async function main() {
       process.exit(res.status === 'sent' || res.status === 'would-notify' ? 0 : 1);
     }
     console.error(`unknown boundary subcommand: ${subCmd} (expected: recover, alerts, alert-resolve, notify-status, notify-test)`);
+    printUsage();
+    process.exit(1);
+  } else if (mainCmd === 'a1a') {
+    let cfg;
+    try {
+      cfg = a1aConfig();
+    } catch (err) {
+      console.error(`error: a1a configuration is unavailable: ${err.message}`);
+      process.exit(3);
+    }
+    if (subCmd === 'status' || subCmd === undefined) {
+      const status = a1aStatus(cfg);
+      if (args.includes('--json')) console.log(JSON.stringify(status, null, 2));
+      else console.log(formatA1aStatus(status));
+      if (!status.state.ok) {
+        console.error(`error: a1a state unverifiable (${status.state.reason}); do not treat it as an empty queue`);
+        process.exit(3);
+      }
+      // Needs-human / exhausted assets are a local, visible obligation (F14/F21).
+      process.exit(status.needs_human > 0 || status.exhausted > 0 ? 1 : 0);
+    }
+    if (subCmd === 'explain') {
+      const canonicalDir = argValue('--canonical') ?? (args[2] && !args[2].startsWith('-') ? args[2] : null);
+      const casDir = argValue('--cas');
+      if (!canonicalDir || !casDir) {
+        console.error('error: --canonical <dir> and --cas <dir> are required');
+        process.exit(2);
+      }
+      const explanation = explainA1aAsset({ cfg, canonicalDir, casDir, taskId: argValue('--task') });
+      if (args.includes('--json')) console.log(JSON.stringify(explanation, null, 2));
+      else console.log(formatA1aExplanation(explanation));
+      process.exit(explanation.ok ? 0 : 3);
+    }
+    if (subCmd === 'sweep') {
+      // The scheduler's one-shot entry point. `live` is gated behind --confirm (a real recovery
+      // changes ownership); `dry-run` and `off` need no confirmation.
+      if (cfg.mode === 'live' && !args.includes('--confirm')) {
+        console.error('error: a live sweep performs real recoveries; re-run with --confirm');
+        process.exit(2);
+      }
+      const res = runA1aSweep({ cfg });
+      if (args.includes('--json')) console.log(JSON.stringify(res, null, 2));
+      else {
+        console.log(`a1a sweep: mode=${res.mode} assets=${res.results.length}${res.note ? ` (${res.note})` : ''}`);
+        for (const r of res.results) {
+          console.log(`  ${r.canonical_dir}: ${r.decision}${r.reason_code ? ` ${r.reason_code}` : ''}${r.outcome ? ` outcome=${r.outcome}` : ''}${r.delivered ? ' delivered' : ''}`);
+        }
+      }
+      process.exit(res.results.some((r) => r.decision === 'REFUSED_INELIGIBLE') ? 1 : 0);
+    }
+    console.error(`unknown a1a subcommand: ${subCmd} (expected: status, explain, sweep)`);
     printUsage();
     process.exit(1);
   } else if (mainCmd === 'console') {
