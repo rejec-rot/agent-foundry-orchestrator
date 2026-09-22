@@ -12,7 +12,7 @@
 
 | # | 输入 | 由操作者填写 | 说明 |
 |---|---|---|---|
-| 1 | **白名单资产** | `canonical_dir = ______` `cas_dir = ______` | 必须**精确真实路径**；本轮建议仅 1 个资产；**不得**包含生产关键仓库 |
+| 1 | **白名单资产** | `canonical_dir = ______` `cas_dir = ______` | 必须**精确真实路径**，且**必须是一个"真实处于保留态"的资产**（见下方红框）；本轮建议仅 1 个；**不得**包含生产关键仓库 |
 | 2 | **执行器与身份** | author = ______ / reviewer = ______ / 运行身份 = ______ | A1a live 本身不调用模型；此项只决定后续若跑真实任务时的组合 |
 | 3 | **限额** | 并发 = __ / 单任务时限 = __ / 模型调用或费用上限 = __ / 磁盘与日志上限 = __ | A1a live 恢复不消耗模型额度；限额用于同一观察窗口内的任务 |
 | 4 | **通知** | 保持 `off`（默认） / 启用 live（需另附私密 webhook 与明确同意） | 本清单默认 **off**：不外发 |
@@ -21,6 +21,11 @@
 | 7 | **签署** | 姓名 ______ 日期 ______ 授权范围摘要 ______ | 见 §6 |
 
 ---
+
+> **⚠ 关键前提（最容易踩的坑）**：`eligible=true` 只对**真实保留态**的资产成立。§2 要求 12 条 guard 全 true，
+> 其中 3.2/3.6/3.7 需要：**生命周期真实产生**的 `PROTECTION_RETAINED_PENDING_RECOVERY`（有保护 epoch、有效快照）、
+> 任务记录里**作者/评审终止证据齐全**、scope 确认为空。**新建的空白或一次性夹具永远到不了 live**
+> （会停在 3.2/3.6/3.7）——这不是故障，是设计。若手上没有这样的真实资产，就**不要签字**，改用 dry-run 路径。
 
 ## 2. 执行前核对（只读，零变更）
 
@@ -34,13 +39,20 @@ echo "AF_A1A_MODE=${AF_A1A_MODE:-<unset=off>} AF_BOUNDARY_NOTIFY_MODE=${AF_BOUND
 # 3) 未安装任何单元
 ls /etc/systemd/system/af-a1a-recovery.* /etc/systemd/system/af-boundary-notify.* 2>/dev/null | wc -l   # 期望 0
 
-# 4) 白名单与资格解释（read-only）
-AF_A1A_MODE=dry-run AF_A1A_ALLOWLIST_FILE=<allowlist> \
-AF_BOUNDARY_AUDIT_DIR=<audit> AF_TASKS_DIR=<tasks> \
+# 4) 白名单与资格解释（read-only）—— env 必须与生命周期当初一致，否则资格会被误拒
+AF_A1A_MODE=dry-run \
+AF_A1A_ALLOWLIST_FILE=<allowlist> \
+AF_TASKS_DIR=<tasks> \
+AF_BOUNDARY_AUDIT_DIR=<audit> \
+AF_BOUNDARY_SNAPSHOT_DIR=<snapshots> \      # 3.6 快照：缺失即拒；默认 ~/.agent-foundry/host-boundary-snapshots 或 /tmp/af-host-boundary-snapshots
+AF_PROTECTION_EPOCH_DIR=<audit>/epochs \    # 3.7 预期保护元数据 epoch；默认 <AF_BOUNDARY_AUDIT_DIR>/epochs
+AF_CGROUP_BASE=<scope base> \               # 3.5 scope 扫描直接读它；缺失即"无法确认"→ 拒
 node af-admin.mjs a1a status --json
-AF_A1A_MODE=dry-run AF_A1A_ALLOWLIST_FILE=<allowlist> … \
 node af-admin.mjs a1a explain --canonical <canonical> --cas <cas> --json
 ```
+
+> 上面 5 个 env（含 `AF_BOUNDARY_SNAPSHOT_DIR` / `AF_PROTECTION_EPOCH_DIR` / `AF_CGROUP_BASE`）**必须与生命周期当时的取值一致或指向同一默认位置**；
+> 任一不同，资格会因"快照缺失 / 无 epoch / scope 无法确认"被拒——那是配置不一致，不是资产有问题。
 
 **预期**：`status` 显示 `mode=dry-run`、白名单 1 个资产、`state` 可核验（或 `missing` 表示尚无状态）；
 `explain` 的 12 条 guard 全为 true（`eligible=true`），否则**停止**——资格不满足就不该进入 live。
@@ -53,9 +65,14 @@ node af-admin.mjs a1a explain --canonical <canonical> --cas <cas> --json
 # 单次 live sweep（不装 timer；--confirm 是刻意的第二道门）
 AF_A1A_MODE=live \
 AF_A1A_ALLOWLIST_FILE=<allowlist> \
-AF_BOUNDARY_AUDIT_DIR=<audit> \
 AF_TASKS_DIR=<tasks> \
+AF_BOUNDARY_AUDIT_DIR=<audit> \
+AF_BOUNDARY_ALERTS_FILE=<alerts> \
+AF_BOUNDARY_SNAPSHOT_DIR=<snapshots> \
+AF_PROTECTION_EPOCH_DIR=<audit>/epochs \
+AF_CGROUP_BASE=<scope base> \
 AF_ASSET_LOCK_DIR=<locks> \
+AF_BOUNDARY_NOTIFY_MODE=off \              # 本轮明确不外发
 node af-admin.mjs a1a sweep --confirm --json
 ```
 
@@ -63,9 +80,9 @@ node af-admin.mjs a1a sweep --confirm --json
 
 | # | 检查 | 预期 |
 |---|---|---|
-| E1 | 退出码 | `0`（无待办/已处理）；`1` 表示需人工或耗尽 → **视为异常并停** |
+| E1 | 退出码（**已加固**） | `0` = 无事可做或干净完成；`1` = **有资产需人工**（`RECONCILE_*`/`RESTORE_INCOMPLETE`/耗尽/拒绝/延后）；`3` = **有资产无法核验**（绝不当作"无事可做"）。`1`/`3` → **停并回报**。**不要只看退出码**：以 E2 的逐资产 `decision/outcome` 为准（加固前 `RECONCILE_REQUIRED` 会返回 0，属缺陷，已修） |
 | E2 | 决策 | 该资产 `decision=WOULD…/ATTEMPTED` → 成功时最终 `DISENGAGED` + `delivered=true` |
-| E3 | 恢复审计 | `audit/` 下该资产出现 `intent(1) → mutation-started(2) → result(3) → alert-closed(5)`，阶段序号齐全 |
+| E3 | 恢复审计 | A1a live **会传 `persistTask`**，故成功链为 `intent(1) → mutation-started(2) → result(3) → persisted(4) → alert-closed(5)`；**必须含 `persisted(4)`**（缺即意味着任务落盘未完成 → 应为 `RECONCILE_RECORD` 而非成功）。人工 CLI 路径无该钩子，链为 1→2→3→5 |
 | E4 | 告警 | 成功后该资产告警**关闭**（`open=false`）；失败则**保持开放**且不计成功 |
 | E5 | 权限 | 资产属主/模式**按快照逐条还原**；`state=RECONCILE_*` 时**不得**再次释放 |
 | E6 | 状态 | `a1a/state.json`：`attempts` 递增、`phase` 与 `next_attempt_at` 合理（退避 `min(base·2^(n-1),cap)`） |

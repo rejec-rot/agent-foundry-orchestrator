@@ -31,7 +31,7 @@ import { saveTaskWithVersion } from './lib/store.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
 import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest, inspectPendingNotifications, flushPendingNotifications } from './lib/boundary-notify.mjs';
-import { a1aConfig, a1aStatus, formatA1aStatus, explainA1aAsset, formatA1aExplanation, runA1aSweep } from './lib/a1a.mjs';
+import { a1aConfig, a1aStatus, formatA1aStatus, explainA1aAsset, formatA1aExplanation, runA1aSweep, sweepExitCode } from './lib/a1a.mjs';
 import {
   resolveDataRoots,
   assertWithinRoots,
@@ -464,7 +464,15 @@ async function main() {
           console.log(`  ${r.canonical_dir}: ${r.decision}${r.reason_code ? ` ${r.reason_code}` : ''}${r.outcome ? ` outcome=${r.outcome}` : ''}${r.delivered ? ' delivered' : ''}`);
         }
       }
-      process.exit(res.results.some((r) => r.decision === 'REFUSED_INELIGIBLE') ? 1 : 0);
+      // Exit codes must not hide a needs-human outcome behind a successful sweep: 3 = could not be
+      // verified, 1 = an asset needs a human (reconcile/exhausted/refused/deferred), 0 = nothing to do.
+      const code = sweepExitCode(res.results);
+      if (code !== 0) {
+        console.error(code === 3
+          ? 'error: an asset could not be verified during the sweep; do not treat this as "nothing to do"'
+          : 'error: the sweep left an asset needing a human (reconcile, exhausted, refused or deferred)');
+      }
+      process.exit(code);
     }
     console.error(`unknown a1a subcommand: ${subCmd} (expected: status, explain, sweep)`);
     printUsage();

@@ -25,6 +25,7 @@ import {
   evaluateA1aEligibility,
   explainA1aAsset,
   runA1aSweep,
+  sweepExitCode,
   readA1aEvents,
   findTaskForAsset,
   currentAlertIdFor,
@@ -545,4 +546,36 @@ test('A1A-18: a role that ran but left no termination evidence is a missing entr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('A1A-19: the sweep exit-code contract never hides a needs-human outcome', () => {
+  // 0 = nothing to do / clean completion, 1 = an asset needs a human, 3 = could not be verified.
+  const cases = [
+    [[{ decision: 'WOULD_RECOVER' }], 0, 'a dry-run would-recover is not a failure'],
+    [[{ decision: 'ATTEMPTED', outcome: 'DISENGAGED', delivered: true }], 0, 'a clean live completion'],
+    [[], 0, 'no allowlisted asset'],
+    [[{ decision: 'ATTEMPTED', outcome: 'RECONCILE_REQUIRED' }], 1, 'a reconcile outcome needs a human'],
+    [[{ decision: 'ATTEMPTED', outcome: 'RECONCILE_RECORD' }], 1, 'a record reconcile needs a human'],
+    [[{ decision: 'ATTEMPTED', outcome: 'RESTORE_INCOMPLETE' }], 1, 'an unverified restore needs a human'],
+    [[{ decision: 'ATTEMPTED', outcome: 'PROTECTION_RETAINED', phase: 'EXHAUSTED' }], 1, 'an exhausted budget needs a human'],
+    [[{ decision: 'ATTEMPTED', outcome: 'PROTECTION_RETAINED', needs_human: true }], 1, 'an explicit needs-human flag'],
+    [[{ decision: 'REFUSED_INELIGIBLE' }], 1, 'an ineligible asset is reported'],
+    [[{ decision: 'DEFERRED_LOCK_HELD' }], 1, 'a deferred lock is reported'],
+    [[{ decision: 'REFUSED_INELIGIBLE', reason: 'state unreadable (corrupt)' }], 3, 'unverifiable state outranks'],
+    [[{ decision: 'WOULD_RECOVER' }, { decision: 'ATTEMPTED', outcome: 'RECONCILE_REQUIRED' }], 1, 'one bad asset in a batch is enough'],
+  ];
+  for (const [results, expected, why] of cases) {
+    assert.strictEqual(sweepExitCode(results), expected, `${why} -> expected ${expected}`);
+  }
+  // The live result must expose the phase/needs-human fields the contract relies on.
+  const lib = readFileSync(join(process.cwd(), 'lib', 'a1a.mjs'), 'utf8');
+  assert.match(lib, /phase: finalRecord\?\.phase/, 'the live result must carry the resulting phase');
+  assert.match(lib, /needs_human: finalRecord\?\.needs_human === true/, 'and the needs-human flag');
+});
+
+test('A1A-20: the CLI maps the sweep contract to the same exit codes', () => {
+  const cli = readFileSync(join(process.cwd(), 'af-admin.mjs'), 'utf8');
+  assert.match(cli, /sweepExitCode\(res\.results\)/, 'the sweep subcommand must use the shared contract');
+  assert.doesNotMatch(cli, /process\.exit\(res\.results\.some\(\(r\) => r\.decision === 'REFUSED_INELIGIBLE'\)/, 'the old exit-code shortcut must be gone');
+  assert.match(cli, /could not be verified during the sweep/, 'exit 3 must say so explicitly');
 });
