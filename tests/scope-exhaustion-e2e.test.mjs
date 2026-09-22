@@ -17,6 +17,7 @@
 //
 // Fixtures are dedicated temp dirs; no production task, scope or alert log is touched.
 
+import './helpers/asset-lock-root.mjs'; // keeps asset locks out of the repository runtime
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {

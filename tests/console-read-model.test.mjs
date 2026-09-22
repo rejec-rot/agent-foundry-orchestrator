@@ -5,6 +5,7 @@
 // Everything runs against a dedicated fixture under the OS temp dir: no production record is
 // read, written or even referenced.
 
+import './helpers/asset-lock-root.mjs'; // keeps asset locks out of the repository runtime
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

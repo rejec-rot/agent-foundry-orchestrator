@@ -1,0 +1,28 @@
+; Agent Foundry - A1a automatic boundary recovery (one sweep per start)
+;
+; TEMPLATE ONLY: this batch ships an inert template. `__AF_NODE__` must be an ABSOLUTE node path:
+; a systemd unit does not inherit the operator's shell PATH, so `node` from a version manager
+; (nvm, asdf, volta) is not found and the unit fails with 203/EXEC. It is NOT installed, NOT enabled and NOT
+; started. Replace the __AF_*__ placeholders and follow deploy/README.md to install it.
+;
+; This unit is INDEPENDENT of the notification retry unit on purpose: each has its own config
+; file, its own state and its own exit codes, and neither one's outcome is a condition for the
+; other's success (A1A-AUTO-RECOVERY-DESIGN.md section 7).
+;
+; `--confirm` is deliberately absent: a `live` sweep must be authorised by a deliberate edit
+; (see deploy/README.md), never by enabling this timer alone.
+
+[Unit]
+Description=Agent Foundry A1a automatic boundary recovery sweep
+Documentation=file:__AF_ROOT__/deploy/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__AF_ROOT__
+# The private, operator-owned config (mode defaults to off). Never committed with real values.
+EnvironmentFile=-__AF_CONFIG_DIR__/a1a.env
+ExecStart=__AF_NODE__ __AF_ROOT__/af-admin.mjs a1a sweep
+# Exit codes are meaningful and must not be flattened into a generic success:
+#   0 = nothing to do, 1 = an asset needs a human or the budget is exhausted, 3 = state unverifiable.
+Restart=no

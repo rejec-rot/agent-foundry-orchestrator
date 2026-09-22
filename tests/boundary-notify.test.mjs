@@ -1,6 +1,7 @@
 // boundary-notify.test.mjs - A1b outbound notification: no egress without authorisation,
 // dry-run fidelity, escalation + cooldown policy, and the live transport (local mock only).
 
+import './helpers/asset-lock-root.mjs'; // keeps asset locks out of the repository runtime
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';

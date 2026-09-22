@@ -12,6 +12,7 @@
 //   3. the completion order is RESULT -> persist -> alert close, asserted by PHASE SEQUENCE, and a
 //      late failure degrades to RECONCILE_RECORD instead of being swallowed (H3, R4).
 
+import './helpers/asset-lock-root.mjs'; // keeps asset locks out of the repository runtime
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { mkdtempSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync, statSync, realpathSync } from 'node:fs';

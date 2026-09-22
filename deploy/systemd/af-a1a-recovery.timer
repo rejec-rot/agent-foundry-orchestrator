@@ -1,0 +1,19 @@
+; Agent Foundry - schedule the A1a boundary recovery sweep.
+;
+; TEMPLATE ONLY: not installed, not enabled, not started. See deploy/README.md.
+; The rate here only decides WHEN a sweep runs; whether it does anything at all is decided by
+; AF_A1A_MODE in the private config (default off).
+
+[Unit]
+Description=Run the A1a boundary recovery sweep every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+RandomizedDelaySec=30s
+Persistent=true
+Unit=af-a1a-recovery.service
+
+[Install]
+WantedBy=timers.target

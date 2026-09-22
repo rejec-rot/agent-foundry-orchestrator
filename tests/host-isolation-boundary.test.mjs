@@ -7,6 +7,7 @@
 // 4. Sibling credentials are strictly excluded from the executor environment.
 // 5. Cgroup v2 boundary terminates all descendants including double-fork background workers.
 
+import './helpers/asset-lock-root.mjs'; // keeps asset locks out of the repository runtime
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {

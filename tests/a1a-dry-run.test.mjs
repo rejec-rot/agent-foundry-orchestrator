@@ -515,3 +515,31 @@ test('A1A-17: an unreadable alert log is not "no alert" for the exhaustion link'
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('A1A-18: a role that ran but left no termination evidence is a missing entry (3.4 refuses)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'af-a1a-ev-'));
+  try {
+    const canonicalDir = join(root, 'canonical');
+    const casDir = join(root, 'cas');
+    mkdirSync(canonicalDir);
+    mkdirSync(casDir);
+    const entry = { canonical_dir: canonicalDir, cas_dir: casDir, task_id: null, max_attempts: null };
+    const cfg = makeCfg({}, { AF_BOUNDARY_AUDIT_DIR: join(root, 'audit') });
+    const base = makeTask({ canonicalDir, casDir });
+
+    // The author provably ran but its evidence was lost: must refuse (missing entry), even though
+    // every evidence record that IS present is confirmed.
+    const ranWithoutEvidence = { ...base, trusted_import: { ...base.trusted_import, author_completed: true, author_termination_evidence: null } };
+    const refused = evaluateA1aEligibility({ entry, cfg, task: ranWithoutEvidence, deps: goodDeps({ cfg, task: ranWithoutEvidence, entry }) });
+    assert.strictEqual(refused.eligible, false);
+    assert.strictEqual(refused.first_failure, '3.4-writer-termination');
+    assert.match(refused.reason, /author ran but no author termination evidence/);
+
+    // The same author run WITH confirmed evidence passes the guard.
+    const ranWithEvidence = { ...base, trusted_import: { ...base.trusted_import, author_completed: true, author_termination_evidence: { termination_confirmed: true, process_group_alive: false, scope_verified: true } } };
+    const accepted = evaluateA1aEligibility({ entry, cfg, task: ranWithEvidence, deps: goodDeps({ cfg, task: ranWithEvidence, entry }) });
+    assert.strictEqual(accepted.checks.find((c) => c.id === '3.4-writer-termination').ok, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

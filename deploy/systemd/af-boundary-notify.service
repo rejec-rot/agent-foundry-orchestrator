@@ -1,0 +1,27 @@
+; Agent Foundry - boundary notification retry flush (one pass per start)
+;
+; TEMPLATE ONLY: this batch ships an inert template. `__AF_NODE__` must be an ABSOLUTE node path:
+; a systemd unit does not inherit the operator's shell PATH, so `node` from a version manager
+; (nvm, asdf, volta) is not found and the unit fails with 203/EXEC. It is NOT installed, NOT enabled and NOT
+; started. Replace the __AF_*__ placeholders and follow deploy/README.md to install it.
+;
+; This unit is INDEPENDENT of the A1a recovery unit on purpose: delivering a notification is not
+; recovery, and a completed recovery is not delivery. They share no success field, no exit code
+; and no scheduling loop (A1A-AUTO-RECOVERY-DESIGN.md section 7).
+;
+; notify-flush only acts when AF_BOUNDARY_NOTIFY_MODE=live (the example config leaves it off).
+; `--confirm` is required because the action sends real messages once live is configured.
+
+[Unit]
+Description=Agent Foundry boundary notification retry flush
+Documentation=file:__AF_ROOT__/deploy/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__AF_ROOT__
+EnvironmentFile=-__AF_CONFIG_DIR__/notify.env
+ExecStart=__AF_NODE__ __AF_ROOT__/af-admin.mjs boundary notify-flush --confirm
+# Exit codes are the notification side's own (0 clear, 1 pending/exhausted, 3 unverifiable); they
+# say nothing about, and must never stand in for, boundary recovery.
+Restart=no
