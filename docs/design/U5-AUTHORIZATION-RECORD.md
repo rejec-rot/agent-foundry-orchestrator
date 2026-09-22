@@ -80,6 +80,13 @@ af-admin a1a sweep   -> decision=WOULD_RECOVER, exit 0
 > 结论：dry-run 在**正向路径**上同样只写审计、不动权限/任务/告警/状态，且资格满足时可稳定
 > 到达 `WOULD_RECOVER`。
 
+## 3.2 夹具处置
+
+U5 的一次性夹具 `/home/reject/DSHWorkSpace/a1a-u5-test/` 在记录完成后**已删除**：它是**未被真实保护**
+的合成目录（`boundary_state` 声明为保留态但属主仍是 1000），留着既无独有证据（结果已在上文），
+又容易被误当作真实保留资产指向白名单。它的两条路径都可用仓库内脚本/配方随时重建：正向见
+`verification/a1a-dry-run-eligible.mjs`，拒绝路径只需按 §2 重建同样（未保护）的夹具。
+
 ## 4. U5 期间发现并修复的缺陷（回归见 A1A-5）
 
 `a1a explain` 对**pin 了 `task_id` 的白名单条目**报 “not allowlisted”（3.1 失败），而 `a1a sweep`
