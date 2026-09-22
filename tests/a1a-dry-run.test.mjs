@@ -141,6 +141,9 @@ test('A1A-5: matching is exact on realpath for BOTH dirs (no prefix, no wildcard
     const scoped = [{ ...assets[0], task_id: 'T1' }];
     assert.strictEqual(matchAllowlistAsset(scoped, { canonicalDir: canonical, casDir: cas, taskId: 'T2' }), null);
     assert.ok(matchAllowlistAsset(scoped, { canonicalDir: canonical, casDir: cas, taskId: 'T1' }));
+    // A task-pinned entry still matches the ASSET when the caller names no task; otherwise
+    // `a1a explain` would say "not allowlisted" where the sweep matched. (Regression: U5 dry-run.)
+    assert.ok(matchAllowlistAsset(scoped, { canonicalDir: canonical, casDir: cas }), 'no explicit taskId must still match a task-pinned entry');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
