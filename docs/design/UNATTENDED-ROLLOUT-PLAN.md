@@ -38,6 +38,26 @@
 **进度**：U0–U5 已交付并复核；**U6 本地故障矩阵三批完成**：G1/G2 30/30、H1–H4 21/21、B3 **26/26**（写→重启→读闭环、退避增长与封顶、耗尽事件关联原告警、预算门拒绝第 4 次），均连续多次稳定、无残留。**未覆盖**：ENOSPC（需特权挂载小满卷）、**真实 live 恢复调用**（B3 用 `deps.recover` 桩，验的是 live 状态机路径而非 live 恢复）、真实模型任务（A1 范围外）。
 **U2 已知差异（如实记录，非阻断）**：`recoverRetainedBoundary()` 的 `persistTask` 是**调用方钩子**——A1a 必须传入（未传则事务只走到 RESULT 与告警关闭，不校验任务落盘）；`af-admin boundary recover` 人工路径不传该钩子，因为该操作可能不对应任何任务记录。因此「任务落盘并重读」这一成功条件在**人工路径**下不适用，**A1a 路径必须适用**。
 
+## 阶段 2 首批切片：受控提交的预检/预览/幂等记录（**未接线启动**）
+
+`lib/submission.mjs`（无 CLI 接线，故操作面无法触发任何启动）：
+
+- **capstone 契约复用既有网关约定**：入口层只允许转发 `goal / context / source_agent / target_path / acceptance`；
+  其余字段**剥离并列明**。
+- **权威性输入一律拒绝（不静默剥离）**：可伪造的治理字段（任意深度，报出完整路径）与**平台绑定字段**
+  （`author_executor`/`reviewer_executor`/`role`/`model`/`effort`/`resource_limits`/`timeout_ms`/`host_isolation`/`task_id`…）→
+  `GOVERNANCE_FIELD_REJECTED` / `PLATFORM_BOUND_FIELD_REJECTED`（ROLE != PLATFORM：执行器与角色由平台绑定）。
+- **只读预检（全为真才通过）**：capsule 形状、`target_path` **路径感知包含**（`/repo-evil` 不算 `/repo`，拒绝相对路径与 NUL）、
+  目标目录存在、**验收命令必须在 `config/acceptance-allowlist.json`**（缺失/损坏=全拒，绝不放行）、
+  隔离能力可用（**不可用即拒，绝不降级为无沙箱**）、执行器至少有一个可用、**必须带幂等键**、记录目录可写。
+- **计划预览**：给出固定流水线（intake→governance-gate→plan→author→reviewer→fix-loop→acceptance→trusted-import→promotion-decision）
+  与**平台绑定项清单**，并明确写出"本预览不调度、不执行"。
+- **幂等记录**：原子发布（tmp+`link()`）；同键同 capsule → 返回原记录（`duplicate:true`）；**同键不同 capsule → 拒绝**
+  （`IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_SPEC`）；capsule 摘要**递归稳定**（键序不影响身份）；
+  `state=PREPARED`、`started=false`——**记录不等于启动**。
+- **本批不做**：不调用 `orchestrator.submitTask`、不绑定执行器/角色、不推断限额、不启动运行、无 CLI 接线。
+  启动动作留待后续批次并需单独授权。
+
 ## 部署前待确认
 
 1. 精确 canonical/CAS 白名单、执行器及身份来源。
