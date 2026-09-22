@@ -137,6 +137,21 @@ test('design: the next-step architecture contract keeps its required deliverable
   }
 });
 
+test('design: the live acceptance checklist stays a checklist, never an authorization', () => {
+  const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'U6-LIVE-ACCEPTANCE-CHECKLIST.md'), 'utf8');
+  for (const section of ['签字前必须由操作者填写', '执行前核对', 'live 执行', '立即停用', '回退', '签署', '预期证据']) {
+    assert.match(doc, new RegExp(section), `the checklist must keep "${section}"`);
+  }
+  // It must be explicit that nothing runs unsigned, and that it enables nothing by itself.
+  assert.match(doc, /未签字前不执行|未签署 = 不执行/);
+  assert.match(doc, /未启用 live|未安装\/启用任何单元/);
+  assert.match(doc, /通知保持 off|通知缺省 off/);
+  assert.match(doc, /不安装 timer|不安装\/不启用任何单元/);
+  // It must not present itself as an approval or a passed acceptance.
+  assert.doesNotMatch(doc, /已授权|已通过验收/, 'the checklist must not assert authorization it does not have');
+  assert.match(doc, /无人值守生产验收.*未通过/s);
+});
+
 test('design: the unattended rollout plan keeps its gates and batch order', () => {
   const doc = readFileSync(join(process.cwd(), 'docs', 'design', 'UNATTENDED-ROLLOUT-PLAN.md'), 'utf8');
   for (const section of ['范围与顺序', '不可放宽的边界', '验证与交付节奏', '部署前待确认']) {
