@@ -48,3 +48,14 @@ V2 任务在授权阶段遇到**需要人工**的判定时：
 1. V2 的 `PENDING_VERIFIER`（需要独立 verifier）本轮是否也要"停为待处理"，还是维持拒绝？（建议：维持拒绝，先只做 Band D 人工批准。）
 2. 续跑复验后，若闭包仍不满足（例如批准后又有新路径）——**再次停靠**而非失败？（建议：再次停靠。）
 3. 批准动作的**入口**：本轮先只提供**库/CLI**，不做 Web（与"暂停 Web 前端"一致）？
+
+## 7. 端到端证据（已实现并验证）
+
+`tests/trusted-import-human-gate-e2e.test.mjs` 用**真实适配器**（只注入 author/reviewer 执行器）跑完整闭环：
+
+1. **run 1**：候选改动触及受保护路径 `SECURITY.md` → 任务**停靠**（`state=WAITING_HUMAN`、`pending_human_decisions=[SECURITY.md]`、`failure_reason=null`，不是失败）；
+2. **未批准的续跑** → 再次停靠（fail-closed，门忽略任何未签名对象）；
+3. **签名批准**（`resolveV2HumanGate` + 注入的 operatorAuthenticator）→ 记录 `human_approval` 证据、清空待决项、`state_version` 前进；
+4. **run 2**（带 `humanApprovalProvider`）→ 闭包闭合 → `state=COMPLETED`、`phase=PROMOTED`，`refs/afr/canonical` **前进**，且被批准的 `SECURITY.md` 改动确实进入 canonical。
+
+同时：`af-admin v2 gate-resume --task <id> --reason <why> --confirm` 提供操作面入口，**未配置 `AF_OPERATOR_KEY` 即拒绝**（exit 3，未签名批准不存在）；无 `--confirm` 拒绝（exit 2）；未停靠任务拒绝（`NOT_PARKED`）。
