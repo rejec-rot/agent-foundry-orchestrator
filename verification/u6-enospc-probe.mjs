@@ -57,7 +57,22 @@ try {
 }
 check('the volume is genuinely full (a write returned ENOSPC)', sawEnospc, `filled≈${filled} bytes`);
 
-const freeCheck = (() => { try { const fd = openSync(join(mountPoint, 'probe.tmp'), 'w'); writeSync(fd, Buffer.alloc(1024)); closeSync(fd); rmSync(join(mountPoint, 'probe.tmp'), { force: true }); return false; } catch (err) { return err?.code === 'ENOSPC'; } })();
+const probeTmp = join(mountPoint, 'probe.tmp');
+const freeCheck = (() => {
+  let fd = null;
+  try {
+    fd = openSync(probeTmp, 'w');
+    writeSync(fd, Buffer.alloc(1024));
+    return false;
+  } catch (err) {
+    return err?.code === 'ENOSPC';
+  } finally {
+    // On a full volume the open may succeed while the write fails, so the leftover has to be
+    // removed explicitly - the probe must not leave anything behind on the operator's volume.
+    if (fd !== null) { try { closeSync(fd); } catch { /* best effort */ } }
+    try { rmSync(probeTmp, { force: true }); } catch { /* best effort */ }
+  }
+})();
 check('no room remains for even a small file', freeCheck);
 
 // ---- a real recovery whose audit lives on the full volume --------------------------
