@@ -1,0 +1,136 @@
+// web-api-readonly.test.mjs - the browser-facing V2 API must be read-only, contained and redacted.
+//
+// It is the first surface a browser talks to, so the guarantees are asserted directly: no mutating
+// route exists, every response is a redacted projection (never whole task JSON), a path that
+// escapes the web root is refused, an unknown task is 404 (not "no tasks"), and the default bind
+// is loopback.
+
+import { test, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { startReadApi } from '../server/read-api.mjs';
+
+const TASK_SECRET = 'super-secret-value-that-must-not-leak';
+
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), 'af-webapi-'));
+  const tasks = join(root, 'tasks');
+  mkdirSync(tasks, { recursive: true });
+  mkdirSync(join(root, 'locks'), { recursive: true });
+  mkdirSync(join(root, 'runtime'), { recursive: true });
+  writeFileSync(join(tasks, 'TASK-WEB-1.json'), JSON.stringify({
+    task_id: 'TASK-WEB-1',
+    state: 'COMPLETED',
+    state_version: 3,
+    goal: 'add a hello module',
+    author_executor: 'codex',
+    reviewer_executor: 'claude',
+    token: TASK_SECRET,
+    trusted_import: { enabled: true, phase: 'PROMOTED', boundary_state: 'DISENGAGED' },
+  }, null, 2));
+  // The read model expects the full root set (tasks, locks, runtime, alerts) - the same shape
+  // resolveDataRoots() produces.
+  return {
+    root,
+    tasks,
+    roots: {
+      tasks,
+      locks: join(root, 'locks'),
+      runtime: join(root, 'runtime'),
+      alerts: join(root, 'alerts.jsonl'),
+    },
+  };
+}
+
+const started = [];
+async function serve(fx) {
+  const handle = await startReadApi({ roots: fx.roots });
+  started.push(handle);
+  return handle;
+}
+
+after(async () => { for (const h of started) await h.close(); });
+
+test('WEBAPI-1: the read routes answer with a redacted projection', async () => {
+  const fx = fixture();
+  try {
+    const { url } = await serve(fx);
+    for (const path of ['/api/v2/capabilities', '/api/v2/tasks', '/api/v2/tasks/TASK-WEB-1', '/api/v2/tasks/TASK-WEB-1/evidence', '/api/v2/exceptions', '/api/v2/executors', '/api/v2/environment']) {
+      const res = await fetch(`${url}${path}`);
+      assert.equal(res.status, 200, `${path} should be readable`);
+      const body = await res.json();
+      assert.equal(res.headers.get('cache-control'), 'no-store');
+      assert.equal(typeof body.model, 'object', `${path} must return the redaction envelope`);
+      assert.equal(body.path_mode, 'hash', 'paths must be hashed by default');
+      assert.ok(body.model.schema || body.model.blocks, `${path} must carry a schema or blocks`);
+    }
+    const list = (await (await fetch(`${url}/api/v2/tasks`)).json()).model;
+    assert.equal(list.blocks.tasks.read_status, 'ok');
+    assert.equal(list.tasks.length, 1);
+    assert.equal(list.page.total, 1);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('WEBAPI-2: there is no mutating route - any non-GET is refused', async () => {
+  const fx = fixture();
+  try {
+    const { url } = await serve(fx);
+    for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
+      const res = await fetch(`${url}/api/v2/tasks`, { method, body: '{}' });
+      assert.equal(res.status, 405, `${method} must be refused`);
+      assert.equal(res.headers.get('allow'), 'GET');
+      const body = await res.json();
+      assert.match(body.reason, /read-only/);
+    }
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('WEBAPI-3: an unknown task is 404 with an explicit reason, never a silent empty answer', async () => {
+  const fx = fixture();
+  try {
+    const { url } = await serve(fx);
+    const res = await fetch(`${url}/api/v2/tasks/TASK-DOES-NOT-EXIST`);
+    assert.equal(res.status, 404);
+    const body = (await res.json()).model;
+    assert.equal(body.blocks.task.read_status, 'missing');
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('WEBAPI-4: secrets and raw paths are redacted by default, and hashing is on', async () => {
+  const fx = fixture();
+  try {
+    const { url } = await serve(fx);
+    const res = await fetch(`${url}/api/v2/tasks/TASK-WEB-1`);
+    const text = await res.text();
+    assert.doesNotMatch(text, new RegExp(TASK_SECRET), 'a sensitive field must never reach the browser');
+    assert.doesNotMatch(text, new RegExp(fx.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'host paths must be hashed by default');
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('WEBAPI-5: static assets are served, but only from the web root', async () => {
+  const fx = fixture();
+  try {
+    const { url } = await serve(fx);
+    const index = await fetch(`${url}/`);
+    assert.equal(index.status, 200);
+    assert.match(index.headers.get('content-type'), /text\/html/);
+    assert.match(await index.text(), /只读/);
+
+    const escape = await fetch(`${url}/..%2f..%2fetc%2fpasswd`);
+    assert.ok(escape.status === 403 || escape.status === 404, `a traversal attempt must be refused, got ${escape.status}`);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('WEBAPI-6: the default bind is loopback and the capabilities are honest about writes', async () => {
+  const fx = fixture();
+  try {
+    const handle = await serve(fx);
+    assert.match(handle.url, /^http:\/\/127\.0\.0\.1:/, 'the API must bind to loopback by default');
+    const caps = (await (await fetch(`${handle.url}/api/v2/capabilities`)).json()).model;
+    assert.ok(Object.values(caps.write).every((v) => v === false), 'no write capability may be advertised in this slice');
+    assert.equal(caps.read.task_list, true);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});

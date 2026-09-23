@@ -31,6 +31,7 @@ import { createHmac } from 'node:crypto';
 import { saveTaskWithVersion } from './lib/store.mjs';
 import { resolveV2HumanGate } from './lib/trusted-import/human-gate-resume.mjs';
 import { planPreview, recordSubmission } from './lib/submission.mjs';
+import { startReadApi } from './server/read-api.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
 import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest, inspectPendingNotifications, flushPendingNotifications } from './lib/boundary-notify.mjs';
@@ -95,6 +96,7 @@ function printUsage() {
   af-admin a1a sweep [--json] [--confirm]
   af-admin v2 gate-resume --task <id> --reason "<why>" [--operator <name>] --confirm   (needs AF_OPERATOR_KEY)
   af-admin submit --spec <file.json> --root <dir> [--preview|--record] [--json]   (record never starts a task)
+  af-admin web serve [--port <n>] [--host <addr>] [--allow-non-loopback] [--no-redact]   (read-only workbench)
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
   af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
   af-admin restore-point restore --task-id <id> --revision <n> [--confirm] [--prune] [--tasks-dir <path>]`);
@@ -527,6 +529,30 @@ async function main() {
     console.error(`unknown v2 subcommand: ${subCmd} (expected: gate-resume)`);
     printUsage();
     process.exit(1);
+  } else if (mainCmd === 'web') {
+    // The browser-facing READ-ONLY API + workbench. Loopback by default; no write route exists.
+    if (subCmd !== 'serve') {
+      console.error(`unknown web subcommand: ${subCmd} (expected: serve)`);
+      printUsage();
+      process.exit(1);
+    }
+    const port = Number.parseInt(argValue('--port') ?? '8787', 10) || 8787;
+    const host = argValue('--host') || '127.0.0.1';
+    if (!args.includes('--allow-non-loopback') && host !== '127.0.0.1' && host !== '::1' && host !== 'localhost') {
+      console.error(`error: refusing to bind ${host}: this API is unauthenticated, so it stays on loopback unless --allow-non-loopback is given`);
+      process.exit(2);
+    }
+    const handle = await startReadApi({
+      port,
+      host,
+      roots: resolveDataRoots(),
+      redact: !args.includes('--no-redact'),
+      logger: (line) => console.log(line),
+    });
+    console.log(`  open ${handle.url} in a browser (read-only: no start/cancel/approve/promote)`);
+    for (const signal of ['SIGINT', 'SIGTERM']) {
+      process.on(signal, async () => { await handle.close(); process.exit(0); });
+    }
   } else if (mainCmd === 'submit') {
     // Stage-2 operator surface: PREVIEW and RECORD only. Nothing is scheduled or executed here -
     // starting a task stays a separate, explicitly authorised step.

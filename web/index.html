@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Foundry · V2 工作台（只读）</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='%2358a6ff'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="dot" aria-hidden="true"></span>
+    <h1>Agent Foundry · V2 工作台</h1>
+    <span class="badge readonly" title="首版只读：没有任何启动/取消/批准/提升操作">只读</span>
+  </div>
+  <div class="meta">
+    <span id="conn" class="conn">连接中…</span>
+    <span id="asof" class="asof"></span>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="panel list" aria-label="任务列表">
+    <div class="panel-head">
+      <h2>任务</h2>
+      <input id="filter" type="search" placeholder="按任务 ID / 状态 / 阶段过滤" aria-label="过滤任务" />
+    </div>
+    <div id="tasks" class="rows" role="list"></div>
+  </section>
+
+  <section class="panel detail" aria-label="任务详情">
+    <div id="detail" class="detail-body">
+      <p class="hint">选择左侧任一任务查看详情、阶段与证据。</p>
+    </div>
+  </section>
+
+  <aside class="panel side" aria-label="环境与执行器">
+    <h2>环境</h2>
+    <div id="environment" class="kv"></div>
+    <h2>执行器</h2>
+    <div id="executors" class="kv"></div>
+  </aside>
+</main>
+
+<footer class="foot">
+  <span>本页只读：不会启动、取消、批准或提升任何任务。</span>
+  <span id="capabilities" class="caps"></span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>
