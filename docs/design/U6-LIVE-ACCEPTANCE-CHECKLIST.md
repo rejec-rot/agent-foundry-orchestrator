@@ -155,3 +155,18 @@ node af-admin.mjs a1a status --json          # 期望：mode=off；需人工项�
 **结论**：**签署范围内的单次 live 试运行通过**。资产为一次性非生产夹具，由真实代码路径产生保留态（`engage` → 异常写者 scope → 真实 `RETAIN` + 告警），epoch `2026-09-23T16-19-35-020Z-ae15c6eb`。
 
 **本次仍未覆盖（不在本次签署范围内）**：真实**生产**资产的 live、真实模型任务执行、真·满盘 ENOSPC（需 root 挂载）。**无人值守生产验收（针对真实生产资产）仍未通过。**
+
+### 7.1 ENOSPC（真·满盘）已用真实文件系统验证
+
+`sudo mount -t tmpfs -o size=64k tmpfs /mnt/af-enospc` 挂载一次性小卷，`verification/u6-enospc-probe.mjs` 先把它写到**真的返回 ENOSPC**，再在该卷上放置审计目录跑**真实恢复**：
+
+| 检查 | 实测 |
+|---|---|
+| 卷确为 tmpfs（一次性） | `tmpfs ... size=64k` |
+| 卷真的写满 | 写入到 **ENOSPC**（≈65536 字节），随后连 1KB 也写不进去 |
+| 满盘下的恢复 | **REFUSED**，原因 `BOUNDARY_AUDIT_UNAVAILABLE: recovery intent could not be recorded (ENOSPC: no space left on device, write)` |
+| 边界是否被动过 | **未动**（属主仍为 root） |
+| 是否留下半截记录 | **无**（卷上 0 个 json） |
+| 是否触发修改 | **未触发**（无 mutation 标记） |
+
+**8/8 通过**（探针在未挂载时 exit 2 且零副作用）。至此 U6 本地故障矩阵的**最后一项未覆盖面（真·ENOSPC）已关闭**；`verification/artifacts` 之外无残留，卷由操作者 `umount` 回收。
