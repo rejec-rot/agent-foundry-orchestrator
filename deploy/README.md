@@ -55,6 +55,11 @@ Templates contain placeholders that **must** be replaced before use:
 4. Never commit webhook URLs, tokens or signing secrets. The examples contain placeholders on
    purpose (`__SET_IN_THE_PRIVATE_FILE__`).
 
+The advisory decision model (TypeSafe / Jev) uses the same rule: copy
+`env/decision.env.example` to `<config dir>/decision.env`, put the key there, `chmod 600`, and
+keep it **outside the repository** (or rely on the repository's `*.env` ignore rule). With
+`AF_DECISION_MODEL=off` (the default) the adapter never calls the network.
+
 ## Status queries (read-only, safe to run any time)
 
 ```

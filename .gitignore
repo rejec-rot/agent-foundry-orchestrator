@@ -44,6 +44,9 @@ runtime/executor-runtime-events.jsonl
 *.cert
 *.token
 
+# Any real env file (private config). Examples (*.env.example) stay tracked.
+*.env
+
 # Logs & temporary files
 *.log
 npm-debug.log*
