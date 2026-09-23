@@ -30,6 +30,7 @@ import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
 import { createHmac } from 'node:crypto';
 import { saveTaskWithVersion } from './lib/store.mjs';
 import { resolveV2HumanGate } from './lib/trusted-import/human-gate-resume.mjs';
+import { planPreview, recordSubmission } from './lib/submission.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
 import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest, inspectPendingNotifications, flushPendingNotifications } from './lib/boundary-notify.mjs';
@@ -93,6 +94,7 @@ function printUsage() {
   af-admin a1a explain --canonical <dir> --cas <dir> [--task <id>] [--json]
   af-admin a1a sweep [--json] [--confirm]
   af-admin v2 gate-resume --task <id> --reason "<why>" [--operator <name>] --confirm   (needs AF_OPERATOR_KEY)
+  af-admin submit --spec <file.json> --root <dir> [--preview|--record] [--json]   (record never starts a task)
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
   af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
   af-admin restore-point restore --task-id <id> --revision <n> [--confirm] [--prune] [--tasks-dir <path>]`);
@@ -525,6 +527,44 @@ async function main() {
     console.error(`unknown v2 subcommand: ${subCmd} (expected: gate-resume)`);
     printUsage();
     process.exit(1);
+  } else if (mainCmd === 'submit') {
+    // Stage-2 operator surface: PREVIEW and RECORD only. Nothing is scheduled or executed here -
+    // starting a task stays a separate, explicitly authorised step.
+    const specFile = argValue('--spec') ?? (args[1] && !args[1].startsWith('-') ? args[1] : null);
+    if (!specFile) { console.error('error: --spec <file.json> is required'); process.exit(2); }
+    let spec;
+    try { spec = JSON.parse(readFileSync(specFile, 'utf8')); } catch (err) {
+      console.error(`error: cannot read the submission spec ${specFile}: ${err.message}`); process.exit(2);
+    }
+    const roots = [];
+    for (let i = 0; i < args.length; i += 1) if (args[i] === '--root' && args[i + 1]) roots.push(args[i + 1]);
+    if (roots.length === 0 && process.env.AF_SUBMISSION_ROOTS) roots.push(...process.env.AF_SUBMISSION_ROOTS.split(':').filter(Boolean));
+    if (roots.length === 0) { console.error('error: at least one --root <dir> (or AF_SUBMISSION_ROOTS) is required so target_path can be contained'); process.exit(2); }
+
+    if (args.includes('--record')) {
+      const res = recordSubmission({ spec, allowedRoots: roots });
+      if (args.includes('--json')) console.log(JSON.stringify(res, null, 2));
+      else if (res.ok) {
+        console.log(`submit record: ok${res.duplicate ? ' (duplicate - the original record is returned)' : ''}`);
+        console.log(`  spec digest : ${res.record.spec_digest}`);
+        console.log(`  state       : ${res.record.state} (started=${res.record.started})`);
+        console.log(`  record file : ${res.record.record_file}`);
+        if (res.record.stripped_fields?.length) console.log(`  stripped    : ${res.record.stripped_fields.join(', ')}`);
+      } else console.error(`error: ${res.first_failure ?? 'REFUSED'}: ${res.reason}`);
+      process.exit(res.ok ? 0 : 1);
+    }
+
+    const preview = planPreview({ spec, allowedRoots: roots });
+    if (args.includes('--json')) console.log(JSON.stringify(preview, null, 2));
+    else if (preview.ok) {
+      console.log(`submit preview: ok (started=${preview.started})`);
+      console.log(`  goal        : ${String(preview.capsule.goal).slice(0, 160)}`);
+      if (preview.stripped_fields?.length) console.log(`  stripped    : ${preview.stripped_fields.join(', ')}`);
+      console.log(`  pipeline    : ${preview.pipeline.join(' -> ')}`);
+      console.log(`  platform    : ${preview.platform_bound.join(', ')}`);
+      console.log(`  note        : ${preview.note}`);
+    } else console.error(`error: ${preview.first_failure ?? 'REFUSED'}: ${preview.reason}`);
+    process.exit(preview.ok ? 0 : 1);
   } else if (mainCmd === 'console') {
     // READ-ONLY: never writes a file, never takes a lock, never calls a mutating API.
     // Every block carries source/read_status/as_of so a failure is never "nothing to report".
