@@ -1101,7 +1101,7 @@ async function runLoopFromReview(task, revision, adapters, { governanceBridge = 
 // below maps each persisted state onto the smallest safe continuation - it
 // never re-runs stages whose results are already persisted, never fakes
 // outcomes, and defers all governance truth to vault-mcp.
-export async function continueTask(taskId, adapters = ADAPTERS, { governanceBridge = null, targetCoordination = null, tasksDir = TASKS_DIR } = {}) {
+export async function continueTask(taskId, adapters = ADAPTERS, { governanceBridge = null, targetCoordination = null, tasksDir = TASKS_DIR, allowV2FailedReentry = false } = {}) {
   const task = withTasksDir(loadTask(taskId, tasksDir), tasksDir);
   task.runs = task.runs ?? [];
   task.revisions_used = task.revisions_used ?? 1;
@@ -1109,8 +1109,18 @@ export async function continueTask(taskId, adapters = ADAPTERS, { governanceBrid
   task.reviewer_role = task.reviewer_role ?? 'reviewer';
   if (task.task_mode === 'governed_write') task.requires_mcp = true;
 
-  if (TERMINAL_STATES.has(task.state)) {
+  // V2 Trusted Import resumes from its own durable phase machine (author/review/snapshot/promotion
+  // intent evidence), so a FAILED V2 task is not a dead end the way a generic failure is - but
+  // re-entering one is an EXPLICIT operator decision, never an implicit relaxation. CANCELLED stays
+  // final: cancellation must never be undone by a resume.
+  const v2Reentry = allowV2FailedReentry === true
+    && task.trusted_import?.enabled === true
+    && task.state === 'FAILED';
+  if (TERMINAL_STATES.has(task.state) && !v2Reentry) {
     throw Object.assign(new Error(`TASK_TERMINAL: task ${taskId} is ${task.state} - recovery refused`), { code: 'TASK_TERMINAL' });
+  }
+  if (v2Reentry) {
+    task.trusted_import = { ...task.trusted_import, reentry_authorized_at: new Date().toISOString(), reentry_from_state: task.state };
   }
 
   // V2 Trusted Import owns its own durable phase machine. Re-enter through
