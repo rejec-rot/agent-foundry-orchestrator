@@ -27,7 +27,9 @@ import {
   formatRollbackResult,
 } from './lib/rollback.mjs';
 import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
+import { createHmac } from 'node:crypto';
 import { saveTaskWithVersion } from './lib/store.mjs';
+import { resolveV2HumanGate } from './lib/trusted-import/human-gate-resume.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
 import { inspectBoundaryAlerts, formatBoundaryAlerts, resolveBoundaryAlert, boundaryAlertsFile } from './lib/boundary-alerts.mjs';
 import { describeNotifyConfig, notifyBoundaryAlert, readNotifyEvents, buildNotifyPayload, buildNotifyRequest, inspectPendingNotifications, flushPendingNotifications } from './lib/boundary-notify.mjs';
@@ -90,6 +92,7 @@ function printUsage() {
   af-admin a1a status [--json]
   af-admin a1a explain --canonical <dir> --cas <dir> [--task <id>] [--json]
   af-admin a1a sweep [--json] [--confirm]
+  af-admin v2 gate-resume --task <id> --reason "<why>" [--operator <name>] --confirm   (needs AF_OPERATOR_KEY)
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
   af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
   af-admin restore-point restore --task-id <id> --revision <n> [--confirm] [--prune] [--tasks-dir <path>]`);
@@ -475,6 +478,51 @@ async function main() {
       process.exit(code);
     }
     console.error(`unknown a1a subcommand: ${subCmd} (expected: status, explain, sweep)`);
+    printUsage();
+    process.exit(1);
+  } else if (mainCmd === 'v2') {
+    if (subCmd === 'gate-resume') {
+      // Operator entry for a parked V2 Human Gate (Band D) item. Library/CLI only (no web UI).
+      const taskId = argValue('--task') ?? (args[2] && !args[2].startsWith('-') ? args[2] : null);
+      const reason = argValue('--reason');
+      const operator = argValue('--operator') || process.env.USER || null;
+      if (!taskId) { console.error('error: --task <id> is required'); process.exit(2); }
+      if (!reason || !reason.trim()) { console.error('error: --reason "<why>" is required'); process.exit(2); }
+      if (!args.includes('--confirm')) { console.error('error: approving a Human Gate item is a signed, auditable decision; re-run with --confirm'); process.exit(2); }
+      const key = process.env.AF_OPERATOR_KEY;
+      if (!key) { console.error('error: AF_OPERATOR_KEY is not configured; an unsigned approval must never exist (fail-closed)'); process.exit(3); }
+
+      const tasksDir = argValue('--tasks-dir') || TASKS_DIR;
+      const taskPath = join(tasksDir, `${taskId}.json`);
+      let task;
+      try { task = JSON.parse(readFileSync(taskPath, 'utf8')); } catch (err) {
+        console.error(`error: cannot read task ${taskId} from ${tasksDir}: ${err.message}`); process.exit(1);
+      }
+
+      const operatorAuthenticator = ({ operatorIdentity, justification, approvedPaths, auditPayload }) => {
+        const signature = createHmac('sha256', key).update(auditPayload).digest('hex');
+        return { verified: true, signature, keyId: process.env.AF_OPERATOR_KEY_ID || 'local-operator-key' };
+      };
+
+      const res = resolveV2HumanGate({
+        task,
+        operatorIdentity: operator,
+        justification: reason.trim(),
+        operatorAuthenticator,
+        saveTask: (t) => saveTaskWithVersion(tasksDir, t),
+      });
+      if (!res.ok) {
+        console.error(`error: ${res.code ?? 'REFUSED'}: ${res.reason}`);
+        process.exit(1);
+      }
+      console.log(`v2 gate approve: ok (operator=${operator}, paths=${res.approved_paths.join(', ')})`);
+      console.log(`  evidence file: ${taskPath}`);
+      console.log(`  approved at  : ${task.trusted_import.human_approval.resolved_at}`);
+      console.log('  resume       : re-run the task through the V2 entrypoint with a humanApprovalProvider');
+      console.log('                 (the provider re-mints the approval in-process; without it the task parks again)');
+      process.exit(0);
+    }
+    console.error(`unknown v2 subcommand: ${subCmd} (expected: gate-resume)`);
     printUsage();
     process.exit(1);
   } else if (mainCmd === 'console') {
