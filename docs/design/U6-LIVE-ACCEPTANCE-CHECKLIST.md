@@ -130,3 +130,28 @@ node af-admin.mjs a1a status --json          # 期望：mode=off；需人工项�
 
 > **未签署 = 不执行。** 本清单不改变任何默认值：`AF_A1A_MODE` 缺省 `off`、白名单缺省为空、
 > 单元未安装、通知缺省 off。**无人值守生产验收在签署并执行、且证据全部符合预期之前仍为未通过。**
+
+---
+
+## 7. 执行结果（签署后，单次 live sweep 已完成）
+
+执行时间：2026-09-23；执行对象：§1 第 1 项的**单一非生产资产**；方式：**单次手动** `AF_A1A_MODE=live af-admin a1a sweep --confirm`。
+
+**§2 预检**：`HEAD = 2f645de`（= 签字版本 `stage5-u6-live-signed`）；**tracked 文件无修改**（工作树仅有本批新增的、随后一并提交的验证脚本）；`AF_A1A_MODE` 未设置；已安装单元 **0**；`a1a explain` **eligible=true，12/12 guard 全 true，failing=0**。
+
+**§3 逐条证据（全部符合）**
+
+| # | 检查 | 实测 |
+|---|---|---|
+| E1 | 退出码 | `a1a sweep` **0**；`a1a status` **0** |
+| E2 | 决策 | `decision=ATTEMPTED`，`outcome=DISENGAGED`，`delivered=true`，`phase=COMPLETE`，`needs_human=false` |
+| E3 | 恢复审计 | `intent(1) → mutation-started(2) → result(3) → persisted(4) → alert-closed(5)`，序号齐全 |
+| E4 | 告警 | 由恢复关闭：`controlled recovery completed with a verified restore` |
+| E5 | 权限 | 属主回到 `uid=1000`，模式按快照还原（`mode=775`）；**未出现 `RECONCILE_*`**，无需二次释放 |
+| E6 | 状态 | `a1a/state.json`：`phase=COMPLETE`、`attempts=0`（成功不消耗预算）、`needs_human=false` |
+| E7 | 审计不可核验 | **未出现**（无 exit 3） |
+| E8 | 残留 | `asset-*.lock` = 0，`registry.lock` = 0 |
+
+**结论**：**签署范围内的单次 live 试运行通过**。资产为一次性非生产夹具，由真实代码路径产生保留态（`engage` → 异常写者 scope → 真实 `RETAIN` + 告警），epoch `2026-09-23T16-19-35-020Z-ae15c6eb`。
+
+**本次仍未覆盖（不在本次签署范围内）**：真实**生产**资产的 live、真实模型任务执行、真·满盘 ENOSPC（需 root 挂载）。**无人值守生产验收（针对真实生产资产）仍未通过。**
