@@ -65,8 +65,38 @@ done
 plan "install -d -o $AF_EXEC_USER -g $AF_EXEC_USER -m 0750 $WORKSPACE"
 [ "$APPLY" -eq 1 ] && install -d -o "$AF_EXEC_USER" -g "$AF_EXEC_USER" -m 0750 "$WORKSPACE"
 
+# 4. privileged launcher: the ONLY identity drop, root-owned and not writable by group/other
+LAUNCHER=/usr/local/sbin/af-exec-run
+plan "install -o root -g root -m 0755 $REPO_ROOT/deploy/af-exec/af-exec-run.sh $LAUNCHER"
+[ "$APPLY" -eq 1 ] && install -o root -g root -m 0755 "$REPO_ROOT/deploy/af-exec/af-exec-run.sh" "$LAUNCHER"
+
+# 5. root-owned isolation claim: the runtime handshake re-verifies it against the live filesystem
+CLAIM_DIR=/etc/af-exec
+CLAIM_FILE="$CLAIM_DIR/claim.json"
+EXEC_UID="$(id -u "$AF_EXEC_USER" 2>/dev/null || echo 0)"
+EXEC_GID="$(id -g "$AF_EXEC_USER" 2>/dev/null || echo 0)"
+plan "install -d -o root -g root -m 0755 $CLAIM_DIR"
+plan "write $CLAIM_FILE (root:0600) recording af-exec uid=$EXEC_UID gid=$EXEC_GID, workspace=$WORKSPACE, launcher=$LAUNCHER"
+if [ "$APPLY" -eq 1 ]; then
+  install -d -o root -g root -m 0755 "$CLAIM_DIR"
+  umask 077
+  cat > "$CLAIM_FILE" <<CLAIM
+{
+  "schema": "af-exec-isolation-claim-v1",
+  "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "af_exec": { "user": "$AF_EXEC_USER", "uid": $EXEC_UID, "gid": $EXEC_GID },
+  "workspace": "$WORKSPACE",
+  "launcher": "$LAUNCHER",
+  "control_plane_surfaces": ["$REPO_ROOT/lib", "$REPO_ROOT/af-admin.mjs", "$REPO_ROOT/orchestrator.mjs"]
+}
+CLAIM
+  chown root:root "$CLAIM_FILE"
+  chmod 0600 "$CLAIM_FILE"
+fi
+
 say ""
 say "rollback (run as root):"
+say "  rm -f /etc/af-exec/claim.json /usr/local/sbin/af-exec-run   # remove the handshake + launcher"
 say "  userdel -r $AF_EXEC_USER          # only if the account is no longer wanted"
 say "  chown -R <previous owner> $REPO_ROOT/lib $REPO_ROOT/af-admin.mjs   # restore ownership"
 say "  rm -rf $WORKSPACE                 # only if it holds no evidence"

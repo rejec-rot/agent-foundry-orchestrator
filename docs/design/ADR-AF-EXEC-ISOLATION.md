@@ -34,9 +34,28 @@
 | 资产 | 说明 |
 |---|---|
 | `lib/af-exec-isolation.mjs` | `probeAfExecIsolation()` 四项能力探测（A1 是否 root / A2 是否存在 `af-exec` / A3 控制面是否 root 所有 / A4 能否以另一 UID 派发）；`assertAfExecIsolation()` **fail-closed 闸门**（不可确认即拒绝，绝不降级） |
-| `deploy/af-exec/provision.sh` | **root-only 模板**：非 root **exit 3** 且零改动；**默认 dry-run**；`--apply` 才执行；幂等；打印回滚 |
-| `deploy/af-exec/README.md` | 管理员操作顺序 + **未验证项**清单 + 回滚 |
-| `tests/af-exec-isolation.test.mjs` | 探测与 fail-closed 的回归（全部注入，不依赖宿主） |
+| `lib/af-exec-handshake.mjs` | **运行时握手**：`verifyIsolationClaim()` 逐条复验 H1–H7（schema / 身份确有分离 / 用户解析一致 / claim 自身 root:0600 且组与他人不可写 / 工作区归执行器 / 控制面 root 且组与他人不可写 / 启动器 root:0755）；`buildExecutorDispatch()` 握手不过即**拒绝**；`assertParentOwnedArtifact()` **父进程拥有的产物边界** |
+| `deploy/af-exec/provision.sh` | **root-only 模板**：非 root **exit 3** 且零改动；**默认 dry-run**；`--apply` 才执行；幂等；写 **root:0600 claim**、装 **root:0755 启动器**；打印回滚 |
+| `deploy/af-exec/af-exec-run.sh` | **特权启动器模板**：唯一做身份下降的地方；非 root → exit 3；目标 uid=0 → exit 4；`setpriv --reuid/--regid --clear-groups` |
+| `deploy/af-exec/README.md` | 管理员操作顺序 + 机制说明 + **未验证项**清单 + 回滚 |
+| `tests/af-exec-isolation.test.mjs`、`tests/af-exec-handshake.test.mjs`、`tests/af-exec-provision.test.mjs` | 探测 / 握手 / 边界 / 模板门控的回归（全部注入，不依赖宿主） |
+
+## 握手与"父进程拥有的 IPC 边界"（DSH 待办 #2 的实现）
+
+1. **握手（capability handshake）**：`provision.sh --apply` 写一份 **root:0600** 的 claim
+   （`/etc/af-exec/claim.json`），记录执行器身份、工作区、启动器与控制面表面。运行时
+   `verifyIsolationClaim()` 把它**对照活文件系统**逐条复验（H1–H7）；**任一未知即拒绝**，
+   `buildExecutorDispatch()` 因此**永远不会**产出"以控制面身份运行执行器"的描述符（无降级路径）。
+2. **父进程拥有的产物边界**：执行器**只能**在自己的工作区内产出；产物视为**候选**，由
+   `assertParentOwnedArtifact()` 做**路径感知包含**校验（拒相对路径 / NUL / 前缀陷阱），并**禁止落在
+   控制面表面内**；任务状态、锁与运行时证据**一律由父进程自己写**。执行器**不直接**写控制面状态。
+3. **唯一身份下降点**：`af-exec-run`（root:0755）。它拒绝非 root 调用者与 uid=0 目标——"以 root 运行"
+   是配置错误，不是可用的降级路径。
+4. **派发接线**（`AF_EXEC_ISOLATION`，默认 `off`）：`execAsync` 在启动任何执行器前调用
+   `planRunIsolation()`。`off`（或缺省/未知值）→ **argv 原样返回，行为不变**；`require` → 先做握手，
+   通过则把 argv 改写为经特权启动器（`af-exec-run --uid … --gid … -- …`），**不通过则拒绝**并把
+   `EXECUTOR_ISOLATION_REQUIRED` 报为该次运行的失败——**永不**回退为以控制面身份启动执行器。
+   （默认 off 时全量回归 643/640/0/3，证明接线不改变既有行为。）
 
 ## 未验证项（必须随本 ADR 一起读）
 
