@@ -13,6 +13,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// Points the executor registry at the self-contained stand-in, so the preflight can reach a real
+// verdict on a machine without the global registry (same helper the test suite uses).
+import '../tests/helpers/executors-fixture.mjs';
 import { startReadApi } from '../server/read-api.mjs';
 
 const keep = process.argv.includes('--keep');
@@ -72,7 +75,7 @@ async function connectCdp(wsUrl) {
 }
 
 const fixtureData = fixture();
-const api = await startReadApi({ roots: fixtureData.roots });
+const api = await startReadApi({ roots: fixtureData.roots, allowedRoots: [fixtureData.root] });
 const profileDir = mkdtempSync(join(tmpdir(), 'af-chrome-'));
 const artifacts = join(process.cwd(), 'verification', 'artifacts', 'web-console');
 mkdirSync(artifacts, { recursive: true });
@@ -109,6 +112,7 @@ try {
 
   const evaluate = async (expression) => {
     const res = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    if (res.exceptionDetails) console.log('      [page exception]', res.exceptionDetails.exception?.description ?? res.exceptionDetails.text);
     return res.result?.value;
   };
 
@@ -146,6 +150,33 @@ try {
       || (e.method === 'Log.entryAdded' && e.params?.entry?.level === 'error'))
     .map((e) => e.params?.entry?.text ?? e.params?.args?.map((a) => a.value ?? a.description).join(' '));
   check('no console errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+
+  // P3: the recovery plan is read-only and renders into the panel.
+  const plan = await evaluate(`(async () => {
+    document.getElementById('recovery-plan-btn').click();
+    await new Promise((r) => setTimeout(r, 1500));
+    return document.getElementById('recovery-plan').textContent;
+  })()`);
+  check('the read-only recovery plan renders', /恢复分类/.test(String(plan)) && /可执行/.test(String(plan)), String(plan).slice(0, 120));
+
+  // P2: the preflight form is wired end-to-end (the server has no --allow-write here, so a record
+  // button must stay disabled while the read-only preflight still answers).
+  const submit = await evaluate(`(async () => {
+    try {
+      document.getElementById('s-goal').value = 'smoke goal';
+      document.getElementById('s-target').value = ${JSON.stringify(fixtureData.root)};
+      document.getElementById('s-key').value = 'smoke-key-1';
+      document.getElementById('s-preview').click();
+      for (let i = 0; i < 30; i += 1) {
+        await new Promise((r) => setTimeout(r, 200));
+        const t = document.getElementById('submit-result').textContent;
+        if (t && !/正在请求/.test(t)) return { text: t, recordDisabled: document.getElementById('s-record').disabled };
+      }
+      return { text: document.getElementById('submit-result').textContent, recordDisabled: document.getElementById('s-record').disabled };
+    } catch (err) { return { text: 'EXCEPTION: ' + err.message, recordDisabled: null }; }
+  })()`);
+  check('the submit form reaches a PASSING preflight in the browser', /"ok": true/.test(String(submit?.text)) && /"checks"/.test(String(submit?.text)), String(submit?.text).slice(0, 160));
+  check('the record button is disabled on a read-only server', submit?.recordDisabled === true, `disabled=${submit?.recordDisabled}`);
 
   // The API must refuse a write even when asked from the page.
   const writeStatus = await evaluate("fetch('/api/v2/tasks', { method: 'POST', body: '{}' }).then(r => r.status)");

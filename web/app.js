@@ -9,7 +9,7 @@ const STAGES = [
   ['评审', 'REVIEW'], ['授权', 'AUTHORIZATION'], ['验收', 'ACCEPTANCE'], ['提升', 'PROMOTION'],
 ];
 
-const state = { tasks: [], selected: null, filter: '', capabilities: null };
+const state = { tasks: [], selected: null, filter: '', capabilities: null, plan: null };
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -82,6 +82,7 @@ function blockValue(block, fallback = '—') {
 }
 
 async function selectTask(taskId) {
+  if (state.plan && state.plan.taskId !== taskId) state.plan = null;
   state.selected = taskId;
   renderTasks();
   const el = $('detail');
@@ -94,6 +95,43 @@ async function selectTask(taskId) {
     renderDetail(taskPayload.model ?? taskPayload, evidencePayload.error ? evidencePayload : (evidencePayload.model ?? evidencePayload));
   } catch (err) {
     el.innerHTML = `<p class="missing">读取失败：${esc(err.message)}</p>`;
+  }
+}
+
+/** The plan lives in `state` so a poll re-render cannot wipe it. */
+function renderPlanHtml(taskId) {
+  const plan = state.plan;
+  if (!plan || plan.taskId !== taskId) return '';
+  if (plan.status === 409) return `<p class="unverifiable">计划已过期：${esc(plan.reason)}（请刷新任务后重算——旧计划不会被自动复用）</p>`;
+  if (!plan.model?.plan) return `<p class="missing">无法生成计划：${esc(plan.reason ?? plan.status)}</p>`;
+  const m = plan.model;
+  return `
+    <dl class="kv">
+      <dt>恢复分类</dt><dd>${esc(m.plan.recovery_class)}</dd>
+      <dt>可恢复</dt><dd>${esc(String(m.plan.recoverable))}</dd>
+      <dt>建议动作</dt><dd>${esc(m.plan.recommended_action)}</dd>
+      <dt>可执行</dt><dd>${esc(String(m.executable))} · ${esc(m.note)}</dd>
+    </dl>`;
+}
+
+/** P3: the plan is READ-ONLY. A stale version is reported, never silently recomputed. */
+async function loadRecoveryPlan(taskId, expectedVersion) {
+  const target = document.getElementById('recovery-plan');
+  if (!target) return;
+  target.innerHTML = '<p class="hint">正在计算恢复计划…</p>';
+  try {
+    const res = await fetch(`/api/v2/tasks/${encodeURIComponent(taskId)}/recovery-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expected_state_version: Number(expectedVersion) }),
+    });
+    const payload = await res.json();
+    const model = payload.model ?? payload;
+    state.plan = { taskId, status: res.status, model, reason: model.reason ?? null };
+    target.innerHTML = renderPlanHtml(taskId) || '<p class="hint">（计划未生成）</p>';
+  } catch (err) {
+    state.plan = { taskId, status: 0, model: null, reason: err.message };
+    target.innerHTML = `<p class="unverifiable">计划读取失败：${esc(err.message)}</p>`;
   }
 }
 
@@ -124,12 +162,55 @@ function renderDetail(model, evidence) {
         <dt>任务块</dt><dd>${blockValue(task)}</dd>
         <dt>数据时间</dt><dd>${esc(model.generated_at ?? '—')}</dd>
       </dl>
+      <div class="actions">
+        <button type="button" id="recovery-plan-btn" data-id="${esc(value.task_id ?? taskIdSafe(model))}" data-version="${esc(value.state_version ?? '')}">恢复计划（只读）</button>
+      </div>
+      <div id="recovery-plan">${renderPlanHtml(value.task_id ?? taskIdSafe(model))}</div>
       <h2>证据</h2>
       ${evidence?.error ? `<p class="unverifiable">证据读取失败：${esc(evidence.error)}</p>` : `<pre class="evidence">${esc(JSON.stringify(evidence, null, 2))}</pre>`}
     </div>`;
+
+  const planBtn = document.getElementById('recovery-plan-btn');
+  if (planBtn) planBtn.addEventListener('click', () => loadRecoveryPlan(planBtn.dataset.id, planBtn.dataset.version));
 }
 
 const taskIdSafe = (model) => model.blocks?.task?.value?.task_id ?? model.task_id ?? '任务';
+
+/** P2: the submission spec as the browser may express it - nothing platform-bound, no limits. */
+function submitPayload() {
+  return {
+    goal: $('s-goal').value.trim(),
+    target_path: $('s-target').value.trim(),
+    acceptance: { command: $('s-command').value.trim(), args: $('s-args').value.trim().split(/\s+/).filter(Boolean) },
+    idempotency_key: $('s-key').value.trim(),
+  };
+}
+
+/**
+ * POST the spec to the preflight or the record route. Both answer with the same envelope; a
+ * refusal is shown verbatim (never swallowed) so the operator sees WHY nothing happened.
+ */
+async function postSubmit(path) {
+  const out = $('submit-result');
+  if (!out) return;
+  out.hidden = false;
+  out.className = 'evidence';
+  out.textContent = '正在请求…';
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ spec: submitPayload() }),
+    });
+    const payload = await res.json();
+    const model = payload.model ?? payload;
+    out.textContent = JSON.stringify(model, null, 2);
+    if (!res.ok) out.className = 'evidence unverifiable';
+  } catch (err) {
+    out.textContent = `请求失败：${err.message}`;
+    out.className = 'evidence missing';
+  }
+}
 
 async function refreshList() {
   try {
@@ -163,14 +244,24 @@ async function refreshSide() {
 }
 
 async function boot() {
+  // Attach the handlers FIRST: a failure in any of the read paths below must never leave the page
+  // without its controls (or, worse, with controls that silently do nothing).
+  $('filter').addEventListener('input', (e) => { state.filter = e.target.value; renderTasks(); });
+  $('submit-form').addEventListener('submit', (e) => { e.preventDefault(); postSubmit('/api/v2/tasks/preflight'); });
+  $('s-record').addEventListener('click', () => postSubmit('/api/v2/tasks/record'));
+
   try {
     const payload = await getJson('/api/v2/capabilities');
     state.capabilities = payload.model ?? payload;
     $('capabilities').textContent = `写操作：${Object.entries(state.capabilities.write).filter(([, v]) => v).map(([k]) => k).join(', ') || '无'}`;
+    const recordBtn = $('s-record');
+    if (state.capabilities.write.record_task === true) {
+      recordBtn.disabled = false;
+      recordBtn.title = '只写入 PREPARED 记录（started=false），不会启动任务';
+    }
   } catch { /* the banner stays empty; the footer already says this page is read-only */ }
   await refreshList();
   await refreshSide();
-  $('filter').addEventListener('input', (e) => { state.filter = e.target.value; renderTasks(); });
   setInterval(refreshList, 5000);
   setInterval(refreshSide, 30000);
   setInterval(() => { if (state.selected) selectTask(state.selected); }, 3000);

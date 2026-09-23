@@ -35,7 +35,21 @@
     </div>
   </section>
 
-  <aside class="panel side" aria-label="环境与执行器">
+  <aside class="panel side" aria-label="新建（预检）与环境">
+    <h2>新建（预检）</h2>
+    <form id="submit-form" class="form" autocomplete="off">
+      <label>目标 goal<input id="s-goal" type="text" placeholder="要做什么" required /></label>
+      <label>目标路径 target_path<input id="s-target" type="text" placeholder="/srv/repo（必须在允许根内）" required /></label>
+      <label>验收命令<input id="s-command" type="text" value="node" required /></label>
+      <label>验收参数（空格分隔）<input id="s-args" type="text" value="--test tests/gate.test.mjs" /></label>
+      <label>幂等键 idempotency_key<input id="s-key" type="text" placeholder="重试不会重复建任务" required /></label>
+      <div class="actions">
+        <button type="submit" id="s-preview">预检（只读）</button>
+        <button type="button" id="s-record" disabled title="需要服务端以 --allow-write 启动">记录（不启动）</button>
+      </div>
+    </form>
+    <pre id="submit-result" class="evidence" hidden></pre>
+
     <h2>环境</h2>
     <div id="environment" class="kv"></div>
     <h2>执行器</h2>
