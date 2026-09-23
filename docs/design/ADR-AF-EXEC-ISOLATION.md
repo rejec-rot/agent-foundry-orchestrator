@@ -57,6 +57,18 @@
    `EXECUTOR_ISOLATION_REQUIRED` 报为该次运行的失败——**永不**回退为以控制面身份启动执行器。
    （默认 off 时全量回归 643/640/0/3，证明接线不改变既有行为。）
 
+### 本机运行时证据（不是纸面约定）
+
+用真实的 `CodexAdapter.run()` 在这台机器上跑同一请求：
+
+| 环境 | 结果 |
+|---|---|
+| 默认（`AF_EXEC_ISOLATION` 未设） | `status=completed, exit_code=0` —— 行为与以前一致 |
+| `AF_EXEC_ISOLATION=require` | `status=failed, exit_code=-1`，原因 `EXECUTOR_ISOLATION_REQUIRED: AF_EXEC_ISOLATION=require but no isolation claim at /etc/af-exec/claim.json - option-A isolation was never provisioned here` |
+
+即：**要求隔离时执行器根本没有被启动**，也没有退回控制面身份。另：`deploy/af-exec/provision.sh` 以当前
+非 root 身份运行会 **exit 3** 且零改动。
+
 ## 未验证项（必须随本 ADR 一起读）
 
 - 本机**无** `af-exec` 账户且无法创建 → A2 = false；
