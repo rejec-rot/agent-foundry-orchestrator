@@ -13,7 +13,7 @@
 | 审批（Human Gate）/ 提升 | ❌ 有意不开放 | 审批需要**签名批准**（`AF_OPERATOR_KEY`）；浏览器不持有该密钥 |
 | 项目注册表与内容接口 | ✅ 已交付 | §6 G6：注册表是控制面数据；内容只按快照登记过的 blob id 取，裸 digest/路径不可寻址 |
 | 协作消息与活动投影 | ✅ 已交付 | 排队/接收/落实三档，各自需独立证据；不打断运行中的进程 |
-| 运行式在线成果预览 | ⬜ 未交付 | 需要独立的隔离预览服务，属后续工作 |
+| 运行式成果预览 | ✅ 机器已交付，**默认关闭** | `AF_PREVIEW_MODE=off`（默认）/`static`/`live`；`live` 需白名单 + `--confirm`，且停止会验证终止 |
 | 流程画布 / 自动部署 | ⬜ 本期不做 | 计划里明确列在"本期不做" |
 
 ---
@@ -130,6 +130,35 @@ curl -sS -X POST http://127.0.0.1:8787/api/v2/tasks/<task_id>/messages \
 # → 202 {"ok":true, ..., "note":"queued: ... it is not injected into a running process"}
 ```
 
+## 3.3 成果预览（默认关闭）
+
+三档，默认第一档：
+
+| 模式 | 会发生什么 |
+|---|---|
+| `off`（默认） | 什么都不会发生。`plan` 会明确说 "previews are off"，**不会**把它当成"你同意了" |
+| `static` | **不执行任何东西**：走 §6 G6 的快照内容接口按 blob id 取 |
+| `live` | 只在**白名单命令** + **端口区间** + **已有工作区** + **`--confirm`** 四个条件都满足时启动，并记录 pid/端口，停止时**验证**进程确实没了 |
+
+```bash
+# 先看它打算干什么（永远不执行、永远安全）
+node af-admin.mjs preview plan --task <task_id> --command node --args "--test" --workspace /path/to/ws
+
+# 真的要跑（四个条件缺一不可）
+export AF_PREVIEW_MODE=live
+export AF_PREVIEW_ALLOWLIST=/path/to/preview-allowlist.json   # {"allowed":[{"command":"node","args_prefix":["--test"]}]}
+export AF_PREVIEW_PORT_RANGE=43100-43110                       # 必须是自己给的区间，没有区间=拒绝
+export AF_PREVIEW_DIR=~/.local/state/agent-foundry/previews
+node af-admin.mjs preview start --task <task_id> --command node --args "--test" --workspace /path/to/ws --confirm
+node af-admin.mjs preview list
+node af-admin.mjs preview stop --task <task_id> --confirm
+```
+
+- 端口是**从你自己给的区间里挑**，不从系统随机要；用过的端口会被记住，不会悄悄复用。
+- 停止是**验证式的**：`termination.verified` 为真才算停掉；杀不掉时状态是 `stop_unconfirmed` 并**明确说出来**，不会假装成功。
+- 命令必须同时命中 `command` 与 `args_prefix`（前缀匹配），不在白名单里就是拒绝。
+- **没有任何"自动预览"**：不存在后台自动启动预览的路径，必须由人显式 `--confirm`。
+
 ---
 
 ## 4. 已知限制（不修好就不说它好）
@@ -144,6 +173,8 @@ curl -sS -X POST http://127.0.0.1:8787/api/v2/tasks/<task_id>/messages \
 8. **事件时间线是投影，不是事实来源。** 任务文件才是生命周期真相；两者不一致时页面会显式打「⚠ 事件与任务快照不一致」。历史上没有事件的任务会被标为「没有事件历史」，**不会**被伪造成一条干净时间线。
 9. **真实模型任务没有在本机验收过。** 需要被授权的执行器与预算；本仓库的测试用的是注入式作者/评审。因此"前端能跑通全流程"这句话的边界是：**控制面、持久化、锁、拒绝路径、git 提升**都验证过；**模型产出的质量**没有在这里验证。
 10. **未覆盖**：多用户并发、跨机器部署、systemd 真实安装（需 root）、TLS 反代、浏览器兼容性（只测了 Chrome；页面用到 `fetch`/`sessionStorage`/`<details>`）。
+11. **预览的 `live` 模式是执行面**：它在工作区里按你给的白名单跑进程。它**不**提供 root 隔离、**不**提供 cgroup 限额、**不**做网络隔离——只做"默认关闭 + 白名单 + 显式确认 + 可验证停止"。要更强隔离得用 `deploy/af-exec/`（需要 root）。
+12. **消息队列不会打断正在运行的 CLI**：它是收件箱，下一次 run/resume 才被收集。"已被接收"也不代表要求被落实（页面上按三档诚实标注）。
 
 ---
 

@@ -28,12 +28,14 @@ import {
 } from './lib/rollback.mjs';
 import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
 import { createHmac } from 'node:crypto';
-import { saveTaskWithVersion } from './lib/store.mjs';
+import { readTaskFile, saveTaskWithVersion } from './lib/store.mjs';
 import { resolveV2HumanGate } from './lib/trusted-import/human-gate-resume.mjs';
 import { requestCancel } from './lib/trusted-import/cancel.mjs';
 import { createV2Task, startOrResumeV2Task } from './lib/v2-service.mjs';
 import { resolveWriteToken } from './server/web-auth.mjs';
 import { loadProjectRegistry, describeRegistry, projectRegistryFile } from './lib/projects.mjs';
+// NB: aliased - `planPreview` already names the submission preflight planner in lib/submission.mjs.
+import { previewConfig, planPreview as planResultPreview, startPreview, stopPreview, listPreviews } from './lib/preview.mjs';
 import { planPreview, recordSubmission } from './lib/submission.mjs';
 import { startReadApi } from './server/read-api.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
@@ -104,12 +106,20 @@ function printUsage() {
   af-admin v2 start --task <id> [--allow-failed-reentry] [--json]        (single execution owner; resumes, never re-authors)
   af-admin submit --spec <file.json> --root <dir> [--preview|--record] [--json]   (record never starts a task)
   af-admin projects show [--file <path>] [--json]                                       (read-only view of the project registry)
+  af-admin preview plan|list [--task <id>] [--command <c>] [--workspace <dir>] [--json]   (off/static/live; never executes in plan)
+  af-admin preview start --task <id> --command <c> --workspace <dir> --confirm        (needs AF_PREVIEW_MODE=live + allowlist)
+  af-admin preview stop --task <id> --confirm                                       (verifies termination)
   af-admin web serve [--port <n>] [--host <addr>] [--allow-non-loopback] [--no-redact]
                       [--allow-write] [--root <dir>] [--locks-dir <path>]   (read-only workbench; --allow-write
                       needs AF_WEB_TOKEN_FILE and enables the authenticated create/start/cancel routes)
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
   af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
   af-admin restore-point restore --task-id <id> --revision <n> [--confirm] [--prune] [--tasks-dir <path>]`);
+}
+
+function readTaskOrNull(taskId, tasksDir) {
+  if (!taskId) return null;
+  try { return readTaskFile(join(tasksDir, `${taskId}.json`)); } catch { return null; }
 }
 
 async function main() {
@@ -657,6 +667,65 @@ async function main() {
     for (const signal of ['SIGINT', 'SIGTERM']) {
       process.on(signal, async () => { await handle.close(); process.exit(0); });
     }
+  } else if (mainCmd === 'preview') {
+    // Running-result previews. OFF by default: plan/list are always safe, start needs mode=live, an
+    // allowlisted command and --confirm, and stop verifies termination.
+    const config = previewConfig(process.env);
+    if (subCmd === 'list') {
+      const model = listPreviews({ config });
+      if (args.includes('--json')) console.log(JSON.stringify(model, null, 2));
+      else if (model.previews.length === 0) console.log('no preview records');
+      else for (const p of model.previews) console.log(`${p.task_id}  ${p.status}${p.alive ? ' (alive)' : ''}  port=${p.port ?? '-'}  ${p.command}`);
+      process.exit(0);
+    }
+    if (subCmd === 'plan') {
+      const taskId = argValue('--task');
+      const record = readTaskOrNull(taskId, argValue('--tasks-dir') || TASKS_DIR);
+      const model = planResultPreview({
+        task: record ?? { task_id: taskId },
+        config,
+        command: argValue('--command'),
+        args: (argValue('--args') ?? '').split(' ').filter(Boolean),
+        workspace: argValue('--workspace'),
+      });
+      if (args.includes('--json')) console.log(JSON.stringify(model, null, 2));
+      else if (!model.ok) console.error(`error: ${model.reason}`);
+      else {
+        console.log(`mode        : ${model.mode}`);
+        console.log(`executable  : ${model.executable}`);
+        console.log(`plan        : ${JSON.stringify(model.plan)}`);
+        if (model.reason) console.log(`note        : ${model.reason}`);
+      }
+      process.exit(model.ok ? 0 : 1);
+    }
+    if (subCmd === 'start') {
+      const taskId = argValue('--task');
+      const record = readTaskOrNull(taskId, argValue('--tasks-dir') || TASKS_DIR);
+      const model = await startPreview({
+        task: record ?? { task_id: taskId },
+        config,
+        command: argValue('--command'),
+        args: (argValue('--args') ?? '').split(' ').filter(Boolean),
+        workspace: argValue('--workspace'),
+        confirm: args.includes('--confirm'),
+      });
+      if (args.includes('--json')) console.log(JSON.stringify(model, null, 2));
+      else if (!model.ok) console.error(`error: ${model.reason}`);
+      else console.log(`preview started: task=${model.record.task_id} pid=${model.record.pid} port=${model.record.port}\n  stop with: af-admin preview stop --task ${model.record.task_id} --confirm`);
+      process.exit(model.ok ? 0 : 1);
+    }
+    if (subCmd === 'stop') {
+      const taskId = argValue('--task');
+      if (!args.includes('--confirm')) { console.error('error: stopping a preview is an explicit operator action; re-run with --confirm'); process.exit(2); }
+      const model = await stopPreview({ taskId, config });
+      if (args.includes('--json')) console.log(JSON.stringify(model, null, 2));
+      else if (!model.ok) console.error(`error: ${model.reason}`);
+      else console.log(`preview stopped: task=${model.record.task_id} status=${model.record.status} verified=${model.record.termination?.verified}`);
+      process.exit(model.ok ? 0 : 1);
+    }
+    console.error(`unknown preview subcommand: ${subCmd} (expected: plan, start, stop, list)`);
+    process.exit(1);
+
   } else if (mainCmd === 'projects') {
     // §6 G6: read-only view of the control-plane project registry. It prints the registry digest and
     // each project's resolved profile ids - never a credential, and never a write.
