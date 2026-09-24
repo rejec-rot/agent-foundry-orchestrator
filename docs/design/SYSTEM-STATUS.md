@@ -21,7 +21,50 @@
 
 ---
 
-## 2. 验证证据（本机实跑，最新一次）
+## 2. 真实模型 live 验收：**通过**（2026-09-24）
+
+一次**真实**的端到端 V2 任务，作者是真实模型执行器 `cmd`（Command Code），评审是独立的 `cline`，
+目标是一次性临时 git 仓库（`/tmp`），验收命令 `node --test tests/live.test.mjs`：
+
+| 项 | 结果 |
+|---|---|
+| 任务状态 | **COMPLETED**，phase **PROMOTED** |
+| 提升 | `refs/afr/canonical` 从 `b0f139d` → **`cb5c537`**（`AFR Trusted Import: TASK-V2-49753cf3-…`） |
+| 验收证据 | `acceptance_evidence.status = PASS`，tier `TierA`，含 candidate 快照摘要 / 基线 oid / profile 与 assets 摘要 |
+| 产出 | `src/slugify.mjs`（6 行，实现正确）+ `tests/live.test.mjs`（真实 node:test，3 个用例） |
+| 阶段事件 | AUTHOR_RUNNING → QUIESCE → CAPTURE → REVIEW → AUTHORIZATION → ACCEPTANCE → PROMOTION → promotion-started |
+| 耗时 | **约 75 秒**（作者 ~25s，评审 ~50s，验收+提升 ~0.3s） |
+| 复现 | `bash verification/live-acceptance-cmd.sh`（会消耗真实模型调用） |
+
+**这次 live 跑出两个只有真跑才会暴露的缺陷，都已修复并加了回归：**
+
+1. **安全守卫被绕过（严重）**：四个适配器（含 cline、command-code）把胶囊的 `purpose` 压成
+   `production`，导致 `execAsync` 里"trusted_import 必须有 cgroup/container writer scope"的守卫
+   **从不触发**——作者在无可验证 writer scope 的情况下照跑，烧掉一次模型调用，25 秒后才在终止证据处失败。
+   修复：统一的 `purposeOf(capsule)` 原样转发，`tests/executor-purpose-forwarding.test.mjs` 钉住
+   （含"spawn 之前就拒绝"的行为断言）。
+2. **过度脱敏（中）**：事件脱敏的"长随机串"启发式**误带 `i` 标志**，使大小写混合判断失效，把 git commit oid
+   与 sha256 摘要也脱敏成 `[redacted]`——正好毁掉审计线索。修复：前缀规则与大小写启发式拆成两条正则，
+   并加断言"oid 与 digest 必须存活、随机凭据必须被脱敏"。
+
+另外为使 live 能跑通而修正的三处（都是真实契约问题，不是为测试让步）：
+
+3. **默认绑定会挑到不可用的执行器**：`AUTO_SELECTABLE_ORDER` 里的 `claude` 在本机没有 launcher。
+   现在绑定前按 `health()` **实测可用性**过滤（并排除被操作者停用的），挑不出两个不同执行器就拒绝。
+4. **`cmd` 无头模式写不了文件**：该 CLI 在 print 模式下 `--trust` 不足以写文件，必须 `--yolo`
+   （实测：`Tool "write_file" requires permissions ... Use --yolo`）。按 codex 的既有原则实现：
+   仅在**外部隔离已验证**或操作者**显式**给出 `AF_COMMAND_CODE_YOLO=1` 时放行，否则**在 spawn 之前拒绝**
+   （`COMMAND_CODE_WRITES_NOT_AUTHORIZED`）——而不是像之前那样静默产出零改动。
+5. **创建任务必须绑定控制面验收 profile**（§6 G6 接线）：没有注册表就拒绝创建（造出来也永远跑不起来），
+   且全部校验**先于**幂等绑定发布——拒绝时不留孤儿绑定、不留目录。
+
+> 说明：`AF_COMMAND_CODE_YOLO=1` 是**操作者授权**（你要求用 `cmd` 当执行器），不是系统默认。
+> 系统默认仍是：没有隔离、没有显式授权 = 拒绝运行。cgroup writer scope 用的是**用户自己的 systemd 委派子树**
+> （`/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service`），**不需要 root**。
+
+---
+
+## 2.1 验证证据（本机实跑，最新一次）
 
 ```bash
 cd /home/reject/DSHWorkSpace/agent-foundry-next
@@ -42,10 +85,11 @@ node verification/u6-enospc-probe.mjs         # 未挂载 → 退出码 2、零�
 
 ## 3. 我需要你（只有你能解决的四项）
 
-### 3.1 真实模型任务的 live 验收
-- **要什么**：被授权的执行器 + 一次真实任务的预算（或者你明确说"用哪个 executor、跑哪个仓库"）。
-- **现状**：控制面/持久化/锁/拒绝路径/git 提升全部验证过；**模型产出的质量**没有在本机验收过（测试用的是注入式作者与评审）。
-- 这不影响"系统能跑通流程"这一结论，但影响"模型结果可信"这一结论——我不会把后者说成已经验证。
+### 3.1 真实模型任务的 live 验收 —— ✅ **已完成**（见 §2）
+- 已用真实执行器 `cmd`（作者）+ `cline`（评审）跑通并**真实提升**（`refs/afr/canonical` 前进）。
+- **仍未覆盖**：不同模型/不同任务的**产出质量**（本次证明的是"流程能跑通且证据齐全"，不是"模型一定写对"）；
+  多次连续运行、并发任务、真实生产仓库（本次用的一次性仓库）。
+- 若要再跑：`bash verification/live-acceptance-cmd.sh`（消耗真实调用），需要 `AF_COMMAND_CODE_YOLO=1` 授权。
 
 ### 3.2 ENOSPC 真机探针（挂载点没了）
 - 之前你挂的 `/mnt/af-enospc` 现在**不在挂载表里**（`mount | grep af-enospc` 为空），所以探针按设计**拒绝执行**：退出码 2、零副作用。

@@ -34,6 +34,7 @@ import { requestCancel } from './lib/trusted-import/cancel.mjs';
 import { createV2Task, startOrResumeV2Task } from './lib/v2-service.mjs';
 import { resolveWriteToken } from './server/web-auth.mjs';
 import { loadProjectRegistry, describeRegistry, projectRegistryFile } from './lib/projects.mjs';
+import { acceptanceAllowlistFile, acceptanceCommandAllowed, loadAcceptanceAllowlist } from './lib/submission.mjs';
 // NB: aliased - `planPreview` already names the submission preflight planner in lib/submission.mjs.
 import { previewConfig, planPreview as planResultPreview, startPreview, stopPreview, listPreviews } from './lib/preview.mjs';
 import { planPreview, recordSubmission } from './lib/submission.mjs';
@@ -102,7 +103,7 @@ function printUsage() {
   af-admin a1a sweep [--json] [--confirm]
   af-admin v2 gate-resume --task <id> --reason "<why>" [--operator <name>] --confirm   (needs AF_OPERATOR_KEY)
   af-admin v2 cancel --task <id> --reason "<why>" --confirm                 (durable request; honoured at a trusted boundary)
-  af-admin v2 create --spec <file.json> --root <dir> [--json]              (V2 submission: no legacy planning path)
+  af-admin v2 create --spec <file.json> --root <dir> [--profile <id>] [--json]   (V2 submission; needs a control-plane\n                      project registry: config/projects.json or AF_PROJECTS_FILE)
   af-admin v2 start --task <id> [--allow-failed-reentry] [--json]        (single execution owner; resumes, never re-authors)
   af-admin submit --spec <file.json> --root <dir> [--preview|--record] [--json]   (record never starts a task)
   af-admin projects show [--file <path>] [--json]                                       (read-only view of the project registry)
@@ -563,7 +564,24 @@ async function main() {
         if (roots.length === 0 && process.env.AF_SUBMISSION_ROOTS) roots.push(...process.env.AF_SUBMISSION_ROOTS.split(':').filter(Boolean));
         if (roots.length === 0) { console.error('error: at least one --root <dir> is required so target_path can be contained'); process.exit(2); }
 
-        const res = createV2Task({ spec, allowedRoots: roots, tasksDir, submissionsDir: argValue('--submissions-dir') || null });
+        // §6 G6: the trusted acceptance identity and the change policy come from the control-plane
+        // registry, so the CLI resolves it exactly as the HTTP route does.
+        const registryFile = argValue('--projects-file') || process.env.AF_PROJECTS_FILE || projectRegistryFile(process.env);
+        const loadedRegistry = loadProjectRegistry({ file: registryFile });
+        if (!loadedRegistry.ok) { console.error(`error: ${loadedRegistry.reason}`); process.exit(1); }
+        const allowlist = loadAcceptanceAllowlist({ file: acceptanceAllowlistFile(process.env, process.cwd()) });
+        const res = createV2Task({
+          spec,
+          allowedRoots: roots,
+          tasksDir,
+          submissionsDir: argValue('--submissions-dir') || null,
+          projectRegistry: loadedRegistry.registry,
+          registryFile,
+          registryDigest: loadedRegistry.digest,
+          allowlist,
+          acceptanceCommandAllowed,
+          profileId: argValue('--profile') || null,
+        });
         if (args.includes('--json')) console.log(JSON.stringify(res, null, 2));
         else if (!res.ok) console.error(`error: ${res.first_failure ?? 'REFUSED'}: ${res.reason}`);
         else {

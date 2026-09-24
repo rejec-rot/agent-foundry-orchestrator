@@ -1,3 +1,4 @@
+import './helpers/executors-fixture.mjs';
 // governance.test.mjs - PHASE 2 tests (fake bridge + fake adapters)
 // TEST G/H plus Phase 1 workspace regression. Real vault E2Es live in
 // fixtures/e2e scripts (hermetic fixture vault, no real-Vault contact).

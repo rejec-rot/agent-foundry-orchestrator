@@ -43,6 +43,18 @@ test('V2EV-1: events append in order and take their code and message from the th
     assert.equal(withCode.code_source, 'err.code');
     assert.equal(withCode.message, 'BOUNDARY_AUDIT_UNAVAILABLE');
     assert.equal(withCode.details.token, '[redacted]', 'secrets are redacted on the way in');
+    // Audit identifiers are NOT credentials: a real promotion's event trail had its commit oid and
+    // patch digest redacted because the "opaque value" heuristic was accidentally case-insensitive.
+    const oid = 'cb5c537578b1d16c41cf2602af5493e924ac178f';
+    const digest = 'e42de6744263dea4364026aae78618514717e782a929f060c3e779ee6da23924';
+    const kept = recordTrustedImportError({}, Object.assign(new Error('promotion recorded'), { details: { new_commit_oid: oid, patch_digest: digest, code: 'BOUNDARY_AUDIT_UNAVAILABLE' } }));
+    assert.equal(kept.details.new_commit_oid, oid, 'a git oid must survive redaction');
+    assert.equal(kept.details.patch_digest, digest, 'a sha256 digest must survive redaction');
+    assert.equal(kept.details.code, 'BOUNDARY_AUDIT_UNAVAILABLE');
+    assert.equal(appendTaskEvent({ eventsDir: fx.events, taskId: 'T-OID', type: 'promotion-started', detail: { new_commit_oid: oid } }).ok, true);
+    const trail = readTaskEvents({ eventsDir: fx.events, taskId: 'T-OID' });
+    assert.equal(trail.events[0].detail.new_commit_oid, oid, 'the event trail keeps the identifier it is meant to audit');
+
     // a random-looking credential IS redacted, twice in a row (the regex must not carry state)
     const cred = 'k3JdP9xQ2mLs7ZbV1nR4tY6wA8cE0fG5';
     assert.equal(recordTrustedImportError({}, new Error(`auth failed for ${cred} and ${cred}`)).message, 'auth failed for [redacted] and [redacted]');

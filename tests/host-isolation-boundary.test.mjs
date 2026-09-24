@@ -1,3 +1,4 @@
+import './helpers/executors-fixture.mjs';
 // tests/host-isolation-boundary.test.mjs - Comprehensive OS-level Boundary & Anti-Tamper Test Suite
 //
 // Verifies:

@@ -1,3 +1,4 @@
+import './helpers/executors-fixture.mjs';
 // Main orchestrator -> V2 Trusted Import integration and recovery tests.
 
 import './helpers/tasks-dir-fixture.mjs';

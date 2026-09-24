@@ -32,7 +32,7 @@ import {
   redactModel,
 } from '../lib/console/read-model.mjs';
 import { classifyRecovery } from '../lib/recovery.mjs';
-import { planPreview, recordSubmission } from '../lib/submission.mjs';
+import { acceptanceAllowlistFile, acceptanceCommandAllowed, loadAcceptanceAllowlist, planPreview, recordSubmission } from '../lib/submission.mjs';
 import { loadExecutorStatus } from '../lib/executor-status.mjs';
 import { probeAfExecIsolation } from '../lib/af-exec-isolation.mjs';
 import { createV2Task, startOrResumeV2Task } from '../lib/v2-service.mjs';
@@ -216,8 +216,26 @@ export function createReadApi({
 
       try {
         if (path === '/api/v2/tasks/create') {
-          // §6 G2: dedicated V2 submission. Idempotent per key; no legacy planning path.
-          const model = createV2Task({ spec: payload.spec, allowedRoots, tasksDir: roots.tasks, submissionsDir: payload.submissions_dir ?? null });
+          // §6 G2 + G6: dedicated V2 submission. The trusted acceptance identity and the change
+          // policy come from the CONTROL-PLANE registry, never from the request body.
+          const registryFile = env.AF_PROJECTS_FILE ?? join(process.cwd(), 'config', 'projects.json');
+          const loadedRegistry = loadProjectRegistry({ file: registryFile });
+          if (!loadedRegistry.ok) {
+            sendJson(res, 422, shape({ ok: false, created: false, reason: loadedRegistry.reason }));
+            return;
+          }
+          const allowlist = loadAcceptanceAllowlist({ file: acceptanceAllowlistFile(env, process.cwd()) });
+          const model = createV2Task({
+            spec: payload.spec,
+            allowedRoots,
+            tasksDir: roots.tasks,
+            submissionsDir: payload.submissions_dir ?? null,
+            projectRegistry: loadedRegistry.registry,
+            registryFile,
+            registryDigest: loadedRegistry.digest,
+            allowlist,
+            acceptanceCommandAllowed,
+          });
           sendJson(res, model.ok ? (model.created ? 201 : 200) : 422, shape(model));
           return;
         }

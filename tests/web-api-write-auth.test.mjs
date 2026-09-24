@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startReadApi } from '../server/read-api.mjs';
 import { resolveWriteToken, authorizeWrite } from '../server/web-auth.mjs';
+import { PROJECT_REGISTRY_SCHEMA } from '../lib/projects.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 process.env.AF_ACCEPTANCE_ALLOWLIST = process.env.AF_ACCEPTANCE_ALLOWLIST || join(ROOT, 'config', 'acceptance-allowlist.json');
@@ -24,10 +25,22 @@ function fixture() {
   const submissions = join(root, 'submissions');
   const locks = join(root, 'locks');
   const tokenFile = join(root, 'token');
-  for (const d of [tasks, target, submissions, locks, join(root, 'runtime')]) mkdirSync(d, { recursive: true });
+  for (const d of [tasks, target, submissions, locks, join(root, 'runtime'), join(root, 'workspaces')]) mkdirSync(d, { recursive: true });
   writeFileSync(tokenFile, `${TOKEN}\n`, { mode: 0o600 });
+  // §6 G6: creation is bound to a control-plane profile, so the fixture has a registry.
+  const registryFile = join(root, 'projects.json');
+  writeFileSync(registryFile, JSON.stringify({
+    schema_version: PROJECT_REGISTRY_SCHEMA,
+    projects: [{
+      project_id: 'web-test-project',
+      root: target,
+      workspace_root: join(root, 'workspaces'),
+      policy: { allowed_root: ['**'], forbidden: [], protected_paths: [], projection: { exclude: [] }, import: { deny: [] } },
+      acceptance_profiles: [{ profile_id: 'default', acceptance: { command: 'node', args: ['--test', 'tests/gate.test.mjs'] }, assets: [] }],
+    }],
+  }, null, 2));
   return {
-    root, tasks, target, submissions, locks, tokenFile,
+    root, tasks, target, submissions, locks, tokenFile, registryFile,
     roots: { tasks, locks, runtime: join(root, 'runtime'), alerts: join(root, 'alerts.jsonl') },
   };
 }
@@ -46,7 +59,7 @@ async function serve(fx, options = {}) {
     allowedRoots: [fx.target],
     allowRecord: true,
     locksDir: fx.locks,
-    env: { ...process.env, AF_WEB_TOKEN_FILE: fx.tokenFile, AF_SUBMISSION_DIR: fx.submissions },
+    env: { ...process.env, AF_WEB_TOKEN_FILE: fx.tokenFile, AF_SUBMISSION_DIR: fx.submissions, AF_PROJECTS_FILE: fx.registryFile },
     spawnWorker: () => ({ pid: 4242 }),
     ...options,
   });
@@ -143,7 +156,7 @@ test('WEBAUTH-4: a second start while the lock is held is 409, and cancel writes
 test('WEBAUTH-5: without a token configured the server advertises and enforces read-only writes', async () => {
   const fx = fixture();
   try {
-    const { url } = await serve(fx, { env: { ...process.env, AF_WEB_TOKEN_FILE: '', AF_WEB_TOKEN: '' } });
+    const { url } = await serve(fx, { env: { ...process.env, AF_WEB_TOKEN_FILE: '', AF_WEB_TOKEN: '', AF_PROJECTS_FILE: fx.registryFile } });
     const caps = (await (await fetch(`${url}/api/v2/capabilities`)).json()).model;
     assert.equal(caps.write.create_task, false, 'no token -> no write capability is advertised');
     assert.match(caps.note, /writes are disabled/);

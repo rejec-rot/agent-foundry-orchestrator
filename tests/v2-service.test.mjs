@@ -13,9 +13,11 @@ import { fileURLToPath } from 'node:url';
 
 import { createV2Task, startOrResumeV2Task } from '../lib/v2-service.mjs';
 import { acquireTaskLock, releaseTaskLock } from '../lib/tasklock.mjs';
+import { loadProjectRegistry, PROJECT_REGISTRY_SCHEMA } from '../lib/projects.mjs';
+import { acceptanceCommandAllowed, loadAcceptanceAllowlist } from '../lib/submission.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-process.env.AF_ACCEPTANCE_ALLOWLIST = process.env.AF_ACCEPTANCE_ALLOWLIST || join(ROOT, 'config', 'acceptance-allowlist.json');
+const ALLOWLIST = loadAcceptanceAllowlist({ file: join(ROOT, 'config', 'acceptance-allowlist.json') });
 
 function fixture(prefix) {
   const root = mkdtempSync(join(tmpdir(), prefix));
@@ -25,7 +27,21 @@ function fixture(prefix) {
   const submissionsDir = join(root, 'submissions');
   const workspaceRoot = join(root, 'workspaces');
   for (const d of [target, tasksDir, locksDir, submissionsDir, workspaceRoot]) mkdirSync(d, { recursive: true });
-  return { root, target, tasksDir, locksDir, submissionsDir, workspaceRoot };
+  // A V2 task is bound to a control-plane acceptance profile (§6 G6), so every fixture here has a
+  // registry; the acceptance in the spec must be the profile's acceptance verbatim.
+  const registryFile = join(root, 'projects.json');
+  writeFileSync(registryFile, JSON.stringify({
+    schema_version: PROJECT_REGISTRY_SCHEMA,
+    projects: [{
+      project_id: 'fixture-project',
+      root: target,
+      workspace_root: workspaceRoot,
+      policy: { allowed_root: ['**'], forbidden: [], protected_paths: [], projection: { exclude: [] }, import: { deny: [] } },
+      acceptance_profiles: [{ profile_id: 'default', acceptance: { command: 'node', args: ['--test', 'tests/gate.test.mjs'] }, assets: [] }],
+    }],
+  }, null, 2));
+  const loaded = loadProjectRegistry({ file: registryFile });
+  return { root, target, tasksDir, locksDir, submissionsDir, workspaceRoot, registryFile, loaded };
 }
 
 const specFor = (fx, extra = {}) => ({
@@ -36,12 +52,20 @@ const specFor = (fx, extra = {}) => ({
   ...extra,
 });
 
-const create = (fx, extra = {}) => createV2Task({
+const create = (fx, extra = {}, overrides = {}) => createV2Task({
   spec: specFor(fx, extra),
   allowedRoots: [fx.target],
   tasksDir: fx.tasksDir,
   submissionsDir: fx.submissionsDir,
   workspaceRoot: fx.workspaceRoot,
+  authorExecutor: 'command-code',
+  reviewerExecutor: 'cline',
+  projectRegistry: fx.loaded.registry,
+  registryFile: fx.registryFile,
+  registryDigest: fx.loaded.digest,
+  allowlist: ALLOWLIST,
+  acceptanceCommandAllowed,
+  ...overrides,
 });
 
 test('V2SVC-1: creation persists the V2 shape and never attaches legacy planning', () => {
@@ -79,10 +103,10 @@ test('V2SVC-2: creation is idempotent per key - a retry returns the original tas
 test('V2SVC-3: a refused preflight creates no task', () => {
   const fx = fixture('af-v2svc-3-');
   try {
-    const outside = createV2Task({ spec: specFor(fx, { target_path: '/etc' }), allowedRoots: [fx.target], tasksDir: fx.tasksDir, submissionsDir: fx.submissionsDir, workspaceRoot: fx.workspaceRoot });
+    const outside = create(fx, { target_path: '/etc' });
     assert.equal(outside.ok, false);
     assert.match(outside.reason, /outside|root/i);
-    const forged = createV2Task({ spec: specFor(fx, { role: 'author' }), allowedRoots: [fx.target], tasksDir: fx.tasksDir, submissionsDir: fx.submissionsDir, workspaceRoot: fx.workspaceRoot });
+    const forged = create(fx, { role: 'author' });
     assert.equal(forged.ok, false);
     assert.match(forged.reason, /PLATFORM_BOUND_FIELD_REJECTED|GOVERNANCE_FIELD_REJECTED/);
     assert.equal(readdirSync(fx.tasksDir).length, 0);
@@ -92,10 +116,7 @@ test('V2SVC-3: a refused preflight creates no task', () => {
 test('V2SVC-4: a workspace that overlaps the target is refused', () => {
   const fx = fixture('af-v2svc-4-');
   try {
-    const res = createV2Task({
-      spec: specFor(fx), allowedRoots: [fx.target], tasksDir: fx.tasksDir, submissionsDir: fx.submissionsDir,
-      workspaceRoot: fx.target, // the "workspace" is the repository itself
-    });
+    const res = create(fx, {}, { workspaceRoot: fx.target }); // the "workspace" is the repository itself
     assert.equal(res.ok, false);
     assert.match(res.reason, /must not overlap the target/);
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
@@ -161,6 +182,46 @@ test('V2SVC-7: a restart RESUMES (never re-authors) and terminal states are refu
     const parked = await startOrResumeV2Task({ taskId: created.task_id, tasksDir: fx.tasksDir, locksDir: fx.locksDir, runner: async () => { throw new Error('must not run'); } });
     assert.equal(parked.outcome, 'refused');
     assert.match(parked.reason, /Human Gate/);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('V2SVC-9: an executor the operator disabled is refused AT CREATION, naming it', () => {
+  const fx = fixture('af-v2svc-9-');
+  const previous = process.env.AF_OPERATOR_EXECUTORS_FILE;
+  try {
+    // The suite's shared helper points the restriction file at an EMPTY fixture (so the engine is
+    // testable on any host). This test is about the restriction itself, so it supplies its own.
+    const restriction = join(fx.root, 'operator-executors.json');
+    writeFileSync(restriction, JSON.stringify({ disabled: ['codex'], reason: 'test: codex out of quota' }));
+    process.env.AF_OPERATOR_EXECUTORS_FILE = restriction;
+    const disabled = create(fx, {}, { authorExecutor: 'codex' });
+    assert.equal(disabled.ok, false, 'a disabled executor must not be bound to a new task');
+    assert.match(disabled.reason, /author executor "codex" is disabled by the operator/);
+    assert.equal(readdirSync(fx.tasksDir).length, 0, 'no task file may be written for a refused creation');
+
+    const disabledReviewer = create(fx, {}, { reviewerExecutor: 'codex' });
+    assert.equal(disabledReviewer.ok, false);
+    assert.match(disabledReviewer.reason, /reviewer executor "codex" is disabled/);
+  } finally {
+    if (previous === undefined) delete process.env.AF_OPERATOR_EXECUTORS_FILE;
+    else process.env.AF_OPERATOR_EXECUTORS_FILE = previous;
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('V2SVC-10: a V2 task without a trusted acceptance identity is not startable', async () => {
+  const fx = fixture('af-v2svc-10-');
+  try {
+    const created = create(fx);
+    assert.equal(created.ok, true, created.reason ?? '');
+    const taskPath = join(fx.tasksDir, `${created.task_id}.json`);
+    const task = JSON.parse(readFileSync(taskPath, 'utf8'));
+    // Simulate a hand-written record: enabled, but no control-plane acceptance identity bound.
+    delete task.trusted_import.acceptance;
+    writeFileSync(taskPath, JSON.stringify(task, null, 2));
+    const res = await startOrResumeV2Task({ taskId: created.task_id, tasksDir: fx.tasksDir, locksDir: fx.locksDir, runner: async () => { throw new Error('must not run'); } });
+    assert.equal(res.outcome, 'refused');
+    assert.match(res.reason, /no trusted acceptance profile/);
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });
 

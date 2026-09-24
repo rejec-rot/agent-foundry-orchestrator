@@ -11,6 +11,7 @@ import { join } from 'node:path';
 
 import '../tests/helpers/executors-fixture.mjs';
 import { startReadApi } from '../server/read-api.mjs';
+import { PROJECT_REGISTRY_SCHEMA } from '../lib/projects.mjs';
 
 const keep = process.argv.includes('--keep');
 const BREAKPOINTS = [1440, 390];
@@ -32,8 +33,22 @@ function fixture() {
   for (const d of [tasks, target, locks, runtime, submissions]) mkdirSync(d, { recursive: true });
   const tokenFile = join(root, 'web-token');
   writeFileSync(tokenFile, `${TOKEN}\n`, { mode: 0o600 });
+  // §6 G6: a task can only be created against a control-plane acceptance profile.
+  const workspaces = join(root, 'workspaces');
+  mkdirSync(workspaces, { recursive: true });
+  const registryFile = join(root, 'projects.json');
+  writeFileSync(registryFile, JSON.stringify({
+    schema_version: PROJECT_REGISTRY_SCHEMA,
+    projects: [{
+      project_id: 'browser-project',
+      root: target,
+      workspace_root: workspaces,
+      policy: { allowed_root: ['**'], forbidden: [], protected_paths: [], projection: { exclude: [] }, import: { deny: [] } },
+      acceptance_profiles: [{ profile_id: 'default', acceptance: { command: 'node', args: ['--test', 'tests/gate.test.mjs'] }, assets: [] }],
+    }],
+  }, null, 2));
   return {
-    root, tasks, target, locks, tokenFile,
+    root, tasks, target, locks, tokenFile, registryFile,
     roots: { tasks, locks, runtime, alerts: join(root, 'alerts.jsonl') },
   };
 }
@@ -72,6 +87,7 @@ const api = await startReadApi({
   allowedRoots: [fx.target],
   allowRecord: true,
   token: { configured: true, token: TOKEN, source: fx.tokenFile },
+  env: { ...process.env, AF_PROJECTS_FILE: fx.registryFile },
   locksDir: fx.locks,
   spawnWorker: (taskId) => { spawned.push(taskId); return { pid: 4242 }; },
 });
@@ -126,7 +142,7 @@ try {
   // 2. The real refusal - not the greyed-out button. A write without a token must be rejected by
   //    the SERVER, in the page's own context.
   const unauthed = await evaluate(`(async () => {
-    const res = await fetch('/api/v2/tasks/create', { method: 'POST', headers: { 'content-type': 'application/json', 'x-af-csrf': '1' }, body: JSON.stringify({ spec: { goal: 'x', target_path: ${JSON.stringify(fx.target)}, acceptance: { command: 'node', args: ['--test'] }, idempotency_key: 'browser-unauthed' } }) });
+    const res = await fetch('/api/v2/tasks/create', { method: 'POST', headers: { 'content-type': 'application/json', 'x-af-csrf': '1' }, body: JSON.stringify({ spec: { goal: 'x', target_path: ${JSON.stringify(fx.target)}, acceptance: { command: 'node', args: ['--test', 'tests/gate.test.mjs'] }, idempotency_key: 'browser-unauthed' } }) });
     const body = await res.json();
     return { status: res.status, reason: body?.model?.reason ?? body?.reason ?? null };
   })()`);
