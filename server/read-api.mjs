@@ -40,6 +40,7 @@ import { requestCancel, readCancelRequest } from '../lib/trusted-import/cancel.m
 import { readTaskEvents } from '../lib/v2-events.mjs';
 import { contentIndex, readTaskBlob } from '../lib/content.mjs';
 import { describeRegistry, loadProjectRegistry } from '../lib/projects.mjs';
+import { collaborationView, queueMessage } from '../lib/collaboration.mjs';
 import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -83,7 +84,7 @@ export function readTaskJson(tasksDir, taskId) {
 export function capabilities({ allowRecord = false, writesAuthenticated = false } = {}) {
   return {
     schema: 'af-v2-capabilities-v1',
-    read: { task_list: true, task_detail: true, task_evidence: true, task_events: true, task_content: true, exceptions: true, executors: true, environment: true, recovery_plan: true, submit_preflight: true },
+    read: { task_list: true, task_detail: true, task_evidence: true, task_events: true, task_content: true, collaboration: true, exceptions: true, executors: true, environment: true, recovery_plan: true, submit_preflight: true },
     // Writes are advertised only when the operator started the server with --allow-write AND a
     // write token is configured: an unauthenticated mutating route is never exposed (§7.3).
     // Recovering/approving/promoting stay unavailable in both cases.
@@ -92,6 +93,7 @@ export function capabilities({ allowRecord = false, writesAuthenticated = false 
       create_task: allowRecord === true && writesAuthenticated === true,
       start_task: allowRecord === true && writesAuthenticated === true,
       cancel_task: allowRecord === true && writesAuthenticated === true,
+      queue_message: allowRecord === true && writesAuthenticated === true,
       recover_task: false,
       approve_human_gate: false,
       promote: false,
@@ -178,7 +180,8 @@ export function createReadApi({
       const postRoutes = new Set(['/api/v2/tasks/preflight', '/api/v2/tasks/record', '/api/v2/tasks/create']);
       const recoveryMatch = /^\/api\/v2\/tasks\/([^/]+)\/recovery-plan$/.exec(path);
       const actionMatch = /^\/api\/v2\/tasks\/([^/]+)\/(start|cancel)$/.exec(path);
-      if (req.method !== 'POST' || (!postRoutes.has(path) && !recoveryMatch && !actionMatch)) {
+      const messageMatch = /^\/api\/v2\/tasks\/([^/]+)\/messages$/.exec(path);
+      if (req.method !== 'POST' || (!postRoutes.has(path) && !recoveryMatch && !actionMatch && !messageMatch)) {
         res.setHeader('allow', 'GET');
         sendJson(res, 405, { error: 'method_not_allowed', reason: 'this API is read-only apart from the two designed POST routes; it never starts, cancels, approves or promotes anything' });
         return;
@@ -201,7 +204,7 @@ export function createReadApi({
 
       // Read-only POSTs (preflight, recovery-plan) stay open; everything that mutates requires the
       // operator token + CSRF header + a matching Origin.
-      const mutating = path === '/api/v2/tasks/record' || path === '/api/v2/tasks/create' || Boolean(actionMatch);
+      const mutating = path === '/api/v2/tasks/record' || path === '/api/v2/tasks/create' || Boolean(actionMatch) || Boolean(messageMatch);
       if (mutating) {
         const auth = writeAuth(req);
         if (!auth.ok) { sendJson(res, auth.status, shape({ error: 'unauthorized', reason: auth.reason })); return; }
@@ -216,6 +219,18 @@ export function createReadApi({
           // §6 G2: dedicated V2 submission. Idempotent per key; no legacy planning path.
           const model = createV2Task({ spec: payload.spec, allowedRoots, tasksDir: roots.tasks, submissionsDir: payload.submissions_dir ?? null });
           sendJson(res, model.ok ? (model.created ? 201 : 200) : 422, shape(model));
+          return;
+        }
+        if (messageMatch) {
+          const taskId = messageMatch[1];
+          if (!readTaskJson(roots.tasks, taskId)) { sendJson(res, 404, shape({ error: 'not_found', reason: `no such task: ${taskId}` })); return; }
+          const queued = queueMessage({
+            runtimeDir: roots.runtime ?? join(process.cwd(), 'runtime'),
+            taskId,
+            message: payload.message,
+            author: payload.author ?? 'operator',
+          });
+          sendJson(res, queued.ok ? 202 : 422, shape(queued));
           return;
         }
         if (actionMatch) {
@@ -318,6 +333,19 @@ export function createReadApi({
         const model = buildEvidenceView({ taskId: evidenceMatch[1], roots, now: at });
         if (model.blocks.task.read_status === 'missing') return sendJson(res, 404, shape(model));
         return sendJson(res, 200, shape(model));
+      }
+      const collabMatch = /^\/api\/v2\/tasks\/([^/]+)\/messages$/.exec(path);
+      if (collabMatch) {
+        // §6 G7: the collaboration projection. Statuses are earned by their own artifacts; the view
+        // never upgrades a message to "applied" on the strength of a receipt alone.
+        const taskId = collabMatch[1];
+        if (!readTaskJson(roots.tasks, taskId)) return sendJson(res, 404, shape({ error: 'not_found', reason: `no such task: ${taskId}` }));
+        const model = collaborationView({
+          runtimeDir: roots.runtime ?? join(process.cwd(), 'runtime'),
+          taskId,
+          limit: Number.parseInt(url.searchParams.get('limit') ?? '50', 10),
+        });
+        return sendJson(res, model.ok ? 200 : 422, shape(model));
       }
       const contentMatch = /^\/api\/v2\/tasks\/([^/]+)\/content(?:\/([^/]+))?$/.exec(path);
       if (contentMatch) {

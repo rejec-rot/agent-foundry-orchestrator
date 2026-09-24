@@ -49,6 +49,26 @@ async function postWrite(path, body = {}) {
   return model;
 }
 
+const STATUS_LABEL = { queued: '已排队', received: '已被 run 接收', applied: '已落实（有独立证据）' };
+
+function renderCollab(model) {
+  const host = $('collab');
+  if (!host) return;
+  if (!model || model.ok === false) { host.innerHTML = `<p class="hint">协作信息不可读${model?.reason ? `：${esc(model.reason)}` : ''}</p>`; return; }
+  const rows = model.messages.length > 0
+    ? model.messages.map((m) => `<li class="msg"><span class="chip ${esc(m.status)}">${esc(STATUS_LABEL[m.status] ?? m.status)}</span>
+        <span class="msg-body">${esc(m.message)}</span>
+        <span class="hint">${esc(String(m.created_at).replace('T', ' ').slice(0, 19))}${m.received_by.length > 0 ? ` · run ${esc(m.received_by.map((r) => r.run_id).join(', '))}` : ''}</span>
+        <span class="hint">${esc(m.claim)}</span></li>`).join('')
+    : '<li class="hint">没有留言</li>';
+  const acts = model.activity.length > 0
+    ? `<ul class="timeline-list">${model.activity.map((a) => `<li>${esc(a.executor ?? '?')}${a.role ? ` · ${esc(a.role)}` : ''} · ${esc(a.status ?? '?')} · ${esc(a.run_id)}</li>`).join('')}</ul>`
+    : '<p class="hint">没有运行记录。</p>';
+  host.innerHTML = `<p class="hint">统计：已排队 ${model.counts.queued} · 已被接收 ${model.counts.received} · 已落实 ${model.counts.applied}</p>
+    <ul class="timeline-list">${rows}</ul>
+    <p class="hint">当前/近期运行：</p>${acts}`;
+}
+
 function renderTimeline(model) {
   const host = $('timeline');
   if (!host) return;
@@ -71,6 +91,12 @@ function refreshWriteControls() {
   if (start) { start.disabled = !can('start_task') || !state.selected; start.title = can('start_task') ? '交给分离的 worker 执行；请求立刻返回' : '需要服务端 --allow-write 且已保存令牌'; }
   if (cancel) { cancel.disabled = !can('cancel_task') || !state.selected; cancel.title = can('cancel_task') ? '持久化取消请求；在下一个受信边界生效，ref 更新后只记录为太迟' : '需要服务端 --allow-write 且已保存令牌'; }
   const note = $('detail-actions-note');
+  const send = $('msg-send');
+  if (send) send.disabled = !(caps.queue_message === true && state.token.length > 0 && state.selected);
+  const msgNote = $('msg-note');
+  if (msgNote) msgNote.textContent = caps.queue_message === true
+    ? (state.token.length > 0 ? '排队不会打断正在运行的进程' : '已启用：保存操作令牌后才能排队')
+    : '服务端未启用写路由';
   if (note) {
     note.textContent = !state.capabilities ? '' : (!state.capabilities.write.create_task
       ? (state.capabilities.note ?? '写操作不可用')
@@ -170,6 +196,9 @@ async function selectTask(taskId) {
     getJson(`/api/v2/tasks/${encodeURIComponent(taskId)}/events?limit=20`)
       .then((payload) => renderTimeline(payload.model ?? payload))
       .catch(() => renderTimeline(null));
+    getJson(`/api/v2/tasks/${encodeURIComponent(taskId)}/messages`)
+      .then((payload) => renderCollab(payload.model ?? payload))
+      .catch(() => renderCollab(null));
   } catch (err) {
     el.innerHTML = `<p class="missing">读取失败：${esc(err.message)}</p>`;
   }
@@ -326,6 +355,14 @@ async function boot() {
   $('filter').addEventListener('input', (e) => { state.filter = e.target.value; renderTasks(); });
   $('submit-form').addEventListener('submit', (e) => { e.preventDefault(); postSubmit('/api/v2/tasks/preflight'); });
   $('s-record').addEventListener('click', () => postSubmit('/api/v2/tasks/record'));
+  $('msg-send').addEventListener('click', () => runWrite('排队消息', async () => {
+    const message = $('msg-text').value.trim();
+    if (!message) throw new Error('消息为空');
+    const model = await postWrite(`/api/v2/tasks/${encodeURIComponent(state.selected)}/messages`, { message });
+    $('msg-text').value = '';
+    await selectTask(state.selected);
+    return model;
+  }));
   $('s-create').addEventListener('click', () => runWrite('创建任务', async () => {
     const model = await postWrite('/api/v2/tasks/create', { spec: submitPayload() });
     $('submit-result').textContent = `${JSON.stringify(model, null, 2)}\n\n启动：点左侧该任务，再按「启动（V2）」`;

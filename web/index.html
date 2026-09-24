@@ -33,6 +33,17 @@
      <div id="detail" class="detail-body">
        <p class="hint">选择左侧任一任务查看详情、阶段与证据。</p>
      </div>
+     <details class="collab"><summary>协作（消息队列 / 谁在干活）</summary>
+       <div id="collab" class="collab-body"><p class="hint">选择任务后显示。</p></div>
+       <div class="form">
+         <label>给这个任务留言（下一次 run/resume 才会收到，不会打断正在运行的进程）
+           <textarea id="msg-text" rows="2" placeholder="例如：请用更严格的闸门重跑评审"></textarea></label>
+         <div class="actions">
+           <button type="button" id="msg-send" disabled title="需要令牌与服务端 --allow-write">排队消息</button>
+           <span class="hint" id="msg-note"></span>
+         </div>
+       </div>
+     </details>
      <details class="timeline"><summary>事件时间线（投影）</summary><div id="timeline" class="timeline-body"><p class="hint">选择任务后显示。</p></div></details>
      <div class="actions detail-actions">
        <button type="button" id="a-start" disabled title="需要令牌与服务端 --allow-write">启动（V2）</button>

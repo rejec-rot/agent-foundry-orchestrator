@@ -168,6 +168,17 @@ try {
   check('cancel records a durable request', /trusted boundary|requested/.test(String(cancelResult)), String(cancelResult).slice(0, 160));
   check('the cancel request file exists', existsSync(join(fx.tasks, `${taskId}.cancel.json`)));
 
+  // 5b. Collaboration: a message can be queued from the page, and the page must NOT claim it was
+  //     carried out - only that it is queued.
+  await evaluate("document.getElementById('msg-text').value = 'please re-run the review with the stricter gate'");
+  const sendDisabled = await evaluate("document.getElementById('msg-send').disabled");
+  check('the queue-message button enables with a token and a selection', sendDisabled === false, `disabled=${sendDisabled}`);
+  await evaluate("document.getElementById('msg-send').click()");
+  await sleep(1500);
+  const collab = await evaluate("document.getElementById('collab').textContent");
+  check('the queued message is visible with its honest status', /已排队/.test(String(collab)), String(collab).slice(0, 200));
+  check('the page never claims the message was carried out', !/已落实/.test(String(collab)) || /没有/.test(String(collab)), String(collab).slice(0, 200));
+
   // 6. The token never leaks into the URL or the visible DOM text.
   const leak = await evaluate("({ url: location.href, html: document.documentElement.outerHTML.includes('browser-operator-token') })");
   check('the token is not in the URL', !String(leak?.url).includes(TOKEN), String(leak?.url));

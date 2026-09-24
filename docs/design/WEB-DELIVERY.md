@@ -11,6 +11,8 @@
 | 只读工作台 | ✅ 已交付 | `server/read-api.mjs` + `web/`。**结构性只读**：写路由要么不存在，要么必须带令牌 |
 | 写操作（创建 / 启动 / 取消） | ✅ 已交付 | 需要服务端 `--allow-write` **且** 配置了操作令牌（§7.3） |
 | 审批（Human Gate）/ 提升 | ❌ 有意不开放 | 审批需要**签名批准**（`AF_OPERATOR_KEY`）；浏览器不持有该密钥 |
+| 项目注册表与内容接口 | ✅ 已交付 | §6 G6：注册表是控制面数据；内容只按快照登记过的 blob id 取，裸 digest/路径不可寻址 |
+| 协作消息与活动投影 | ✅ 已交付 | 排队/接收/落实三档，各自需独立证据；不打断运行中的进程 |
 | 运行式在线成果预览 | ⬜ 未交付 | 需要独立的隔离预览服务，属后续工作 |
 | 流程画布 / 自动部署 | ⬜ 本期不做 | 计划里明确列在"本期不做" |
 
@@ -103,6 +105,30 @@ node af-admin.mjs projects show                         # 只读：打印 digest
 - 解析出的身份会带上 **registry 文件路径 + digest + 白名单 digest**，所以"这个 profile 到底从哪来"是可查的，而不是靠信任。
 - 损坏 / 重复 id / 相对路径 / 非 64 位 hex 资产摘要 → **一律拒绝**（不是"没有项目"也不是"任意项目"）。
 - 内容和资产：`GET /api/v2/tasks/:id/content` 列出该任务快照里**已登记**的 blob（只给 id/大小/类型，**不给宿主路径**）；`GET /api/v2/tasks/:id/content/<blob_id>` 按 id 取字节。**裸 CAS digest 和路径都不是可寻址的**，而且在登记与每次读取时都会重新校验包含关系与摘要（快照被改动 → 拒绝，不是"读到旧内容"）。
+
+## 3.2 协作：消息队列与"谁在干活"（§6 G7）
+
+工作台里每个任务都有一块「协作」面板：留言 + 消息状态 + 当前/近期运行。
+
+**状态阶梯是保守的，每一档都要有自己的文件证据：**
+
+| 显示 | 需要什么证据 | 页面上怎么写 |
+|---|---|---|
+| 已排队 | `runtime/operator-input/<task>/*.json` | "queued: no run has collected it yet" |
+| 已被 run 接收 | `runtime/operator-received/<task>/<id>-<run>.json` | **"received by a run - this does NOT prove the request was carried out"** |
+| 已落实（有独立证据） | 另外存在 `runtime/operator-applied/<task>/<id>.json` | "applied: a separate applied record exists" |
+
+- **只有第三条证据存在时才可能显示"已落实"**；排队路径**碰不到** `operator-applied` 目录（有测试断言 `queueMessage` 的代码里根本不出现该目录名，也断言 API 不会去写它）。
+- 留言是**追加式收件箱**：不会覆盖、不会丢；下一次 run/resume 开始时才收集。**它不是对正在运行的 CLI 的实时注入**，页面上也这么写。
+- 活动记录只投影 `executor/role/status/run_id/时间`，**不投影原始 prompt**。
+
+```bash
+# 也可以用 CLI 之外的方式排队（浏览器里同一件事）
+curl -sS -X POST http://127.0.0.1:8787/api/v2/tasks/<task_id>/messages \
+  -H "authorization: Bearer $(cat ~/.config/agent-foundry/web-token)" -H 'x-af-csrf: 1' \
+  -H 'content-type: application/json' -d '{"message":"请用更严格的闸门重跑评审"}'
+# → 202 {"ok":true, ..., "note":"queued: ... it is not injected into a running process"}
+```
 
 ---
 

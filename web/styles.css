@@ -107,3 +107,12 @@ pre.evidence { background: var(--panel-2); border: 1px solid var(--line); border
 .timeline-list li { padding: 2px 0; border-bottom: 1px solid #2a2a2a; }
 .timeline-list time { color: #8a8a8a; margin-right: 6px; }
 .gap { color: #ffcc66; font-size: 12px; margin: 4px 0; }
+
+.collab-body { padding: 4px 0; }
+.msg { display: block; padding: 4px 0; }
+.msg-body { display: block; margin: 2px 0; }
+.chip { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 8px; margin-right: 6px; }
+.chip.queued { background: #2a3550; color: #a8c4ff; }
+.chip.received { background: #4a3d22; color: #ffd27a; }
+.chip.applied { background: #24402c; color: #9be3b0; }
+textarea { width: 100%; background: #14161a; color: #e6e6e6; border: 1px solid #333; border-radius: 4px; padding: 4px; }
