@@ -37,7 +37,7 @@ import { loadExecutorStatus } from '../lib/executor-status.mjs';
 import { probeAfExecIsolation } from '../lib/af-exec-isolation.mjs';
 import { createV2Task, startOrResumeV2Task } from '../lib/v2-service.mjs';
 import { requestCancel, readCancelRequest } from '../lib/trusted-import/cancel.mjs';
-import { readTaskEvents } from '../lib/v2-events.mjs';
+import { eventsDirFor, readTaskEvents } from '../lib/v2-events.mjs';
 import { contentIndex, readTaskBlob } from '../lib/content.mjs';
 import { describeRegistry, loadProjectRegistry } from '../lib/projects.mjs';
 import { collaborationView, queueMessage } from '../lib/collaboration.mjs';
@@ -394,7 +394,9 @@ export function createReadApi({
         const snapshot = readTaskJson(roots.tasks, taskId);
         if (!snapshot) return sendJson(res, 404, shape({ error: 'not_found', reason: `no such task: ${taskId}` }));
         const model = readTaskEvents({
-          eventsDir: roots.events ?? join(roots.runtime ?? roots.tasks, 'v2-events'),
+          // `roots.events` is resolved by resolveDataRoots() through the same helper the adapter
+          // writes events with; the fallback keeps a hand-built roots object working.
+          eventsDir: roots.events ?? eventsDirFor(roots.tasks),
           taskId,
           snapshot,
           limit: Number.parseInt(url.searchParams.get('limit') ?? '50', 10),

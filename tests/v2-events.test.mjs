@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { appendTaskEvent, readTaskEvents, recordTrustedImportError, eventsDirFor, V2_MAX_LIMIT } from '../lib/v2-events.mjs';
 import { startReadApi } from '../server/read-api.mjs';
+import { resolveDataRoots } from '../lib/console/read-model.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -157,6 +158,30 @@ test('V2EV-5: the API returns a bounded page plus the gap, and 404s only for a m
     const caps = await (await fetch(`${api.url}/api/v2/capabilities`)).json();
     assert.equal(caps.model.read.task_events, true, 'the capability list must advertise the timeline');
   } finally { await api.close(); rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('V2EV-5b: a reader looks where the writer wrote - one convention, not three', () => {
+  // The workbench showed "no event history" for a task whose events were on disk, because the
+  // adapter wrote to <tasks>/events while the reader looked in <runtime>/v2-events. Resolving the
+  // root through the shared helper is what makes that impossible.
+  const tasksDir = '/tmp/af-convention/tasks';
+  const viaEnv = resolveDataRoots({ AF_TASKS_DIR: tasksDir, AF_RUNTIME_DIR: '/tmp/af-convention/runtime' }, '/tmp/af-convention');
+  assert.equal(viaEnv.events, eventsDirFor(tasksDir), 'the reader default must equal the writer default');
+  assert.equal(viaEnv.events, '/tmp/af-convention/tasks/events');
+  const explicit = resolveDataRoots({ AF_TASKS_DIR: tasksDir, AF_V2_EVENTS_DIR: '/tmp/elsewhere/events' }, '/tmp/af-convention');
+  assert.equal(explicit.events, '/tmp/elsewhere/events', 'an explicit override still wins');
+
+  const apiSource = readFileSync(join(ROOT, 'server', 'read-api.mjs'), 'utf8');
+  assert.match(apiSource, /eventsDirFor\(roots\.tasks\)/, 'the route must use the shared helper');
+  assert.doesNotMatch(apiSource, /'v2-events'/, 'the third convention must be gone');
+});
+
+test('V2EV-5c: a finished task leaves a projection that MATCHES its snapshot', () => {
+  // Otherwise every COMPLETED task in the workbench shows a gap warning forever, which trains an
+  // operator to ignore the one signal that is supposed to mean "the history is incomplete".
+  const source = readFileSync(join(ROOT, 'lib', 'trusted-import', 'orchestrator-adapter.mjs'), 'utf8');
+  assert.match(source, /emit\('promotion-completed'/, 'the promotion must close the timeline');
+  assert.match(source, /'promotion-started'/, 'and still open it');
 });
 
 test('V2EV-6: the adapter and orchestrator actually emit events on the real paths', () => {
