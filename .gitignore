@@ -35,6 +35,9 @@ tasks/*.json
 
 # Runtime generated event logs (auto-created on run)
 runtime/executor-runtime-events.jsonl
+# V2 phase-event projection (§6 G5), written inside the tasks dir. Regenerated on run.
+tasks/events/
+v2-events/
 
 # Sensitive credentials & environment files
 .env

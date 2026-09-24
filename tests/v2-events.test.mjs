@@ -157,5 +157,5 @@ test('V2EV-6: the adapter and orchestrator actually emit events on the real path
   const orchestrator = readFileSync(join(ROOT, 'orchestrator.mjs'), 'utf8');
   assert.match(orchestrator, /recordTrustedImportError\(task, err\)/, 'the V2 failure path must persist a structured error');
   assert.match(orchestrator, /appendTaskEvent\(\{ eventsDir: eventsDirFor\(tasksDirOf\(task\)\)/, 'the failure must also land in the timeline');
-  assert.equal(eventsDirFor('/tmp/x/tasks'), '/tmp/x/v2-events');
+  assert.equal(eventsDirFor('/tmp/x/tasks'), '/tmp/x/tasks/events', 'events live inside the tasks dir, so isolation follows the task records');
 });
