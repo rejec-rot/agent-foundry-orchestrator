@@ -80,8 +80,8 @@
 
   <aside class="pane side" aria-label="新建任务、操作令牌与环境">
     <div class="pane-head">
-      <span class="eyebrow">新建（预检）</span>
-      <span class="count">只读判定</span>
+      <span class="eyebrow">新建任务</span>
+      <span class="count">预检为只读判定</span>
     </div>
     <div class="side-body">
       <form id="submit-form" class="form" autocomplete="off">
@@ -98,30 +98,36 @@
       </form>
       <pre id="submit-result" class="evidence" role="status" aria-live="polite" tabindex="0" hidden></pre>
 
-      <section class="block">
-        <h2>操作令牌</h2>
-        <div class="form">
-          <label class="field">
-            <span>令牌（只留在本页内存与 sessionStorage，绝不写入磁盘）</span>
-            <input id="token-input" type="password" placeholder="粘贴 AF_WEB_TOKEN_FILE 的内容" autocomplete="off" />
-          </label>
-          <div class="actions">
-            <button type="button" class="btn" id="token-save">保存令牌</button>
-            <button type="button" class="btn" id="token-clear">清除</button>
+      <details class="disclosure flush">
+        <summary>操作令牌<span class="count">写操作需要</span></summary>
+        <div class="disclosure-body">
+          <div class="form">
+            <label class="field">
+              <span>令牌（只留在本页内存与 sessionStorage，绝不写入磁盘）</span>
+              <input id="token-input" type="password" placeholder="粘贴 AF_WEB_TOKEN_FILE 的内容" autocomplete="off" />
+            </label>
+            <div class="actions">
+              <button type="button" class="btn" id="token-save">保存令牌</button>
+              <button type="button" class="btn" id="token-clear">清除</button>
+            </div>
+            <p class="hint" id="token-note">无令牌时所有写操作都会失败；服务端拒绝未鉴权的请求。</p>
           </div>
-          <p class="hint" id="token-note">无令牌时所有写操作都会失败；服务端拒绝未鉴权的请求。</p>
         </div>
-      </section>
+      </details>
 
-      <section class="block">
-        <h2>环境</h2>
-        <dl id="environment" class="kv"></dl>
-      </section>
+      <details class="disclosure flush">
+        <summary>环境<span class="count">只读</span></summary>
+        <div class="disclosure-body">
+          <dl id="environment" class="kv"></dl>
+        </div>
+      </details>
 
-      <section class="block">
-        <h2>执行器</h2>
-        <dl id="executors" class="kv"></dl>
-      </section>
+      <details class="disclosure flush">
+        <summary>执行器<span class="count">只读</span></summary>
+        <div class="disclosure-body">
+          <dl id="executors" class="kv"></dl>
+        </div>
+      </details>
     </div>
   </aside>
 </main>

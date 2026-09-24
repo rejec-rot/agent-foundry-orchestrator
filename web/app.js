@@ -211,6 +211,13 @@ function stageStrip(currentPhase) {
   }).join('')}</div>`;
 }
 
+/** A folded panel says how many ROWS it holds. Counting only the populated ones read as "2 项"
+ *  above a list of five rows, which is its own small lie. */
+const SECONDARY_FACT_ROWS = 5;
+function secondaryFactCount() {
+  return SECONDARY_FACT_ROWS;
+}
+
 function blockValue(block, fallback = '—') {
   if (!block) return `<span class="unverifiable">不可核验（无该数据块）</span>`;
   if (block.read_status === 'unverifiable') return `<span class="unverifiable">不可核验：${esc(block.reason ?? '原因未记录')}</span>`;
@@ -306,14 +313,21 @@ function renderDetail(model, evidence) {
       <dl class="kv">
         <dt>任务 ID</dt><dd>${esc(value.task_id ?? taskIdSafe(model))}</dd>
         <dt>状态版本</dt><dd>${esc(value.state_version ?? '—')}</dd>
-        <dt>更新时间</dt><dd>${esc(fmtTime(value.updated_at))}</dd>
         <dt>作者 / 评审</dt><dd>${esc(value.author_executor ?? '—')} / ${esc(value.reviewer_executor ?? '—')}</dd>
-        <dt>修复循环</dt><dd>${esc(value.trusted_import?.fix_loop ? `${value.trusted_import.fix_loop.attempts}/${value.trusted_import.fix_loop.max_attempts}` : '—')}</dd>
-        <dt>待人工</dt><dd>${esc((value.trusted_import?.pending_human_decisions ?? []).map((d) => d.path).join(', ') || '—')}</dd>
-        <dt>边界告警</dt><dd>${boundaryAlert ? esc(`${boundaryAlert.severity ?? 'warning'} · occurrences=${boundaryAlert.occurrences ?? 0}`) : '—'}</dd>
-        <dt>任务块</dt><dd>${blockValue(task)}</dd>
-        <dt>数据时间</dt><dd>${esc(fmtTime(model.generated_at))}</dd>
+        <dt>更新时间</dt><dd>${esc(fmtTime(value.updated_at))}</dd>
       </dl>
+      <details class="disclosure flush" style="margin-top: var(--s3)">
+        <summary>更多事实<span class="count">${secondaryFactCount()} 项</span></summary>
+        <div class="disclosure-body">
+          <dl class="kv">
+            <dt>修复循环</dt><dd>${esc(value.trusted_import?.fix_loop ? `${value.trusted_import.fix_loop.attempts}/${value.trusted_import.fix_loop.max_attempts}` : '—')}</dd>
+            <dt>待人工</dt><dd>${esc((value.trusted_import?.pending_human_decisions ?? []).map((d) => d.path).join(', ') || '—')}</dd>
+            <dt>边界告警</dt><dd>${boundaryAlert ? esc(`${boundaryAlert.severity ?? 'warning'} · occurrences=${boundaryAlert.occurrences ?? 0}`) : '—'}</dd>
+            <dt>任务块</dt><dd>${blockValue(task)}</dd>
+            <dt>数据时间</dt><dd>${esc(fmtTime(model.generated_at))}</dd>
+          </dl>
+        </div>
+      </details>
     </div>
     <div class="block">
       <h2>恢复</h2>
@@ -322,10 +336,12 @@ function renderDetail(model, evidence) {
       </div>
       <div id="recovery-plan">${renderPlanHtml(value.task_id ?? taskIdSafe(model))}</div>
     </div>
-    <div class="block">
-      <h2>证据</h2>
-      ${evidence?.error ? `<p class="unverifiable">证据读取失败：${esc(evidence.error)}</p>` : `<pre class="evidence" tabindex="0">${esc(JSON.stringify(evidence, null, 2))}</pre>`}
-    </div>`;
+    <details class="disclosure flush">
+      <summary>证据<span class="count">原始投影（只读）</span></summary>
+      <div class="disclosure-body">
+        ${evidence?.error ? `<p class="unverifiable">证据读取失败：${esc(evidence.error)}</p>` : `<pre class="evidence" tabindex="0">${esc(JSON.stringify(evidence, null, 2))}</pre>`}
+      </div>
+    </details>`;
 
   const planBtn = document.getElementById('recovery-plan-btn');
   if (planBtn) planBtn.addEventListener('click', () => loadRecoveryPlan(planBtn.dataset.id, planBtn.dataset.version));
