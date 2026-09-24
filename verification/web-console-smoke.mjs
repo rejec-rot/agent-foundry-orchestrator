@@ -134,6 +134,39 @@ try {
   const detail = await evaluate("({ stages: document.querySelectorAll('#detail .stage').length, evidence: Boolean(document.querySelector('#detail pre.evidence')) })");
   check('task detail renders the stage strip and evidence', detail?.stages === 8 && detail?.evidence === true, JSON.stringify(detail));
 
+  // The layout is a constructed grid, so it can be measured rather than admired: every region edge
+  // lands on the 8pt unit, the panes span 3/6/3 of twelve columns, and the display face is real.
+  const grid = await evaluate(`(() => {
+    const shell = document.querySelector('.shell');
+    const shellX = shell.getBoundingClientRect().x;
+    const gutter = parseFloat(getComputedStyle(shell).columnGap);
+    const panes = [...document.querySelectorAll('.pane')].map((el) => {
+      const b = el.getBoundingClientRect();
+      return { x: Math.round(b.x), right: Math.round(b.right), w: Math.round(b.width) };
+    });
+    const edges = panes.flatMap((p) => [p.x, p.right]);
+    const towardShell = edges.map((x) => Math.abs(((x - shellX) % 8 + 8) % 8));
+    const heading = document.querySelector('.work-head h3');
+    return {
+      gutter,
+      panes,
+      maxEdgeOffGrid: Math.max(...towardShell),
+      displayFont: heading ? getComputedStyle(heading).fontFamily : '',
+      stageWidths: [...document.querySelectorAll('.runway .stage')].map((el) => Math.round(el.getBoundingClientRect().width)),
+    };
+  })()`);
+  check('the column gutter is a scale step (24px)', grid?.gutter === 24, `gutter=${grid?.gutter}`);
+  check('every pane edge sits on the 8pt unit', grid?.maxEdgeOffGrid === 0, `worst offset=${grid?.maxEdgeOffGrid}px`);
+  check('the panes span 3/6/3 of twelve columns', (() => {
+    const [lane, work, side] = grid?.panes ?? [];
+    if (!lane || !work || !side) return false;
+    // a span-N item is N columns plus N-1 gutters, so the column resolves from the lane
+    const column = (lane.w - 2 * grid.gutter) / 3;
+    return Math.abs(work.w - (column * 6 + 5 * grid.gutter)) <= 1 && Math.abs(side.w - lane.w) <= 1;
+  })(), JSON.stringify((grid?.panes ?? []).map((p) => p.w)));
+  check('the eight runway steps are equal', new Set(grid?.stageWidths ?? []).size === 1, JSON.stringify(grid?.stageWidths));
+  check('the display face resolves to the serif stack', /Serif/i.test(String(grid?.displayFont)), String(grid?.displayFont).slice(0, 60));
+
   for (const width of BREAKPOINTS) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width <= 480 });
     await sleep(400);
