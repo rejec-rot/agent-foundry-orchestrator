@@ -35,6 +35,54 @@
 | 阶段事件 | AUTHOR_RUNNING → QUIESCE → CAPTURE → REVIEW → AUTHORIZATION → ACCEPTANCE → PROMOTION → promotion-started |
 | 耗时 | **约 75 秒**（作者 ~25s，评审 ~50s，验收+提升 ~0.3s） |
 
+
+### 2.2 稳定性：连续 7 次 live 全部成功
+
+| # | 端到端 | 作者(cmd) | 评审(cline) 次数 | 评审耗时 | 重试 | 结果 |
+|---|---|---|---|---|---|---|
+| 1 | ~75s | 25.0s | 2 | 27.6 + 26.0s | 有 | PROMOTED |
+| 2 | 68.5s | 14.4s | 2 | 27.6 + 26.0s | 有 | PROMOTED |
+| 3 | 48s | 17.2s | 1 | 30.5s | 无 | PROMOTED |
+| 4 | 58s | 15.1s | 1 | 42.1s | 无 | PROMOTED |
+| 5 | 41s | 19.0s | 1 | 21.4s | 无 | PROMOTED |
+| 6 | 41s | 20.9s | 1 | 20.0s | 无 | PROMOTED |
+| 7 | 45s | 19.8s | 1 | 24.1s | 无 | PROMOTED |
+
+7/7 `COMPLETED`，7/7 `PROMOTED`，7/7 验收 `PASS`，`revisions_used` 全为 0（没有一次需要返工）。
+每次都是**新的临时仓库**，canonical ref 各自前进（`cb5c537` / `32f7550` / `9768b42f` / `1d16b0b4` / `56ed3c3a` / `2b5be7af` / `a5f7c354`）。
+
+### 2.3 时间花在哪，以及能怎么省
+
+实测构成（7 次样本）：
+
+| 段 | 耗时 | 占比 | 能省吗 |
+|---|---|---|---|
+| 作者 `cmd` | 14.4–25.0s（中位 ~19s） | ~40% | 只能靠换更快的模型/降低提示长度；CLI 冷启动与首轮 `.commandcode/taste` 初始化占小头 |
+| 评审 `cline` | 20.0–42.1s（中位 ~24s） | ~55% | **换更小/更快的评审模型**是最直接的杠杆（`reviewer_model` 可按任务配置） |
+| 验收 + 提升 | **~0.3s** | ~0.5% | 已经可忽略 |
+
+**已修掉的一个可观浪费（~26s，约 35%）**：评审若一次没给出可解析的决策，会触发一次**有意的**重试（多花一次模型调用）。
+根因不是模型波动，而是适配器的**确定性缺陷**：schema 模式下只接受"整条消息是纯 JSON"或"```json 围栏块"，
+**带散文但无围栏的 JSON 会被丢弃**，而编排器的容错解析器又拿不到文本（信封里只有 `parsed`/`raw`，没有 `result`）。
+修复：共享的 `parseSchemaEnvelope()`（纯 JSON → 围栏 → **花括号区间**）+ 信封补 `result` 兜底 + 回归测试（`tests/schema-envelope-parse.test.mjs`）。
+修复后观察到的 5 次运行**均无重试**（样本小，不下因果结论；但该类失败已被确定性消除）。
+
+**还没做、需要你拍板的两条**（都不建议我擅自动手）：
+1. **验收与评审并行**：验收只要 0.3s，省不出时间；而"评审 PASS → 授权 → 验收"是安全顺序，改它属于改设计。
+2. **重试改用会话续跑**：重试目前是全新一次调用（要重新读文件）。改成 `resume` 同一会话能省一些，但只在那 ~30% 会重试的运行里有效，且要确认各执行器的 resume 语义。
+
+### 2.4 这条链路用到 Jev 吗？——**没有**
+
+三条独立证据：
+
+1. `verification/live-acceptance-cmd.sh` **没有**设置 `AF_DECISION_MODEL`（默认 `off`）；`decide()` 在 `mode === 'off'` 时直接返回，**不发出任何网络请求**。
+2. 没有任何代码自动加载 `~/.config/agent-foundry/decision.env`（只有探针脚本的注释里教手动 `set -a; . …`），所以那份配置不会在运行中被读进来。
+3. 即使打开，**成功路径也不会调用它**：`withErrorAdvisory()` 只挂在执行器的**失败路径**（`child.on('error')` 与 `exit_code !== 0/timedOut` 分支）；这 7 次运行的执行器调用全部 `exit 0`，没有可咨询的失败。
+4. 物证：7 份任务记录里**没有任何 `advisory` 字段**；`tests/decision-model.test.mjs` 的 DM-10（安全内核不得 import 决策模块）仍然通过。
+
+> 什么时候才会用到 Jev：某次执行器**失败**、且 `AF_DECISION_MODEL=jev` 且 `AF_TYPESAFE_API_KEY` 就位时，它只在 `runtimeGuard` 判定**之后**追加一个 `advisory` 字段，
+> **绝不改写** `category/retryable/safety_action`。想验证它，得跑 `verification/typesafe-decision-probe.mjs --confirm`（会联网）。
+
 **第二次运行（同日，同样执行器）也通过**，证明可重复：
 
 | 项 | 第二次结果 |
