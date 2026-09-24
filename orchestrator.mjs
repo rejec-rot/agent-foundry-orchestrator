@@ -901,6 +901,8 @@ export async function executeTask(task, adapters = ADAPTERS, { governanceBridge 
   try {
     if (task.trusted_import?.enabled === true) {
       return await runTrustedImportTask(task, {
+        // The cancellation boundary (§6 G4) reads its durable request from the task directory.
+        tasksDir: tasksDirOf(task),
         runAuthor: (revision, opts = {}) => runAuthor(task, revision, adapters, {
           ...opts,
           onRunStart: opts.onRunStart ?? onRunStart,

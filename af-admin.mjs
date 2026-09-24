@@ -30,6 +30,7 @@ import { acquireTaskLock, releaseTaskLock } from './lib/tasklock.mjs';
 import { createHmac } from 'node:crypto';
 import { saveTaskWithVersion } from './lib/store.mjs';
 import { resolveV2HumanGate } from './lib/trusted-import/human-gate-resume.mjs';
+import { requestCancel } from './lib/trusted-import/cancel.mjs';
 import { planPreview, recordSubmission } from './lib/submission.mjs';
 import { startReadApi } from './server/read-api.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
@@ -95,6 +96,7 @@ function printUsage() {
   af-admin a1a explain --canonical <dir> --cas <dir> [--task <id>] [--json]
   af-admin a1a sweep [--json] [--confirm]
   af-admin v2 gate-resume --task <id> --reason "<why>" [--operator <name>] --confirm   (needs AF_OPERATOR_KEY)
+  af-admin v2 cancel --task <id> --reason "<why>" --confirm                 (durable request; honoured at a trusted boundary)
   af-admin submit --spec <file.json> --root <dir> [--preview|--record] [--json]   (record never starts a task)
   af-admin web serve [--port <n>] [--host <addr>] [--allow-non-loopback] [--no-redact]   (read-only workbench)
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
@@ -524,6 +526,27 @@ async function main() {
       console.log(`  approved at  : ${task.trusted_import.human_approval.resolved_at}`);
       console.log('  resume       : re-run the task through the V2 entrypoint with a humanApprovalProvider');
       console.log('                 (the provider re-mints the approval in-process; without it the task parks again)');
+      process.exit(0);
+    }
+    if (subCmd === 'cancel') {
+      // §6 G4: a cancel is a durable REQUEST honoured at a trusted boundary, never a promise.
+      const taskId = argValue('--task') ?? (args[2] && !args[2].startsWith('-') ? args[2] : null);
+      const reason = argValue('--reason');
+      if (!taskId) { console.error('error: --task <id> is required'); process.exit(2); }
+      if (!reason || !reason.trim()) { console.error('error: --reason "<why>" is required'); process.exit(2); }
+      if (!args.includes('--confirm')) { console.error('error: cancelling is an explicit operator action; re-run with --confirm'); process.exit(2); }
+      const tasksDir = argValue('--tasks-dir') || TASKS_DIR;
+      const res = requestCancel({ tasksDir, taskId, requestedBy: argValue('--requested-by') || process.env.USER || 'operator', reason: reason.trim() });
+      if (!res.ok) { console.error(`error: ${res.reason}`); process.exit(1); }
+      console.log(`v2 cancel: ${res.created ? 'requested' : 'already requested (idempotent)'} for ${taskId}`);
+      console.log(`  by     : ${res.request.requested_by}`);
+      console.log(`  reason : ${res.request.reason}`);
+      console.log('  note   : honoured at the next trusted boundary; once the ref update has begun it is recorded as too-late');
+      try {
+        const onDisk = JSON.parse(readFileSync(join(tasksDir, `${taskId}.json`), 'utf8'));
+        const outcome = onDisk?.trusted_import?.cancel_outcome;
+        if (outcome) console.log(`  outcome: ${outcome.action} at ${outcome.boundary} (${outcome.reason})`);
+      } catch { /* the request itself is recorded regardless */ }
       process.exit(0);
     }
     console.error(`unknown v2 subcommand: ${subCmd} (expected: gate-resume)`);
