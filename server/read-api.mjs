@@ -38,6 +38,8 @@ import { probeAfExecIsolation } from '../lib/af-exec-isolation.mjs';
 import { createV2Task, startOrResumeV2Task } from '../lib/v2-service.mjs';
 import { requestCancel, readCancelRequest } from '../lib/trusted-import/cancel.mjs';
 import { readTaskEvents } from '../lib/v2-events.mjs';
+import { contentIndex, readTaskBlob } from '../lib/content.mjs';
+import { describeRegistry, loadProjectRegistry } from '../lib/projects.mjs';
 import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -81,7 +83,7 @@ export function readTaskJson(tasksDir, taskId) {
 export function capabilities({ allowRecord = false, writesAuthenticated = false } = {}) {
   return {
     schema: 'af-v2-capabilities-v1',
-    read: { task_list: true, task_detail: true, task_evidence: true, task_events: true, exceptions: true, executors: true, environment: true, recovery_plan: true, submit_preflight: true },
+    read: { task_list: true, task_detail: true, task_evidence: true, task_events: true, task_content: true, exceptions: true, executors: true, environment: true, recovery_plan: true, submit_preflight: true },
     // Writes are advertised only when the operator started the server with --allow-write AND a
     // write token is configured: an unauthenticated mutating route is never exposed (§7.3).
     // Recovering/approving/promoting stay unavailable in both cases.
@@ -266,7 +268,16 @@ export function createReadApi({
 
     const at = now();
     try {
-      if (path === '/api/v2/capabilities') return sendJson(res, 200, shape({ ...capabilities({ allowRecord, writesAuthenticated: writeToken.configured === true }), generated_at: new Date(at).toISOString() }));
+      if (path === '/api/v2/capabilities') {
+        const registry = loadProjectRegistry({ file: env.AF_PROJECTS_FILE ?? join(process.cwd(), 'config', 'projects.json') });
+        return sendJson(res, 200, shape({
+          ...capabilities({ allowRecord, writesAuthenticated: writeToken.configured === true }),
+          projects: registry.ok
+            ? { configured: true, digest: registry.digest, count: registry.registry.projects.length }
+            : { configured: registry.configured === true, digest: null, count: 0, reason: registry.reason },
+          generated_at: new Date(at).toISOString(),
+        }));
+      }
       if (path === '/api/v2/tasks') {
         const model = buildOverview({ roots, now: at });
         const limit = Math.min(Number.parseInt(url.searchParams.get('limit') ?? '50', 10) || 50, 200);
@@ -307,6 +318,27 @@ export function createReadApi({
         const model = buildEvidenceView({ taskId: evidenceMatch[1], roots, now: at });
         if (model.blocks.task.read_status === 'missing') return sendJson(res, 404, shape(model));
         return sendJson(res, 200, shape(model));
+      }
+      const contentMatch = /^\/api\/v2\/tasks\/([^/]+)\/content(?:\/([^/]+))?$/.exec(path);
+      if (contentMatch) {
+        // §6 G6: only blobs REGISTERED in the task's own snapshot are addressable. The request
+        // supplies an identifier, never a path and never a raw CAS digest.
+        const taskId = contentMatch[1];
+        const blobId = contentMatch[2] ?? null;
+        const snapshot = readTaskJson(roots.tasks, taskId);
+        if (!snapshot) return sendJson(res, 404, shape({ error: 'not_found', reason: `no such task: ${taskId}` }));
+        if (!blobId) return sendJson(res, 200, shape(contentIndex(snapshot)));
+        const blob = readTaskBlob(snapshot, decodeURIComponent(blobId));
+        if (!blob.ok) return sendJson(res, 404, shape({ error: 'blob_unavailable', reason: blob.reason, task_id: taskId, blob_id: decodeURIComponent(blobId) }));
+        res.writeHead(200, {
+          'content-type': blob.media_type,
+          'content-length': blob.bytes.length,
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': "default-src 'none'; sandbox",
+        });
+        res.end(blob.bytes);
+        return;
       }
       const eventsMatch = /^\/api\/v2\/tasks\/([^/]+)\/events$/.exec(path);
       if (eventsMatch) {

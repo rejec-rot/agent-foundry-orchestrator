@@ -89,6 +89,23 @@ node --test
 
 ---
 
+## 3.1 项目注册表（§6 G6）
+
+项目根、验收 profile、工作区目录都来自**控制面**注册表，不来自提交者：
+
+```bash
+cp config/projects.example.json config/projects.json   # 然后按你的真实项目改
+chmod 600 config/projects.json                          # 或放仓库外，用 AF_PROJECTS_FILE 指过去
+node af-admin.mjs projects show                         # 只读：打印 digest 与解析出的 profile
+```
+
+- 默认读取 `config/projects.json`（**仓库里不存在**这个文件，只有一个 `config/projects.example.json` 示例；有守卫测试保证不会把示例当生产配置提交）。
+- 解析出的身份会带上 **registry 文件路径 + digest + 白名单 digest**，所以"这个 profile 到底从哪来"是可查的，而不是靠信任。
+- 损坏 / 重复 id / 相对路径 / 非 64 位 hex 资产摘要 → **一律拒绝**（不是"没有项目"也不是"任意项目"）。
+- 内容和资产：`GET /api/v2/tasks/:id/content` 列出该任务快照里**已登记**的 blob（只给 id/大小/类型，**不给宿主路径**）；`GET /api/v2/tasks/:id/content/<blob_id>` 按 id 取字节。**裸 CAS digest 和路径都不是可寻址的**，而且在登记与每次读取时都会重新校验包含关系与摘要（快照被改动 → 拒绝，不是"读到旧内容"）。
+
+---
+
 ## 4. 已知限制（不修好就不说它好）
 
 1. **没有 TLS，只应跑在 loopback。** 这是明文 HTTP。`--allow-non-loopback` 存在，但只在你有反代/隧道且清楚后果时用。

@@ -1,0 +1,18 @@
+{
+  "$comment": "EXAMPLE ONLY. This file is NOT loaded by anything: the control plane reads config/projects.json (or AF_PROJECTS_FILE). A test fixture's digests must never be copied into a production registry - the resolved identity carries the registry file and its digest precisely so an operator can tell which source produced it.",
+  "schema_version": "af-project-registry-v1",
+  "projects": [
+    {
+      "project_id": "example-project",
+      "root": "/srv/your-project",
+      "workspace_root": "/var/lib/agent-foundry/workspaces/example-project",
+      "acceptance_profiles": [
+        {
+          "profile_id": "unit-tests",
+          "acceptance": { "command": "node", "args": ["--test", "tests/gate.test.mjs"] },
+          "assets": []
+        }
+      ]
+    }
+  ]
+}

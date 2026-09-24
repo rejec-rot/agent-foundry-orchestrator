@@ -33,6 +33,7 @@ import { resolveV2HumanGate } from './lib/trusted-import/human-gate-resume.mjs';
 import { requestCancel } from './lib/trusted-import/cancel.mjs';
 import { createV2Task, startOrResumeV2Task } from './lib/v2-service.mjs';
 import { resolveWriteToken } from './server/web-auth.mjs';
+import { loadProjectRegistry, describeRegistry, projectRegistryFile } from './lib/projects.mjs';
 import { planPreview, recordSubmission } from './lib/submission.mjs';
 import { startReadApi } from './server/read-api.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
@@ -102,6 +103,7 @@ function printUsage() {
   af-admin v2 create --spec <file.json> --root <dir> [--json]              (V2 submission: no legacy planning path)
   af-admin v2 start --task <id> [--allow-failed-reentry] [--json]        (single execution owner; resumes, never re-authors)
   af-admin submit --spec <file.json> --root <dir> [--preview|--record] [--json]   (record never starts a task)
+  af-admin projects show [--file <path>] [--json]                                       (read-only view of the project registry)
   af-admin web serve [--port <n>] [--host <addr>] [--allow-non-loopback] [--no-redact]
                       [--allow-write] [--root <dir>] [--locks-dir <path>]   (read-only workbench; --allow-write
                       needs AF_WEB_TOKEN_FILE and enables the authenticated create/start/cancel routes)
@@ -655,6 +657,25 @@ async function main() {
     for (const signal of ['SIGINT', 'SIGTERM']) {
       process.on(signal, async () => { await handle.close(); process.exit(0); });
     }
+  } else if (mainCmd === 'projects') {
+    // §6 G6: read-only view of the control-plane project registry. It prints the registry digest and
+    // each project's resolved profile ids - never a credential, and never a write.
+    const file = argValue('--file') || projectRegistryFile(process.env);
+    const loaded = loadProjectRegistry({ file });
+    const model = describeRegistry({ registry: loaded.registry, file, digest: loaded.digest });
+    if (args.includes('--json')) console.log(JSON.stringify(model, null, 2));
+    else if (model.ok !== true) console.error(`error: ${loaded.reason}`);
+    else {
+      console.log(`registry : ${model.file}`);
+      console.log(`digest   : ${model.digest}`);
+      console.log(`projects : ${model.projects.length}`);
+      for (const project of model.projects) {
+        console.log(`  - ${project.project_id}`);
+        console.log(`      root     : ${project.root}`);
+        console.log(`      profiles : ${project.profiles.join(', ') || '(none)'}`);
+      }
+    }
+    process.exit(model.ok === true ? 0 : 1);
   } else if (mainCmd === 'submit') {
     // Stage-2 operator surface: PREVIEW and RECORD only. Nothing is scheduled or executed here -
     // starting a task stays a separate, explicitly authorised step.
