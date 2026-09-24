@@ -31,6 +31,7 @@ import { createHmac } from 'node:crypto';
 import { saveTaskWithVersion } from './lib/store.mjs';
 import { resolveV2HumanGate } from './lib/trusted-import/human-gate-resume.mjs';
 import { requestCancel } from './lib/trusted-import/cancel.mjs';
+import { createV2Task, startOrResumeV2Task } from './lib/v2-service.mjs';
 import { planPreview, recordSubmission } from './lib/submission.mjs';
 import { startReadApi } from './server/read-api.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
@@ -97,6 +98,8 @@ function printUsage() {
   af-admin a1a sweep [--json] [--confirm]
   af-admin v2 gate-resume --task <id> --reason "<why>" [--operator <name>] --confirm   (needs AF_OPERATOR_KEY)
   af-admin v2 cancel --task <id> --reason "<why>" --confirm                 (durable request; honoured at a trusted boundary)
+  af-admin v2 create --spec <file.json> --root <dir> [--json]              (V2 submission: no legacy planning path)
+  af-admin v2 start --task <id> [--allow-failed-reentry] [--json]        (single execution owner; resumes, never re-authors)
   af-admin submit --spec <file.json> --root <dir> [--preview|--record] [--json]   (record never starts a task)
   af-admin web serve [--port <n>] [--host <addr>] [--allow-non-loopback] [--no-redact]   (read-only workbench)
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
@@ -527,6 +530,53 @@ async function main() {
       console.log('  resume       : re-run the task through the V2 entrypoint with a humanApprovalProvider');
       console.log('                 (the provider re-mints the approval in-process; without it the task parks again)');
       process.exit(0);
+    }
+    if (subCmd === 'create' || subCmd === 'start') {
+      // §6 G2: the dedicated V2 submission + execution-ownership service (no legacy planning path).
+      const tasksDir = argValue('--tasks-dir') || TASKS_DIR;
+      const locksDir = argValue('--locks-dir') || LOCKS_DIR;
+
+      if (subCmd === 'create') {
+        const specFile = argValue('--spec') ?? (args[2] && !args[2].startsWith('-') ? args[2] : null);
+        if (!specFile) { console.error('error: --spec <file.json> is required'); process.exit(2); }
+        let spec;
+        try { spec = JSON.parse(readFileSync(specFile, 'utf8')); } catch (err) {
+          console.error(`error: cannot read the submission spec ${specFile}: ${err.message}`); process.exit(2);
+        }
+        const roots = [];
+        for (let i = 0; i < args.length; i += 1) if (args[i] === '--root' && args[i + 1]) roots.push(args[i + 1]);
+        if (roots.length === 0 && process.env.AF_SUBMISSION_ROOTS) roots.push(...process.env.AF_SUBMISSION_ROOTS.split(':').filter(Boolean));
+        if (roots.length === 0) { console.error('error: at least one --root <dir> is required so target_path can be contained'); process.exit(2); }
+
+        const res = createV2Task({ spec, allowedRoots: roots, tasksDir, submissionsDir: argValue('--submissions-dir') || null });
+        if (args.includes('--json')) console.log(JSON.stringify(res, null, 2));
+        else if (!res.ok) console.error(`error: ${res.first_failure ?? 'REFUSED'}: ${res.reason}`);
+        else {
+          console.log(`v2 create: ${res.created ? 'created' : 'already exists (idempotent)'}`);
+          console.log(`  task_id      : ${res.task_id}`);
+          console.log(`  operation_id : ${res.operation_id ?? '(existing task)'}`);
+          console.log(`  state        : ${res.task?.state ?? 'CREATED'} (start it with: af-admin v2 start --task ${res.task_id})`);
+        }
+        process.exit(res.ok ? 0 : 1);
+      }
+
+      const taskId = argValue('--task') ?? (args[2] && !args[2].startsWith('-') ? args[2] : null);
+      if (!taskId) { console.error('error: --task <id> is required'); process.exit(2); }
+      const { continueTask } = await import('./orchestrator.mjs');
+      const res = await startOrResumeV2Task({
+        taskId,
+        tasksDir,
+        locksDir,
+        allowFailedReentry: args.includes('--allow-failed-reentry'),
+        runner: async ({ mode, task }) => {
+          console.log(`v2 start: ${mode} ${taskId} (state=${task.state})`);
+          await continueTask(taskId, undefined, { tasksDir, allowV2FailedReentry: args.includes('--allow-failed-reentry') });
+        },
+      });
+      if (args.includes('--json')) console.log(JSON.stringify(res, null, 2));
+      else if (!res.ok) console.error(`error: ${res.outcome}: ${res.reason}`);
+      else console.log(`v2 start: ${res.outcome} (${res.mode}) for ${taskId}`);
+      process.exit(res.ok ? 0 : 1);
     }
     if (subCmd === 'cancel') {
       // §6 G4: a cancel is a durable REQUEST honoured at a trusted boundary, never a promise.
