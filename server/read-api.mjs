@@ -37,6 +37,7 @@ import { loadExecutorStatus } from '../lib/executor-status.mjs';
 import { probeAfExecIsolation } from '../lib/af-exec-isolation.mjs';
 import { createV2Task, startOrResumeV2Task } from '../lib/v2-service.mjs';
 import { requestCancel, readCancelRequest } from '../lib/trusted-import/cancel.mjs';
+import { readTaskEvents } from '../lib/v2-events.mjs';
 import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -72,10 +73,15 @@ export function recoveryPlanFor({ taskId, roots, expectedStateVersion = null, no
 }
 
 /** What the first slice actually implements - honest, so the UI never shows a dead button. */
+/** Read the task snapshot exactly as stored; callers decide how to report a missing file. */
+export function readTaskJson(tasksDir, taskId) {
+  try { return JSON.parse(readFileSync(join(tasksDir, `${taskId}.json`), 'utf8')); } catch { return null; }
+}
+
 export function capabilities({ allowRecord = false, writesAuthenticated = false } = {}) {
   return {
     schema: 'af-v2-capabilities-v1',
-    read: { task_list: true, task_detail: true, task_evidence: true, exceptions: true, executors: true, environment: true, recovery_plan: true, submit_preflight: true },
+    read: { task_list: true, task_detail: true, task_evidence: true, task_events: true, exceptions: true, executors: true, environment: true, recovery_plan: true, submit_preflight: true },
     // Writes are advertised only when the operator started the server with --allow-write AND a
     // write token is configured: an unauthenticated mutating route is never exposed (§7.3).
     // Recovering/approving/promoting stay unavailable in both cases.
@@ -301,6 +307,22 @@ export function createReadApi({
         const model = buildEvidenceView({ taskId: evidenceMatch[1], roots, now: at });
         if (model.blocks.task.read_status === 'missing') return sendJson(res, 404, shape(model));
         return sendJson(res, 200, shape(model));
+      }
+      const eventsMatch = /^\/api\/v2\/tasks\/([^/]+)\/events$/.exec(path);
+      if (eventsMatch) {
+        // §6 G5: a bounded page of the phase-event projection, reconciled against the task snapshot.
+        // A missing history is reported as `missing` with a marked gap - never as a clean timeline.
+        const taskId = eventsMatch[1];
+        const snapshot = readTaskJson(roots.tasks, taskId);
+        if (!snapshot) return sendJson(res, 404, shape({ error: 'not_found', reason: `no such task: ${taskId}` }));
+        const model = readTaskEvents({
+          eventsDir: roots.events ?? join(roots.runtime ?? roots.tasks, 'v2-events'),
+          taskId,
+          snapshot,
+          limit: Number.parseInt(url.searchParams.get('limit') ?? '50', 10),
+          offset: Number.parseInt(url.searchParams.get('offset') ?? '0', 10),
+        });
+        return sendJson(res, model.ok ? 200 : 500, shape(model));
       }
       if (path.startsWith('/api/')) return sendJson(res, 404, { error: 'not_found', reason: `no such API route: ${path}` });
 

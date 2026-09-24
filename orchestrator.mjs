@@ -35,6 +35,7 @@ import { readLock, isLockStale } from './lib/tasklock.mjs';
 import { authorResultPersisted, reviewResultPersisted, latestAuthoritativeAcceptance } from './lib/recovery.mjs';
 import { WorktreeSession, buildPlanBatches } from './lib/worktree.mjs';
 import { assertTrustedImportAdmission, runTrustedImportTask } from './lib/trusted-import/orchestrator-adapter.mjs';
+import { appendTaskEvent, eventsDirFor, recordTrustedImportError } from './lib/v2-events.mjs';
 
 const TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 
@@ -964,6 +965,14 @@ export async function executeTask(task, adapters = ADAPTERS, { governanceBridge 
     } catch { /* ignore */ }
     task.state = 'FAILED';
     task.failure_reason = String(err?.message ?? err);
+    // §6 G5: keep the legacy message AND persist the structured code/details beside it. V2 tasks
+    // only - the field is part of the trusted-import projection.
+    if (task.trusted_import?.enabled === true) {
+      try {
+        recordTrustedImportError(task, err);
+        appendTaskEvent({ eventsDir: eventsDirFor(tasksDirOf(task)), taskId: task.task_id, type: 'failure', phase: task.trusted_import?.phase ?? null, detail: { message: task.failure_reason, code: task.trusted_import.last_error.code } });
+      } catch { /* the projection must never mask the original failure */ }
+    }
     if (err?.error_classification) {
       task.error_classification = err.error_classification;
       task.retryable = err.error_classification.retryable;

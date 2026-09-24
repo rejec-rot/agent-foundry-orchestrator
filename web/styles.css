@@ -101,3 +101,9 @@ pre.evidence { background: var(--panel-2); border: 1px solid var(--line); border
 
 .evidence.bad { border-color: #b4232a; color: #ffb4b4; }
 .detail-actions { padding: 0 12px 12px; }
+
+.timeline { padding: 0 12px 8px; }
+.timeline-list { list-style: none; margin: 6px 0; padding: 0; font-size: 12px; }
+.timeline-list li { padding: 2px 0; border-bottom: 1px solid #2a2a2a; }
+.timeline-list time { color: #8a8a8a; margin-right: 6px; }
+.gap { color: #ffcc66; font-size: 12px; margin: 4px 0; }

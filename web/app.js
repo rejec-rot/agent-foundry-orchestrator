@@ -49,6 +49,18 @@ async function postWrite(path, body = {}) {
   return model;
 }
 
+function renderTimeline(model) {
+  const host = $('timeline');
+  if (!host) return;
+  if (!model || model.ok === false) { host.innerHTML = `<p class="hint">时间线不可读${model?.reason ? `：${esc(model.reason)}` : ''}</p>`; return; }
+  const gap = model.gap?.marked === true
+    ? `<p class="gap">⚠ 事件与任务快照不一致（以任务文件为准）：${esc(model.gap.reason)}</p>` : '';
+  const rows = model.events.length > 0
+    ? model.events.slice().reverse().map((e) => `<li><time>${esc(String(e.at).replace('T', ' ').slice(0, 19))}</time> <b>${esc(e.type)}</b>${e.phase ? ` · ${esc(e.phase)}` : ''}${e.detail ? ` · ${esc(JSON.stringify(e.detail).slice(0, 90))}` : ''}</li>`).join('')
+    : `<li class="hint">${model.missing ? '没有事件历史（该任务是历史任务或事件写入失败）' : '暂无事件'}</li>`;
+  host.innerHTML = `${gap}<ul class="timeline-list">${rows}</ul><p class="hint">共 ${model.total} 条${model.has_more ? '（仅显示最新 20 条）' : ''}</p>`;
+}
+
 function refreshWriteControls() {
   const caps = state.capabilities?.write ?? {};
   const can = (name) => caps[name] === true && state.token.length > 0;
@@ -153,6 +165,11 @@ async function selectTask(taskId) {
       getJson(`/api/v2/tasks/${encodeURIComponent(taskId)}/evidence`).catch((err) => ({ error: err.message })),
     ]);
     renderDetail(taskPayload.model ?? taskPayload, evidencePayload.error ? evidencePayload : (evidencePayload.model ?? evidencePayload));
+    // §6 G5 timeline: a bounded page of the phase-event projection, and an explicit banner when the
+    // projection disagrees with the task snapshot (the task file stays the lifecycle truth).
+    getJson(`/api/v2/tasks/${encodeURIComponent(taskId)}/events?limit=20`)
+      .then((payload) => renderTimeline(payload.model ?? payload))
+      .catch(() => renderTimeline(null));
   } catch (err) {
     el.innerHTML = `<p class="missing">读取失败：${esc(err.message)}</p>`;
   }
