@@ -5,6 +5,7 @@
 // escapes the web root is refused, an unknown task is 404 (not "no tasks"), and the default bind
 // is loopback.
 
+import './helpers/executors-fixture.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -133,4 +134,30 @@ test('WEBAPI-6: the default bind is loopback and the capabilities are honest abo
     assert.ok(Object.values(caps.write).every((v) => v === false), 'no write capability may be advertised in this slice');
     assert.equal(caps.read.task_list, true);
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('WEBAPI-EXEC: the executor panel reflects the operator disable list, not just the registry', async () => {
+  // The deployed registry answers "can this executor run"; the operator's restriction file answers
+  // "may it". Reporting AVAILABLE for an executor the platform will refuse is a false statement.
+  const fx = fixture();
+  const file = join(fx.root, 'operator-executors.json');
+  writeFileSync(file, JSON.stringify({ disabled: ['codex'], reason: 'test: no quota' }));
+  const previous = process.env.AF_OPERATOR_EXECUTORS_FILE;
+  process.env.AF_OPERATOR_EXECUTORS_FILE = file;
+  try {
+    const { url } = await serve(fx);
+    const payload = await (await fetch(`${url}/api/v2/executors`)).json();
+    const model = payload.model ?? payload;
+    const entries = model.entries ?? model.executors ?? [];
+    const codex = entries.find((e) => e.id === 'codex');
+    assert.ok(codex, 'the panel must still LIST the executor (hiding it would be a different lie)');
+    assert.equal(codex.availability, 'DISABLED_BY_OPERATOR');
+    assert.match(String(codex.reason), /disabled by the operator/);
+    const others = entries.filter((e) => e.id !== 'codex');
+    assert.ok(others.every((e) => e.availability !== 'DISABLED_BY_OPERATOR'), 'only the disabled one is marked');
+  } finally {
+    if (previous === undefined) delete process.env.AF_OPERATOR_EXECUTORS_FILE;
+    else process.env.AF_OPERATOR_EXECUTORS_FILE = previous;
+    rmSync(fx.root, { recursive: true, force: true });
+  }
 });

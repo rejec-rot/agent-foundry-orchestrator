@@ -42,6 +42,7 @@ import { contentIndex, readTaskBlob } from '../lib/content.mjs';
 import { describeRegistry, loadProjectRegistry } from '../lib/projects.mjs';
 import { collaborationView, queueMessage } from '../lib/collaboration.mjs';
 import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
+import { disabledExecutors } from '../lib/operator-control.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 export const WEB_ROOT = join(HERE, '..', 'web');
@@ -322,11 +323,17 @@ export function createReadApi({
       if (path === '/api/v2/executors') {
         // A read-only projection of the capability truth; never probes an executor.
         const status = loadExecutorStatus();
+        // The deployed registry says whether an executor CAN run; the operator's restriction file
+        // says whether it MAY. Showing "AVAILABLE" for an executor the system will refuse is a false
+        // statement to the operator, so the disable list wins here too.
+        const operatorDisabled = new Set(disabledExecutors());
         const executors = [...(status?.values?.() ?? [])].map((entry) => ({
           id: entry.executor_id,
-          availability: entry.availability_status,
+          availability: operatorDisabled.has(entry.executor_id) ? 'DISABLED_BY_OPERATOR' : entry.availability_status,
           capability: entry.capability_status,
-          reason: entry.reason ?? null,
+          reason: operatorDisabled.has(entry.executor_id)
+            ? 'disabled by the operator (config/operator-executors.json); the platform will refuse to bind or run it'
+            : (entry.reason ?? null),
         }));
         return sendJson(res, 200, shape({ schema: 'af-v2-executors-v1', generated_at: new Date(at).toISOString(), executors, source: 'executor capability registry (read-only projection)' }));
       }
