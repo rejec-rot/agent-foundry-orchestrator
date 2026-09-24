@@ -37,6 +37,10 @@
   "tasks": [
     {
       "task_id": "T-OK",
+      "goal": null,
+      "phase": null,
+      "author_executor": null,
+      "reviewer_executor": null,
       "state": "COMPLETED",
       "state_version": 7,
       "boundary_state": "DISENGAGED",
@@ -48,6 +52,10 @@
     },
     {
       "task_id": "T-RETAIN",
+      "goal": null,
+      "phase": null,
+      "author_executor": null,
+      "reviewer_executor": null,
       "state": "FAILED",
       "state_version": 3,
       "boundary_state": "PROTECTION_RETAINED_PENDING_RECOVERY",

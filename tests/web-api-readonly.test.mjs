@@ -161,3 +161,41 @@ test('WEBAPI-EXEC: the executor panel reflects the operator disable list, not ju
     rmSync(fx.root, { recursive: true, force: true });
   }
 });
+
+test('WEBAPI-LIST: the task lane projection carries goal/phase and never the whole record', async () => {
+  // The operator scans WHAT each task is doing; an id alone cannot be scanned. That is a deliberate
+  // widening of the whitelist, so it is pinned: the two fields are present, and the record's own
+  // internals (policy, acceptance, digests) stay out of the browser payload.
+  const fx = fixture();
+  const tasksDir = fx.roots.tasks;
+  writeFileSync(join(tasksDir, 'TASK-LANE.json'), JSON.stringify({
+    task_id: 'TASK-LANE',
+    state: 'COMPLETED',
+    state_version: 9,
+    goal: 'ship the lane projection',
+    author_executor: 'command-code',
+    reviewer_executor: 'cline',
+    trusted_import: {
+      enabled: true,
+      phase: 'PROMOTED',
+      policy: { allowed_root: ['secret/**'] },
+      acceptance: { acceptance_profile_digest: 'do-not-send-this' },
+      candidate_dir: '/tmp/private/candidate',
+    },
+  }, null, 2));
+  try {
+    const { url } = await serve(fx);
+    const payload = await (await fetch(`${url}/api/v2/tasks`)).json();
+    const model = payload.model ?? payload;
+    const row = (model.tasks ?? []).find((t) => t.task_id === 'TASK-LANE');
+    assert.ok(row, 'the task must appear in the lane');
+    assert.equal(row.goal, 'ship the lane projection');
+    assert.equal(row.phase, 'PROMOTED');
+    assert.equal(row.author_executor, 'command-code');
+    assert.equal(row.state_version, 9);
+    const blob = JSON.stringify(row);
+    for (const forbidden of ['do-not-send-this', '/tmp/private', 'allowed_root', 'trusted_import']) {
+      assert.equal(blob.includes(forbidden), false, `the lane must not carry ${forbidden}`);
+    }
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});

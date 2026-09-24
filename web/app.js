@@ -17,6 +17,16 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+
+/** One time format everywhere: `2026-09-24 02:45:29` (local). Raw ISO stays in the evidence well. */
+function fmtTime(value) {
+  const raw = String(value ?? '');
+  if (!raw) return '—';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 async function getJson(path) {
@@ -50,6 +60,8 @@ async function postWrite(path, body = {}) {
 }
 
 const STATUS_LABEL = { queued: '已排队', received: '已被 run 接收', applied: '已落实（有独立证据）' };
+/** Counts as chips, because a number without its state word is a riddle. */
+const m_count = (status, label, n) => `<span class="chip ${status}">${esc(label)} ${esc(n)}</span>`;
 
 function renderCollab(model) {
   const host = $('collab');
@@ -58,15 +70,19 @@ function renderCollab(model) {
   const rows = model.messages.length > 0
     ? model.messages.map((m) => `<li class="msg"><span class="chip ${esc(m.status)}">${esc(STATUS_LABEL[m.status] ?? m.status)}</span>
         <span class="msg-body">${esc(m.message)}</span>
-        <span class="hint">${esc(String(m.created_at).replace('T', ' ').slice(0, 19))}${m.received_by.length > 0 ? ` · run ${esc(m.received_by.map((r) => r.run_id).join(', '))}` : ''}</span>
-        <span class="hint">${esc(m.claim)}</span></li>`).join('')
-    : '<li class="hint">没有留言</li>';
+        <span class="claim">${esc(fmtTime(m.created_at))}${m.received_by.length > 0 ? ` · run ${esc(m.received_by.map((r) => r.run_id).join(', '))}` : ''}</span>
+        <span class="claim">${esc(m.claim)}</span></li>`).join('')
+    : '<li class="msg"><span class="hint">还没有留言。留言会在下一次 run/resume 开始时被收集，不会打断正在运行的进程。</span></li>';
   const acts = model.activity.length > 0
-    ? `<ul class="timeline-list">${model.activity.map((a) => `<li>${esc(a.executor ?? '?')}${a.role ? ` · ${esc(a.role)}` : ''} · ${esc(a.status ?? '?')} · ${esc(a.run_id)}</li>`).join('')}</ul>`
+    ? `<ul class="timeline-list">${model.activity.map((a) => `<li><b>${esc(a.executor ?? '?')}</b>${a.role ? `<span class="phase">${esc(a.role)}</span>` : ''}<span class="detail">${esc(a.status ?? '?')} · ${esc(a.run_id)}</span></li>`).join('')}</ul>`
     : '<p class="hint">没有运行记录。</p>';
-  host.innerHTML = `<p class="hint">统计：已排队 ${model.counts.queued} · 已被接收 ${model.counts.received} · 已落实 ${model.counts.applied}</p>
+  host.innerHTML = `<div class="tags">
+      ${m_count('queued', '已排队', model.counts.queued)}
+      ${m_count('received', '已被接收', model.counts.received)}
+      ${m_count('applied', '已落实', model.counts.applied)}
+    </div>
     <ul class="timeline-list">${rows}</ul>
-    <p class="hint">当前/近期运行：</p>${acts}`;
+    <p class="hint" style="margin-top:8px">当前/近期运行：</p>${acts}`;
 }
 
 function renderTimeline(model) {
@@ -76,7 +92,7 @@ function renderTimeline(model) {
   const gap = model.gap?.marked === true
     ? `<p class="gap">⚠ 事件与任务快照不一致（以任务文件为准）：${esc(model.gap.reason)}</p>` : '';
   const rows = model.events.length > 0
-    ? model.events.slice().reverse().map((e) => `<li><time>${esc(String(e.at).replace('T', ' ').slice(0, 19))}</time> <b>${esc(e.type)}</b>${e.phase ? ` · ${esc(e.phase)}` : ''}${e.detail ? ` · ${esc(JSON.stringify(e.detail).slice(0, 90))}` : ''}</li>`).join('')
+    ? model.events.slice().reverse().map((e) => `<li><time>${esc(fmtTime(e.at))}</time><b>${esc(e.type)}</b>${e.phase ? `<span class="phase">${esc(e.phase)}</span>` : ''}${e.detail ? `<span class="detail">${esc(JSON.stringify(e.detail).slice(0, 160))}</span>` : ''}</li>`).join('')
     : `<li class="hint">${model.missing ? '没有事件历史（该任务是历史任务或事件写入失败）' : '暂无事件'}</li>`;
   host.innerHTML = `${gap}<ul class="timeline-list">${rows}</ul><p class="hint">共 ${model.total} 条${model.has_more ? '（仅显示最新 20 条）' : ''}</p>`;
 }
@@ -104,6 +120,7 @@ function refreshWriteControls() {
   }
   const tokenNote = $('token-note');
   if (tokenNote) tokenNote.textContent = state.token.length > 0 ? '令牌已保存到本页会话（关闭标签页即失效）' : '无令牌时所有写操作都会失败；服务端拒绝未鉴权的请求';
+  setModeBadge();
   const mode = $('mode-line');
   if (mode) mode.textContent = state.capabilities?.write?.create_task === true
     ? '写操作已启用：创建 / 启动 / 取消（每次请求都需令牌；审批与提升仍不开放）。'
@@ -126,10 +143,27 @@ async function runWrite(label, fn) {
 function setConn(live, detail) {
   const el = $('conn');
   el.className = `conn ${live ? 'live' : 'dead'}`;
-  el.textContent = live ? '已连接' : `连接中断：${detail ?? '未知原因'}`;
+  const label = live ? '已连接' : `连接中断：${detail ?? '未知原因'}`;
+  // The pip is part of the indicator, so it is rebuilt rather than wiped by textContent.
+  el.innerHTML = `<span class="pip" aria-hidden="true"></span>${esc(label)}`;
 }
 
 function tag(text, cls = '') { return `<span class="tag ${cls}">${esc(text)}</span>`; }
+
+const LOCK_GLYPH = '<svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 11V8a5 5 0 0110 0v3" fill="none" stroke="currentColor" stroke-width="2.4" /><rect x="4.5" y="11" width="15" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="2.4" /></svg>';
+
+function setModeBadge() {
+  const el = $('mode-badge');
+  if (!el) return;
+  const writable = state.capabilities?.write?.create_task === true;
+  const hasToken = state.token.length > 0;
+  const text = !writable ? '只读' : (hasToken ? '可写' : '仅读（写路由已启用）');
+  el.className = `mode badge ${writable ? 'write' : 'readonly'}`;
+  el.title = writable
+    ? (hasToken ? '写操作可用：创建 / 启动 / 取消（审批与提升仍不开放）' : '服务端已启用写路由；保存操作令牌后才能使用')
+    : '首版只读：没有任何启动/取消/批准/提升操作';
+  el.innerHTML = `${LOCK_GLYPH}${esc(text)}`;
+}
 
 function renderTasks() {
   const q = state.filter.trim().toLowerCase();
@@ -149,14 +183,19 @@ function renderTasks() {
   $('tasks').innerHTML = rows.map((t) => `
     <button class="row" role="listitem" data-id="${esc(t.task_id)}" aria-current="${state.selected === t.task_id}">
       <div class="id">${esc(t.task_id)}</div>
+      ${t.goal ? `<div class="goal">${esc(t.goal)}</div>` : ''}
       <div class="tags">
         ${tag(t.state ?? 'unknown', `state-${esc(t.state ?? '')}`)}
+        ${t.phase ? tag(t.phase) : ''}
         ${t.boundary_state ? tag(`边界 ${t.boundary_state}`) : ''}
         ${t.needs_human ? tag('需人工', 'state-WAITING_HUMAN') : ''}
         ${t.lock_stale ? tag('锁疑似陈旧') : ''}
         ${t.read_status && t.read_status !== 'ok' ? tag(`读取 ${t.read_status}`, 'unverifiable') : ''}
       </div>
+      <div class="id">${esc(t.author_executor ?? '—')} / ${esc(t.reviewer_executor ?? '—')} · v${esc(t.state_version ?? '—')} · ${esc(fmtTime(t.as_of))}</div>
     </button>`).join('');
+  const count = $('task-count');
+  if (count) count.textContent = `${rows.length}/${state.tasks.length}`;
 
   for (const el of $('tasks').querySelectorAll('.row')) {
     el.addEventListener('click', () => selectTask(el.dataset.id));
@@ -165,9 +204,10 @@ function renderTasks() {
 
 function stageStrip(currentPhase) {
   const idx = STAGES.findIndex(([, key]) => key === currentPhase);
-  return `<div class="stages">${STAGES.map(([label, key], i) => {
+  return `<div class="runway" role="list" aria-label="受信阶段">${STAGES.map(([label, key], i) => {
     const cls = idx === -1 ? '' : (i < idx ? 'done' : (i === idx ? 'current' : ''));
-    return `<span class="stage ${cls}">${esc(label)}</span>`;
+    const state = cls === 'done' ? '已完成' : (cls === 'current' ? '当前阶段' : '未到达');
+    return `<span class="stage ${cls}" role="listitem"${cls === 'current' ? ' aria-current="step"' : ''} title="${esc(key)} · ${state}"><span class="n" aria-hidden="true">${i + 1}</span>${esc(label)}</span>`;
   }).join('')}</div>`;
 }
 
@@ -248,32 +288,43 @@ function renderDetail(model, evidence) {
   const boundary = value.boundary_state ?? (value.trusted_import?.boundary_state ?? null);
   const boundaryAlert = value.boundary_alert ?? null;
 
+  const detailPhase = $('detail-phase');
+  if (detailPhase) detailPhase.textContent = phase ? `阶段 ${phase}` : '';
   $('detail').innerHTML = `
-    <div class="detail">
+    <div class="work-head">
       <h3>${esc(value.goal ?? taskIdSafe(model))}</h3>
       <div class="tags">
         ${tag(value.state ?? 'unknown', `state-${esc(value.state ?? '')}`)}
         ${phase ? tag(`阶段 ${phase}`) : ''}
         ${boundary ? tag(`边界 ${boundary}`) : ''}
+        ${value.trusted_import?.promotion?.canonical_oid ? tag(`提升 ${String(value.trusted_import.promotion.canonical_oid).slice(0, 8)}`, 'state-COMPLETED') : ''}
       </div>
       ${stageStrip(phase)}
+    </div>
+    <div class="block">
+      <h2>任务事实</h2>
       <dl class="kv">
         <dt>任务 ID</dt><dd>${esc(value.task_id ?? taskIdSafe(model))}</dd>
         <dt>状态版本</dt><dd>${esc(value.state_version ?? '—')}</dd>
-        <dt>更新时间</dt><dd>${esc(value.updated_at ?? '—')}</dd>
+        <dt>更新时间</dt><dd>${esc(fmtTime(value.updated_at))}</dd>
         <dt>作者 / 评审</dt><dd>${esc(value.author_executor ?? '—')} / ${esc(value.reviewer_executor ?? '—')}</dd>
         <dt>修复循环</dt><dd>${esc(value.trusted_import?.fix_loop ? `${value.trusted_import.fix_loop.attempts}/${value.trusted_import.fix_loop.max_attempts}` : '—')}</dd>
         <dt>待人工</dt><dd>${esc((value.trusted_import?.pending_human_decisions ?? []).map((d) => d.path).join(', ') || '—')}</dd>
         <dt>边界告警</dt><dd>${boundaryAlert ? esc(`${boundaryAlert.severity ?? 'warning'} · occurrences=${boundaryAlert.occurrences ?? 0}`) : '—'}</dd>
         <dt>任务块</dt><dd>${blockValue(task)}</dd>
-        <dt>数据时间</dt><dd>${esc(model.generated_at ?? '—')}</dd>
+        <dt>数据时间</dt><dd>${esc(fmtTime(model.generated_at))}</dd>
       </dl>
+    </div>
+    <div class="block">
+      <h2>恢复</h2>
       <div class="actions">
-        <button type="button" id="recovery-plan-btn" data-id="${esc(value.task_id ?? taskIdSafe(model))}" data-version="${esc(value.state_version ?? '')}">恢复计划（只读）</button>
+        <button type="button" class="btn" id="recovery-plan-btn" data-id="${esc(value.task_id ?? taskIdSafe(model))}" data-version="${esc(value.state_version ?? '')}">恢复计划（只读）</button>
       </div>
       <div id="recovery-plan">${renderPlanHtml(value.task_id ?? taskIdSafe(model))}</div>
+    </div>
+    <div class="block">
       <h2>证据</h2>
-      ${evidence?.error ? `<p class="unverifiable">证据读取失败：${esc(evidence.error)}</p>` : `<pre class="evidence">${esc(JSON.stringify(evidence, null, 2))}</pre>`}
+      ${evidence?.error ? `<p class="unverifiable">证据读取失败：${esc(evidence.error)}</p>` : `<pre class="evidence" tabindex="0">${esc(JSON.stringify(evidence, null, 2))}</pre>`}
     </div>`;
 
   const planBtn = document.getElementById('recovery-plan-btn');
@@ -323,7 +374,7 @@ async function refreshList() {
     const payload = await getJson('/api/v2/tasks');
     const model = payload.model ?? payload;
     state.tasks = (model.tasks ?? []).map((t) => ({ ...t, read_status: t.read_status ?? model.blocks?.tasks?.read_status ?? 'ok' }));
-    $('asof').textContent = `数据更新于 ${model.generated_at ?? ''}`;
+    $('asof').textContent = `数据 ${fmtTime(model.generated_at)}`;
     setConn(true);
     renderTasks();
   } catch (err) {
@@ -342,8 +393,12 @@ async function refreshSide() {
       <dt>执行器隔离</dt><dd>${esc(env.executor_isolation?.capable ? '已具备' : '未验证/未配置')}</dd>`;
     const execPayload = await getJson('/api/v2/executors');
     const exec = execPayload.model ?? execPayload;
-    $('executors').innerHTML = (exec.executors ?? []).map((e) => `
-      <dt>${esc(e.id)}</dt><dd>${esc(e.availability)}${e.reason ? ` · ${esc(e.reason)}` : ''}</dd>`).join('') || '<dt>—</dt><dd>无可读执行器</dd>';
+    $('executors').innerHTML = (exec.executors ?? []).map((e) => {
+      const full = `${e.availability}${e.reason ? ` · ${e.reason}` : ''}`;
+      const cls = e.availability === 'AVAILABLE' ? 'state-COMPLETED'
+        : (e.availability === 'DISABLED_BY_OPERATOR' ? 'state-WAITING_HUMAN' : 'unverifiable');
+      return `<dt>${esc(e.id)}</dt><dd><span class="tag ${cls}">${esc(e.availability)}</span>${e.reason ? ` <span class="clamp" title="${esc(full)}">${esc(e.reason)}</span>` : ''}</dd>`;
+    }).join('') || '<dt>—</dt><dd>无可读执行器</dd>';
   } catch (err) {
     $('environment').innerHTML = `<dt>环境</dt><dd class="unverifiable">读取失败：${esc(err.message)}</dd>`;
   }
