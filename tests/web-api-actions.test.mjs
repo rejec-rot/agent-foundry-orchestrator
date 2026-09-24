@@ -38,13 +38,16 @@ const spec = (target, extra = {}) => ({
 });
 
 const started = [];
+const TEST_TOKEN = { configured: true, token: 'webact-token', source: 'test' };
+const AUTH = { authorization: 'Bearer webact-token', 'x-af-csrf': '1' };
+
 async function serve(fx, options = {}) {
   const handle = await startReadApi({ roots: fx.roots, allowedRoots: [fx.target], ...options });
   started.push(handle);
   return handle;
 }
 
-const post = (url, path, body) => fetch(`${url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+const post = (url, path, body, headers = {}) => fetch(`${url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 
 after(async () => { for (const h of started) await h.close(); });
 
@@ -76,23 +79,30 @@ test('WEBACT-2: preflight refuses forged platform fields and an out-of-root targ
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });
 
-test('WEBACT-3: record is refused on a read-only server and never starts anything when enabled', async () => {
+test('WEBACT-3: record needs BOTH --allow-write and the operator token, and never starts anything', async () => {
   const fx = fixture();
   try {
+    // No token configured at all: the server refuses mutating routes rather than exposing them.
     const readOnly = await serve(fx);
     const refused = await post(readOnly.url, '/api/v2/tasks/record', { spec: spec(fx.target) });
     assert.equal(refused.status, 403, 'record must be opt-in');
-    assert.match((await refused.json()).model.reason, /read-only|--allow-write/);
+    assert.match((await refused.json()).model.reason, /writes are disabled|read-only/);
 
-    const w = await serve(fx, { allowRecord: true, env: { ...process.env, AF_SUBMISSION_DIR: fx.submissions } });
-    // (the server forwards `env`, so the record lands in this fixture rather than the repo)
-    const first = await post(w.url, '/api/v2/tasks/record', { spec: spec(fx.target) });
+    // --allow-write without a token is still NOT enough (§7.3).
+    const unauthenticated = await serve(fx, { allowRecord: true, env: { ...process.env, AF_SUBMISSION_DIR: fx.submissions } });
+    const stillRefused = await post(unauthenticated.url, '/api/v2/tasks/record', { spec: spec(fx.target) });
+    assert.equal(stillRefused.status, 403);
+    assert.match((await stillRefused.json()).model.reason, /writes are disabled/);
+
+    // Authenticated + --allow-write: recording works and still never starts a task.
+    const w = await serve(fx, { allowRecord: true, token: TEST_TOKEN, env: { ...process.env, AF_SUBMISSION_DIR: fx.submissions } });
+    const first = await post(w.url, '/api/v2/tasks/record', { spec: spec(fx.target) }, AUTH);
     assert.equal(first.status, 200, JSON.stringify(await first.clone().json()));
     const record = (await first.json()).model;
     assert.equal(record.record.state, 'PREPARED');
     assert.equal(record.record.started, false, 'recording must never start a task');
 
-    const dup = await post(w.url, '/api/v2/tasks/record', { spec: spec(fx.target) });
+    const dup = await post(w.url, '/api/v2/tasks/record', { spec: spec(fx.target) }, AUTH);
     assert.equal(dup.status, 200);
     assert.equal((await dup.json()).model.duplicate, true);
     const files = readdirSync(fx.submissions).filter((n) => n.endsWith('.json'));
@@ -121,19 +131,30 @@ test('WEBACT-4: the recovery plan is read-only, version-checked, and names the H
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });
 
-test('WEBACT-5: no other mutating route exists (start/cancel/approve/promote have none)', async () => {
+test('WEBACT-5: recover/approve/promote have NO route; start/cancel exist but are inert without the token', async () => {
   const fx = fixture();
   try {
-    const { url } = await serve(fx, { allowRecord: true });
-    for (const path of ['/api/v2/tasks', '/api/v2/tasks/TASK-WEBACT-1/cancel', '/api/v2/tasks/TASK-WEBACT-1/recover', '/api/v2/tasks/TASK-WEBACT-1/approve', '/api/v2/tasks/TASK-WEBACT-1/promote']) {
+    const { url } = await serve(fx, { allowRecord: true, locksDir: fx.roots.locks });
+    for (const path of ['/api/v2/tasks', '/api/v2/tasks/TASK-WEBACT-1/recover', '/api/v2/tasks/TASK-WEBACT-1/approve', '/api/v2/tasks/TASK-WEBACT-1/promote']) {
       const res = await post(url, path, {});
       assert.equal(res.status, 405, `${path} must not be a route`);
     }
+
+    // start/cancel are routed now (§6 G2/G4) but must be unreachable AND without side effects.
+    for (const action of ['start', 'cancel']) {
+      const res = await post(url, `/api/v2/tasks/TASK-WEBACT-1/${action}`, { reason: 'x' });
+      assert.equal(res.status, 403, `${action} must be refused without a token`);
+      assert.match((await res.json()).model.reason, /writes are disabled|write token/);
+    }
+    assert.equal(readdirSync(fx.roots.locks).length, 0, 'a refused start may not take the task lock');
+    assert.equal(readdirSync(fx.tasks).filter((n) => n.includes('.cancel.json')).length, 0, 'a refused cancel may not write a request');
+
     const caps = (await (await fetch(`${url}/api/v2/capabilities`)).json()).model;
-    assert.equal(caps.write.start_task, false);
+    assert.equal(caps.write.start_task, false, 'no token -> no write capability is advertised');
     assert.equal(caps.write.cancel_task, false);
+    assert.equal(caps.write.create_task, false);
     assert.equal(caps.write.approve_human_gate, false);
-    assert.equal(caps.write.record_task, true, 'the capability must reflect the server flag');
+    assert.equal(caps.write.recover_task, false);
 
     const src = readFileSync(join(process.cwd(), 'server', 'read-api.mjs'), 'utf8');
     assert.doesNotMatch(src, /submitTask\s*\(/, 'the API must not call submitTask');

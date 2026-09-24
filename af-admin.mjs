@@ -32,6 +32,7 @@ import { saveTaskWithVersion } from './lib/store.mjs';
 import { resolveV2HumanGate } from './lib/trusted-import/human-gate-resume.mjs';
 import { requestCancel } from './lib/trusted-import/cancel.mjs';
 import { createV2Task, startOrResumeV2Task } from './lib/v2-service.mjs';
+import { resolveWriteToken } from './server/web-auth.mjs';
 import { planPreview, recordSubmission } from './lib/submission.mjs';
 import { startReadApi } from './server/read-api.mjs';
 import { recoverRetainedBoundary } from './lib/host-boundary.mjs';
@@ -101,7 +102,9 @@ function printUsage() {
   af-admin v2 create --spec <file.json> --root <dir> [--json]              (V2 submission: no legacy planning path)
   af-admin v2 start --task <id> [--allow-failed-reentry] [--json]        (single execution owner; resumes, never re-authors)
   af-admin submit --spec <file.json> --root <dir> [--preview|--record] [--json]   (record never starts a task)
-  af-admin web serve [--port <n>] [--host <addr>] [--allow-non-loopback] [--no-redact]   (read-only workbench)
+  af-admin web serve [--port <n>] [--host <addr>] [--allow-non-loopback] [--no-redact]
+                      [--allow-write] [--root <dir>] [--locks-dir <path>]   (read-only workbench; --allow-write
+                      needs AF_WEB_TOKEN_FILE and enables the authenticated create/start/cancel routes)
   af-admin restore-point list --task-id <id> [--tasks-dir <path>]
   af-admin restore-point capture --task-id <id> [--revision <n>] [--label <text>] [--tasks-dir <path>]
   af-admin restore-point restore --task-id <id> --revision <n> [--confirm] [--prune] [--tasks-dir <path>]`);
@@ -615,14 +618,40 @@ async function main() {
       console.error(`error: refusing to bind ${host}: this API is unauthenticated, so it stays on loopback unless --allow-non-loopback is given`);
       process.exit(2);
     }
+    // §7.3: mutating routes exist only when the operator asks for them AND a token is configured.
+    const allowWrite = args.includes('--allow-write');
+    const token = resolveWriteToken(process.env);
+    if (allowWrite && !token.configured) {
+      console.error(`error: --allow-write needs an operator token, but ${token.reason}`);
+      console.error('       create one with:  umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-foundry/web-token');
+      console.error('       then:             export AF_WEB_TOKEN_FILE=~/.config/agent-foundry/web-token');
+      process.exit(2);
+    }
+    if (allowWrite && !args.includes('--allow-non-loopback') && host !== '127.0.0.1' && host !== '::1' && host !== 'localhost') {
+      console.error(`error: refusing to bind ${host} with write routes enabled`);
+      process.exit(2);
+    }
+    const writeRoots = [];
+    for (let i = 0; i < args.length; i += 1) if (args[i] === '--root' && args[i + 1]) writeRoots.push(args[i + 1]);
+    const dataRoots = resolveDataRoots();
     const handle = await startReadApi({
       port,
       host,
-      roots: resolveDataRoots(),
+      roots: dataRoots,
       redact: !args.includes('--no-redact'),
+      allowedRoots: writeRoots.length > 0 ? writeRoots : (allowWrite ? [dataRoots.tasks] : []),
+      allowRecord: allowWrite,
+      token,
+      locksDir: argValue('--locks-dir') || join(dataRoots.runtime ?? dataRoots.tasks, 'locks'),
       logger: (line) => console.log(line),
     });
-    console.log(`  open ${handle.url} in a browser (read-only: no start/cancel/approve/promote)`);
+    if (allowWrite) {
+      console.log(`  writes: ENABLED (authenticated with the token from ${token.source})`);
+      console.log(`  roots : ${(writeRoots.length > 0 ? writeRoots : [dataRoots.tasks]).join(', ')}`);
+      console.log(`  open ${handle.url} in a browser, then paste the token into the page to enable the buttons`);
+    } else {
+      console.log(`  open ${handle.url} in a browser (read-only: no create/start/cancel/approve/promote)`);
+    }
     for (const signal of ['SIGINT', 'SIGTERM']) {
       process.on(signal, async () => { await handle.close(); process.exit(0); });
     }

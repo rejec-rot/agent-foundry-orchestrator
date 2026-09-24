@@ -17,6 +17,7 @@
 // host paths were hashed, instead of having to assume it.
 
 import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +35,9 @@ import { classifyRecovery } from '../lib/recovery.mjs';
 import { planPreview, recordSubmission } from '../lib/submission.mjs';
 import { loadExecutorStatus } from '../lib/executor-status.mjs';
 import { probeAfExecIsolation } from '../lib/af-exec-isolation.mjs';
+import { createV2Task, startOrResumeV2Task } from '../lib/v2-service.mjs';
+import { requestCancel, readCancelRequest } from '../lib/trusted-import/cancel.mjs';
+import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 export const WEB_ROOT = join(HERE, '..', 'web');
@@ -68,24 +72,27 @@ export function recoveryPlanFor({ taskId, roots, expectedStateVersion = null, no
 }
 
 /** What the first slice actually implements - honest, so the UI never shows a dead button. */
-export function capabilities({ allowRecord = false } = {}) {
+export function capabilities({ allowRecord = false, writesAuthenticated = false } = {}) {
   return {
     schema: 'af-v2-capabilities-v1',
     read: { task_list: true, task_detail: true, task_evidence: true, exceptions: true, executors: true, environment: true, recovery_plan: true, submit_preflight: true },
-    // `record_task` only appears when the operator started the server with --allow-write; it writes
-    // a PREPARED record and never starts anything. Start/cancel/approve/promote have NO route at
-    // all: cancel needs the G4 race work and starting needs an explicit authorisation.
+    // Writes are advertised only when the operator started the server with --allow-write AND a
+    // write token is configured: an unauthenticated mutating route is never exposed (§7.3).
+    // Recovering/approving/promoting stay unavailable in both cases.
     write: {
-      record_task: allowRecord === true,
-      start_task: false,
-      cancel_task: false,
+      record_task: allowRecord === true && writesAuthenticated === true,
+      create_task: allowRecord === true && writesAuthenticated === true,
+      start_task: allowRecord === true && writesAuthenticated === true,
+      cancel_task: allowRecord === true && writesAuthenticated === true,
       recover_task: false,
       approve_human_gate: false,
       promote: false,
     },
-    note: allowRecord
-      ? 'record-only: submitting stores a PREPARED record (started=false); nothing is ever started here'
-      : 'read-only slice: no browser action can start, cancel, approve or promote anything',
+    note: writesAuthenticated !== true
+      ? 'writes are disabled: no operator token is configured (set AF_WEB_TOKEN_FILE)'
+      : (allowRecord === true
+        ? 'writes are authenticated: create/start/cancel are available; recovering, approving and promoting are not'
+        : 'read-only slice: pass --allow-write to enable the authenticated write routes'),
   };
 }
 
@@ -124,7 +131,21 @@ function sendStatic(res, urlPath) {
  * Build the request handler. `now` is injectable so tests can pin time.
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void}
  */
-export function createReadApi({ roots = resolveDataRoots(), redact = true, hashPaths = true, now = () => Date.now(), allowedRoots = [], allowRecord = false, env = process.env, maxBodyBytes = 64 * 1024 } = {}) {
+export function createReadApi({
+  roots = resolveDataRoots(),
+  redact = true,
+  hashPaths = true,
+  now = () => Date.now(),
+  allowedRoots = [],
+  allowRecord = false,
+  env = process.env,
+  maxBodyBytes = 64 * 1024,
+  token = null,
+  locksDir = null,
+  spawnWorker = null,
+} = {}) {
+  const writeToken = token ?? resolveWriteToken(env);
+  const writeAuth = (req) => authorizeWrite({ req, token: writeToken, expectedHosts: [req.headers?.host ?? ''] });
   const shape = (model) => redactModel(model, { redact, hash: hashPaths });
 
   const readBody = (req) => new Promise((resolve, reject) => {
@@ -146,9 +167,10 @@ export function createReadApi({ roots = resolveDataRoots(), redact = true, hashP
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       // Only the two explicitly-designed POST routes are accepted; everything else keeps the
       // read-only refusal, and none of them can start, cancel, approve or promote.
-      const postRoutes = new Set(['/api/v2/tasks/preflight', '/api/v2/tasks/record']);
+      const postRoutes = new Set(['/api/v2/tasks/preflight', '/api/v2/tasks/record', '/api/v2/tasks/create']);
       const recoveryMatch = /^\/api\/v2\/tasks\/([^/]+)\/recovery-plan$/.exec(path);
-      if (req.method !== 'POST' || (!postRoutes.has(path) && !recoveryMatch)) {
+      const actionMatch = /^\/api\/v2\/tasks\/([^/]+)\/(start|cancel)$/.exec(path);
+      if (req.method !== 'POST' || (!postRoutes.has(path) && !recoveryMatch && !actionMatch)) {
         res.setHeader('allow', 'GET');
         sendJson(res, 405, { error: 'method_not_allowed', reason: 'this API is read-only apart from the two designed POST routes; it never starts, cancels, approves or promotes anything' });
         return;
@@ -169,7 +191,53 @@ export function createReadApi({ roots = resolveDataRoots(), redact = true, hashP
         return;
       }
 
+      // Read-only POSTs (preflight, recovery-plan) stay open; everything that mutates requires the
+      // operator token + CSRF header + a matching Origin.
+      const mutating = path === '/api/v2/tasks/record' || path === '/api/v2/tasks/create' || Boolean(actionMatch);
+      if (mutating) {
+        const auth = writeAuth(req);
+        if (!auth.ok) { sendJson(res, auth.status, shape({ error: 'unauthorized', reason: auth.reason })); return; }
+        if (allowRecord !== true) {
+          sendJson(res, 403, shape({ error: 'writes_disabled', reason: 'this server was started read-only; restart with --allow-write to enable the authenticated write routes' }));
+          return;
+        }
+      }
+
       try {
+        if (path === '/api/v2/tasks/create') {
+          // §6 G2: dedicated V2 submission. Idempotent per key; no legacy planning path.
+          const model = createV2Task({ spec: payload.spec, allowedRoots, tasksDir: roots.tasks, submissionsDir: payload.submissions_dir ?? null });
+          sendJson(res, model.ok ? (model.created ? 201 : 200) : 422, shape(model));
+          return;
+        }
+        if (actionMatch) {
+          const [, taskId, action] = actionMatch;
+          if (action === 'cancel') {
+            const model = requestCancel({ tasksDir: roots.tasks, taskId, requestedBy: payload.requested_by ?? 'operator', reason: payload.reason ?? null });
+            if (!model.ok) { sendJson(res, 422, shape(model)); return; }
+            const outcome = readCancelRequest({ tasksDir: roots.tasks, taskId });
+            sendJson(res, 200, shape({ ok: true, created: model.created, task_id: taskId, request: model.request, note: 'honoured at the next trusted boundary; too-late once the ref update has begun' }));
+            void outcome;
+            return;
+          }
+          // start: hand the run to a DETACHED worker so the request lifetime never owns it.
+          const spawner = spawnWorker ?? ((id) => {
+            const child = spawn(process.execPath, [join(WEB_ROOT, '..', 'af-admin.mjs'), 'v2', 'start', '--task', id, '--tasks-dir', roots.tasks, ...(locksDir ? ['--locks-dir', locksDir] : [])], { detached: true, stdio: 'ignore' });
+            child.unref();
+            return { pid: child.pid };
+          });
+          const accepted = await startOrResumeV2Task({
+            taskId,
+            tasksDir: roots.tasks,
+            locksDir: locksDir ?? join(roots.runtime ?? roots.tasks, 'locks'),
+            allowFailedReentry: payload.allow_failed_reentry === true,
+            // The route only CLAIMS ownership and dispatches; the worker itself is the runner.
+            runner: async ({ task }) => { spawner(task.task_id); },
+          });
+          const status = accepted.ok ? 202 : (accepted.outcome === 'already_running' ? 409 : 422);
+          sendJson(res, status, shape({ ...accepted, operation_id: `op-${taskId}`, note: 'accepted: a detached worker owns the run, so closing the browser cannot stop it' }));
+          return;
+        }
         if (path === '/api/v2/tasks/preflight') {
           // READ-ONLY: evaluates the spec (containment, allowlist, isolation, executors) and returns
           // the canonical capsule. Nothing is written and nothing is started.
@@ -178,10 +246,6 @@ export function createReadApi({ roots = resolveDataRoots(), redact = true, hashP
           return;
         }
         if (path === '/api/v2/tasks/record') {
-          if (allowRecord !== true) {
-            sendJson(res, 403, shape({ error: 'record_disabled', reason: 'this server was started read-only; restart with --allow-write to record submissions (a record never starts a task)' }));
-            return;
-          }
           const model = recordSubmission({ spec: payload.spec, allowedRoots, env });
           sendJson(res, model.ok ? 200 : 422, shape(model));
           return;
@@ -196,7 +260,7 @@ export function createReadApi({ roots = resolveDataRoots(), redact = true, hashP
 
     const at = now();
     try {
-      if (path === '/api/v2/capabilities') return sendJson(res, 200, shape({ ...capabilities({ allowRecord }), generated_at: new Date(at).toISOString() }));
+      if (path === '/api/v2/capabilities') return sendJson(res, 200, shape({ ...capabilities({ allowRecord, writesAuthenticated: writeToken.configured === true }), generated_at: new Date(at).toISOString() }));
       if (path === '/api/v2/tasks') {
         const model = buildOverview({ roots, now: at });
         const limit = Math.min(Number.parseInt(url.searchParams.get('limit') ?? '50', 10) || 50, 200);
@@ -248,8 +312,8 @@ export function createReadApi({ roots = resolveDataRoots(), redact = true, hashP
 }
 
 /** Start the server. Loopback by default; returns { server, port, url, close }. */
-export function startReadApi({ port = 0, host = '127.0.0.1', logger = null, allowedRoots = [], allowRecord = false, env = process.env, ...options } = {}) {
-  const server = createServer(createReadApi({ allowedRoots, allowRecord, env, ...options }));
+export function startReadApi({ port = 0, host = '127.0.0.1', logger = null, allowedRoots = [], allowRecord = false, env = process.env, token = null, locksDir = null, spawnWorker = null, ...options } = {}) {
+  const server = createServer(createReadApi({ allowedRoots, allowRecord, env, token, locksDir, spawnWorker, ...options }));
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => {

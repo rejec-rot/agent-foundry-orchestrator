@@ -9,7 +9,12 @@ const STAGES = [
   ['评审', 'REVIEW'], ['授权', 'AUTHORIZATION'], ['验收', 'ACCEPTANCE'], ['提升', 'PROMOTION'],
 ];
 
-const state = { tasks: [], selected: null, filter: '', capabilities: null, plan: null };
+const state = {
+  tasks: [], selected: null, filter: '', capabilities: null, plan: null,
+  // The operator token lives in memory + sessionStorage only: never localStorage (which would
+  // outlive the tab), never a cookie, never a URL, never the DOM as a value.
+  token: (() => { try { return sessionStorage.getItem('af-write-token') || ''; } catch { return ''; } })(),
+};
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -24,6 +29,60 @@ async function getJson(path) {
     throw err;
   }
   return body;
+}
+
+function authHeaders() {
+  return { 'content-type': 'application/json', 'x-af-csrf': '1', authorization: `Bearer ${state.token}` };
+}
+
+/** A write call. Failures are surfaced verbatim: the server's refusal is the useful message. */
+async function postWrite(path, body = {}) {
+  const res = await fetch(path, { method: 'POST', headers: authHeaders(), body: JSON.stringify(body) });
+  const payload = await res.json().catch(() => null);
+  const model = payload?.model ?? payload;
+  if (!res.ok) {
+    const err = new Error(model?.reason ?? `${res.status} ${res.statusText}`);
+    err.status = res.status;
+    err.body = model;
+    throw err;
+  }
+  return model;
+}
+
+function refreshWriteControls() {
+  const caps = state.capabilities?.write ?? {};
+  const can = (name) => caps[name] === true && state.token.length > 0;
+  const create = $('s-create');
+  const start = $('a-start');
+  const cancel = $('a-cancel');
+  if (create) { create.disabled = !can('create_task'); create.title = can('create_task') ? '创建 V2 任务（幂等键相同则返回原任务）' : '需要服务端 --allow-write 且已保存令牌'; }
+  if (start) { start.disabled = !can('start_task') || !state.selected; start.title = can('start_task') ? '交给分离的 worker 执行；请求立刻返回' : '需要服务端 --allow-write 且已保存令牌'; }
+  if (cancel) { cancel.disabled = !can('cancel_task') || !state.selected; cancel.title = can('cancel_task') ? '持久化取消请求；在下一个受信边界生效，ref 更新后只记录为太迟' : '需要服务端 --allow-write 且已保存令牌'; }
+  const note = $('detail-actions-note');
+  if (note) {
+    note.textContent = !state.capabilities ? '' : (!state.capabilities.write.create_task
+      ? (state.capabilities.note ?? '写操作不可用')
+      : (state.token.length > 0 ? '' : '已启用写路由：保存操作令牌后才能使用'));
+  }
+  const tokenNote = $('token-note');
+  if (tokenNote) tokenNote.textContent = state.token.length > 0 ? '令牌已保存到本页会话（关闭标签页即失效）' : '无令牌时所有写操作都会失败；服务端拒绝未鉴权的请求';
+  const mode = $('mode-line');
+  if (mode) mode.textContent = state.capabilities?.write?.create_task === true
+    ? '写操作已启用：创建 / 启动 / 取消（每次请求都需令牌；审批与提升仍不开放）。'
+    : '本页只读：写操作需要服务端 --allow-write 与操作令牌。';
+}
+
+async function runWrite(label, fn) {
+  const out = $('submit-result');
+  if (out) { out.hidden = false; out.className = 'evidence'; out.textContent = `正在${label}…`; }
+  try {
+    const model = await fn();
+    if (out) out.textContent = typeof model === 'string' ? model : JSON.stringify(model, null, 2);
+    return model;
+  } catch (err) {
+    if (out) { out.className = 'evidence bad'; out.textContent = `✖ ${label}失败：${err.message}`; }
+    return null;
+  }
 }
 
 function setConn(live, detail) {
@@ -82,8 +141,9 @@ function blockValue(block, fallback = '—') {
 }
 
 async function selectTask(taskId) {
-  if (state.plan && state.plan.taskId !== taskId) state.plan = null;
   state.selected = taskId;
+  refreshWriteControls();
+  if (state.plan && state.plan.taskId !== taskId) state.plan = null;
   renderTasks();
   const el = $('detail');
   el.innerHTML = `<p class="hint">正在读取 ${esc(taskId)} …</p>`;
@@ -249,6 +309,33 @@ async function boot() {
   $('filter').addEventListener('input', (e) => { state.filter = e.target.value; renderTasks(); });
   $('submit-form').addEventListener('submit', (e) => { e.preventDefault(); postSubmit('/api/v2/tasks/preflight'); });
   $('s-record').addEventListener('click', () => postSubmit('/api/v2/tasks/record'));
+  $('s-create').addEventListener('click', () => runWrite('创建任务', async () => {
+    const model = await postWrite('/api/v2/tasks/create', { spec: submitPayload() });
+    $('submit-result').textContent = `${JSON.stringify(model, null, 2)}\n\n启动：点左侧该任务，再按「启动（V2）」`;
+    await refreshList();
+    return model;
+  }));
+  $('a-start').addEventListener('click', () => runWrite('启动任务', async () => {
+    const model = await postWrite(`/api/v2/tasks/${encodeURIComponent(state.selected)}/start`, {});
+    await refreshList();
+    return model;
+  }));
+  $('a-cancel').addEventListener('click', () => runWrite('取消任务', async () => {
+    const model = await postWrite(`/api/v2/tasks/${encodeURIComponent(state.selected)}/cancel`, { reason: 'operator cancelled from the workbench' });
+    await refreshList();
+    return model;
+  }));
+  $('token-save').addEventListener('click', () => {
+    state.token = $('token-input').value.trim();
+    try { sessionStorage.setItem('af-write-token', state.token); } catch { /* session-only fallback */ }
+    $('token-input').value = '';
+    refreshWriteControls();
+  });
+  $('token-clear').addEventListener('click', () => {
+    state.token = '';
+    try { sessionStorage.removeItem('af-write-token'); } catch { /* nothing to clear */ }
+    refreshWriteControls();
+  });
 
   try {
     const payload = await getJson('/api/v2/capabilities');
@@ -259,6 +346,7 @@ async function boot() {
       recordBtn.disabled = false;
       recordBtn.title = '只写入 PREPARED 记录（started=false），不会启动任务';
     }
+    refreshWriteControls();
   } catch { /* the banner stays empty; the footer already says this page is read-only */ }
   await refreshList();
   await refreshSide();

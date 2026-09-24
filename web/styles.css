@@ -98,3 +98,6 @@ pre.evidence { background: var(--panel-2); border: 1px solid var(--line); border
 .form button { flex: 1; cursor: pointer; background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
 .form button:hover:not(:disabled) { border-color: var(--accent); }
 .form button:disabled { opacity: .45; cursor: not-allowed; }
+
+.evidence.bad { border-color: #b4232a; color: #ffb4b4; }
+.detail-actions { padding: 0 12px 12px; }
