@@ -384,3 +384,49 @@ test('V2 recovery accepts a committed promotion that is an ancestor of current c
   assert.strictEqual(getCanonicalOid(dirs.repoDir), descendantOid);
   assert.strictEqual(readFileSync(join(dirs.materializeDir, 'docs', 'other-task.md'), 'utf8'), 'other task accepted\n');
 });
+
+test('V2 review retry: the verdict names the run that produced it, and the discarded attempt stays in the trail', async () => {
+  const root = tempRoot('af-ti-retry-');
+  const dirs = dirsFor(root);
+  initRepo(dirs.repoDir, 'v2');
+  const task = makeTask({ ...dirs, taskId: `TASK-TI-RETRY-${randomUUID().slice(0, 8)}` });
+  let reviewCalls = 0;
+
+  const reviewer = {
+    type: 'claude',
+    supportsMcpUnattended: true,
+    async run(capsule) {
+      reviewCalls += 1;
+      // First attempt: prose that cannot be parsed into a decision. Second: a valid verdict.
+      const structured = reviewCalls === 1
+        ? { result: 'I looked at the files and they seem fine, but I did not return JSON.' }
+        : {
+          result: JSON.stringify({
+            task_id: capsule.task_id,
+            revision: 1,
+            decision: 'PASS',
+            summary: 'the candidate satisfies the scope',
+            issues: [],
+            required_changes: [],
+            evidence: ['src/value.mjs:1'],
+          }),
+        };
+      return executorResult('claude', 'reviewer', capsule, structured);
+    },
+    cancel() { return { cancelled: true }; },
+  };
+
+  const result = await executeTask(task, adaptersFor(async (capsule) => {
+    writeFileSync(join(capsule.cwd, 'src', 'value.mjs'), "export const value = 'v2';\n");
+  }, reviewer));
+
+  assert.equal(reviewCalls, 2, 'the unparseable review is retried exactly once');
+  const reviewRuns = (result.runs ?? []).filter((r) => r.purpose === 'review');
+  assert.equal(reviewRuns.length, 2, 'both attempts are recorded');
+  assert.notEqual(reviewRuns[0].executor_run_id, reviewRuns[1].executor_run_id, 'each attempt has its own run id');
+  assert.equal(result.last_review_run_id, reviewRuns[1].executor_run_id, 'the recorded review run is the one that produced the verdict');
+  assert.equal(result.review_retry?.first_run_id, reviewRuns[0].executor_run_id, 'the discarded attempt is named, not lost');
+  assert.equal(result.review_retry?.retried_run_id, reviewRuns[1].executor_run_id);
+  assert.match(result.review_retry?.reason ?? '', /did not parse/);
+  assert.equal(result.last_review?.decision, 'PASS', 'the verdict is the retry\'s');
+});

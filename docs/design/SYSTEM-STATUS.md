@@ -34,6 +34,19 @@
 | 产出 | `src/slugify.mjs`（6 行，实现正确）+ `tests/live.test.mjs`（真实 node:test，3 个用例） |
 | 阶段事件 | AUTHOR_RUNNING → QUIESCE → CAPTURE → REVIEW → AUTHORIZATION → ACCEPTANCE → PROMOTION → promotion-started |
 | 耗时 | **约 75 秒**（作者 ~25s，评审 ~50s，验收+提升 ~0.3s） |
+
+**第二次运行（同日，同样执行器）也通过**，证明可重复：
+
+| 项 | 第二次结果 |
+|---|---|
+| 任务 | `TASK-V2-49753cf3-muewbi36` — **COMPLETED / PROMOTED** |
+| 提升 | `bc195a5` → **`32f7550`**，验收 `PASS`（TierA），`revisions_used = 0` |
+| 执行器耗时 | 作者（cmd）**14.4s**，评审（cline）**27.6s + 26.0s** |
+| 端到端 | **68.5 秒** |
+
+两次都出现"评审被调用两次"，原因是**代码里有意的结构化输出重试**：评审若一次没有返回可解析的决策 JSON，会再问一次（有界、只一次）。
+由此又发现并修掉一处**审计不一致**：`last_review_run_id` 原先把第一次（不可解析那次）记成"评审 run"，而结论与终止证据其实来自重试那次——
+现在重试是**新的 run**，`last_review_run_id` 指向**真正产生结论的那次**，被丢弃的那次记进 `review_retry`（含两次 run id 与原因），并有回归测试钉住。
 | 复现 | `bash verification/live-acceptance-cmd.sh`（会消耗真实模型调用） |
 
 **这次 live 跑出两个只有真跑才会暴露的缺陷，都已修复并加了回归：**

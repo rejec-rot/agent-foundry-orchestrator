@@ -318,10 +318,26 @@ async function runReview(task, revision, adapters, opts = {}) {
   }
   let { ok, review, raw } = parseReviewerResult(adapter.type, result.structured_result);
   if (!ok && result.status === 'completed') {
-    // one structured-output retry before failing the review leg
+    // One structured-output retry before failing the review leg. The retry is a NEW run: the verdict
+    // must name the run that actually produced it, and the discarded attempt stays in the trail.
+    // (Measured on two live promotions: `last_review_run_id` pointed at the unparseable first
+    // attempt while the recorded verdict and termination evidence came from the retry.)
+    const firstRunId = runId;
+    const retryRunId = `RUN-${randomUUID().slice(0, 8)}`;
+    task.next_run_id = retryRunId;
+    opts.onRunStart?.(retryRunId, adapter.type);
+    capsule.runId = retryRunId;
     result = await adapter.run(capsule);
-    result.writer_termination = result.writer_termination ?? getRunTerminationEvidence(runId);
+    result.executor_run_id = retryRunId;
+    result.writer_termination = result.writer_termination ?? getRunTerminationEvidence(retryRunId);
+    task.last_review_run_id = retryRunId;
     task.last_review_termination_evidence = result.writer_termination;
+    task.review_retry = {
+      first_run_id: firstRunId,
+      retried_run_id: retryRunId,
+      reason: 'the first review output did not parse into a decision',
+      at: new Date().toISOString(),
+    };
     recordRun(task, adapter.type, capsule.assigned_role, result, 'review');
     ({ ok, review, raw } = parseReviewerResult(adapter.type, result.structured_result));
   }
