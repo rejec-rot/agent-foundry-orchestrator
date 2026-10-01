@@ -128,10 +128,13 @@ test('WEBAUTH-3: start is accepted (202) and dispatched to a detached worker, no
     const res = await post(url, `/api/v2/tasks/${created.task_id}/start`, {}, AUTH);
     assert.equal(res.status, 202, JSON.stringify(await res.clone().json()));
     const body = (await res.json()).model;
-    assert.equal(body.outcome, 'started');
-    assert.equal(body.operation_id, `op-${created.task_id}`);
+    assert.equal(body.outcome, 'dispatched');
+    assert.ok(body.operation_id.startsWith(`op-${created.task_id}-`));
     assert.match(body.note, /detached worker/);
     assert.deepEqual(spawned, [created.task_id], 'the worker is the runner');
+    const retry = await post(url, `/api/v2/tasks/${created.task_id}/start`, {}, AUTH);
+    assert.equal(retry.status, 409, 'an unclaimed dispatch must also refuse a second start');
+    assert.deepEqual(spawned, [created.task_id], 'the retry never dispatches another worker');
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });
 

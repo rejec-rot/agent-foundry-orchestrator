@@ -4,6 +4,8 @@
 // last_review when revision > 1), re-enter the whole pipeline, and stop at a hard bound. A PASS
 // after one retry must complete normally; exhausting the budget must fail loudly, never loop.
 
+import './helpers/executors-fixture.mjs';
+import './helpers/runtime-state-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -12,6 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { runTrustedImportTask } from '../lib/trusted-import/orchestrator-adapter.mjs';
+import { executeV2Workflow } from '../lib/workflows/v2.mjs';
+import { withTasksDir } from '../lib/task-runtime.mjs';
 
 const TERMINATION = { process_started: true, process_group_alive: false, termination_confirmed: true, scope_verified: true, scope_kind: 'cgroup' };
 
@@ -152,5 +156,56 @@ test('FIXLOOP-3: a non-fixable verdict (FAIL) is not retried', async () => {
     try { await runTrustedImportTask(fx.task, deps(fx.task)); } catch (e) { err = e; }
     assert.equal(err.code, 'TRUSTED_IMPORT_REVIEW_FAILED');
     assert.equal(readTask(fx.taskPath).trusted_import.revisions_used ?? 0, 0, 'FAIL must not consume fix-loop budget');
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+function workflowAdapters(fx, decisions, prompts) {
+  const result = (capsule, content, type) => ({
+    executor_run_id: capsule.runId, executor_type: type, assigned_role: capsule.assigned_role,
+    status: 'completed', session_ref: `${type}-session`, exit_code: 0,
+    structured_result: { result: content }, writer_termination: TERMINATION,
+  });
+  let reviewIndex = 0;
+  const author = async (capsule) => {
+    prompts.push(capsule.prompt);
+    writeFileSync(join(capsule.cwd, 'src', 'value.mjs'), "export const value = 'v2';\n");
+    return result(capsule, 'updated value', 'fake-author');
+  };
+  return {
+    'fake-author': { type: 'fake-author', run: author, resume: async (_session, capsule) => author(capsule) },
+    'fake-reviewer': { type: 'fake-reviewer', run: async (capsule) => result(capsule, JSON.stringify({
+      task_id: fx.task.task_id, revision: Number(/REVISION UNDER REVIEW: (\d+)/.exec(capsule.prompt)[1]),
+      decision: decisions[reviewIndex++] ?? 'NEEDS_FIX', summary: 'review',
+      issues: ['check the value'], required_changes: ['export value as v2'], evidence: ['src/value.mjs:1'],
+    }), 'fake-reviewer') },
+  };
+}
+
+test('FIXLOOP-4: dedicated V2 workflow completes a bounded fix automatically with revision-bound review', async () => {
+  const fx = fixture('af-fixloop-workflow-');
+  try {
+    fx.task.author_executor = 'fake-author'; fx.task.reviewer_executor = 'fake-reviewer';
+    const prompts = [];
+    const done = await executeV2Workflow(withTasksDir(fx.task, fx.tasksDir), workflowAdapters(fx, ['NEEDS_FIX', 'PASS'], prompts));
+    assert.equal(done.state, 'COMPLETED', done.failure_reason);
+    assert.equal(done.trusted_import.revisions_used, 1);
+    assert.equal(done.last_review.revision, 2);
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1], /export value as v2/);
+    assert.equal(readTask(fx.taskPath).trusted_import.phase, 'PROMOTED');
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('FIXLOOP-5: legacy top-level zero budget prevents another author invocation', async () => {
+  const fx = fixture('af-fixloop-zero-');
+  try {
+    fx.task.max_revisions = 0;
+    fx.task.author_executor = 'fake-author'; fx.task.reviewer_executor = 'fake-reviewer';
+    const prompts = [];
+    const done = await executeV2Workflow(withTasksDir(fx.task, fx.tasksDir), workflowAdapters(fx, ['NEEDS_FIX'], prompts));
+    assert.equal(done.state, 'FAILED');
+    assert.equal(done.trusted_import.max_revisions, 0);
+    assert.equal(prompts.length, 1);
+    assert.notEqual(done.trusted_import.phase, 'PROMOTED');
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });

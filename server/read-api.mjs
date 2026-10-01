@@ -1,10 +1,5 @@
-// read-api.mjs - the browser-facing READ-ONLY API for the V2 workbench.
-//
-// Design source: docs/design/V2-FRONTEND-PLAN.md §6 G1 (a browser service boundary) and §7.3
-// (browser vs control plane). This is the first, deliberately minimal slice: every route is a
-// GET, every response is a projection of the existing read model (lib/console/read-model.mjs), and
-// nothing here can mutate state - there is no write route at all, so no "approve", "cancel" or
-// "start" action can be reached from a browser.
+// Browser API: read projections plus explicitly enabled, authenticated V2 write routes.
+// HTTP dispatches through the execution manager; a detached process owns the workflow.
 //
 // Defaults are fail-safe:
 //   * binds to LOOPBACK unless an operator says otherwise;
@@ -17,7 +12,7 @@
 // host paths were hashed, instead of having to assume it.
 
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawnManaged } from '../lib/child-process.mjs';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +30,7 @@ import { classifyRecovery } from '../lib/recovery.mjs';
 import { acceptanceAllowlistFile, acceptanceCommandAllowed, loadAcceptanceAllowlist, planPreview, recordSubmission } from '../lib/submission.mjs';
 import { loadExecutorStatus } from '../lib/executor-status.mjs';
 import { probeAfExecIsolation } from '../lib/af-exec-isolation.mjs';
-import { createV2Task, startOrResumeV2Task } from '../lib/v2-service.mjs';
+import { createV2Task, dispatchV2Task } from '../lib/v2-service.mjs';
 import { requestCancel, readCancelRequest } from '../lib/trusted-import/cancel.mjs';
 import { eventsDirFor, readTaskEvents } from '../lib/v2-events.mjs';
 import { contentIndex, readTaskBlob } from '../lib/content.mjs';
@@ -43,6 +38,8 @@ import { describeRegistry, loadProjectRegistry } from '../lib/projects.mjs';
 import { collaborationView, queueMessage } from '../lib/collaboration.mjs';
 import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 import { disabledExecutors } from '../lib/operator-control.mjs';
+import { createCollaborationTeam, commandTeam } from '../lib/team/service.mjs';
+import { listTeams, teamView } from '../lib/team/store.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 export const WEB_ROOT = join(HERE, '..', 'web');
@@ -95,6 +92,8 @@ export function capabilities({ allowRecord = false, writesAuthenticated = false 
       start_task: allowRecord === true && writesAuthenticated === true,
       cancel_task: allowRecord === true && writesAuthenticated === true,
       queue_message: allowRecord === true && writesAuthenticated === true,
+      create_team: allowRecord === true && writesAuthenticated === true,
+      team_command: allowRecord === true && writesAuthenticated === true,
       recover_task: false,
       approve_human_gate: false,
       promote: false,
@@ -154,6 +153,7 @@ export function createReadApi({
   token = null,
   locksDir = null,
   spawnWorker = null,
+  ensureController = undefined,
 } = {}) {
   const writeToken = token ?? resolveWriteToken(env);
   const writeAuth = (req) => authorizeWrite({ req, token: writeToken, expectedHosts: [req.headers?.host ?? ''] });
@@ -182,7 +182,9 @@ export function createReadApi({
       const recoveryMatch = /^\/api\/v2\/tasks\/([^/]+)\/recovery-plan$/.exec(path);
       const actionMatch = /^\/api\/v2\/tasks\/([^/]+)\/(start|cancel)$/.exec(path);
       const messageMatch = /^\/api\/v2\/tasks\/([^/]+)\/messages$/.exec(path);
-      if (req.method !== 'POST' || (!postRoutes.has(path) && !recoveryMatch && !actionMatch && !messageMatch)) {
+      const teamCommandMatch = /^\/api\/teams\/([^/]+)\/commands$/.exec(path);
+      const teamWrite = path==='/api/teams' || Boolean(teamCommandMatch);
+      if (req.method !== 'POST' || (!postRoutes.has(path) && !recoveryMatch && !actionMatch && !messageMatch && !teamWrite)) {
         res.setHeader('allow', 'GET');
         sendJson(res, 405, { error: 'method_not_allowed', reason: 'this API is read-only apart from the two designed POST routes; it never starts, cancels, approves or promotes anything' });
         return;
@@ -205,7 +207,7 @@ export function createReadApi({
 
       // Read-only POSTs (preflight, recovery-plan) stay open; everything that mutates requires the
       // operator token + CSRF header + a matching Origin.
-      const mutating = path === '/api/v2/tasks/record' || path === '/api/v2/tasks/create' || Boolean(actionMatch) || Boolean(messageMatch);
+      const mutating = path === '/api/v2/tasks/record' || path === '/api/v2/tasks/create' || Boolean(actionMatch) || Boolean(messageMatch) || teamWrite;
       if (mutating) {
         const auth = writeAuth(req);
         if (!auth.ok) { sendJson(res, auth.status, shape({ error: 'unauthorized', reason: auth.reason })); return; }
@@ -216,6 +218,22 @@ export function createReadApi({
       }
 
       try {
+        if(teamCommandMatch) {
+          const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,
+            teamId:teamCommandMatch[1],command:payload.command,commandId:payload.command_id,ensure:ensureController});
+          sendJson(res,202,shape(result));return;
+        }
+        if(path==='/api/teams') {
+          const registryFile=env.AF_PROJECTS_FILE??join(process.cwd(),'config','projects.json');
+          const loaded=loadProjectRegistry({file:registryFile});
+          if(!loaded.ok){sendJson(res,422,shape({ok:false,reason:loaded.reason}));return;}
+          const result=createCollaborationTeam({spec:payload.spec,workerCount:payload.worker_count??3,allowedRoots,
+            tasksDir:roots.tasks,runtimeDir:roots.runtime,locksDir:locksDir??roots.locks,env,
+            submissionsDir:env.AF_SUBMISSION_DIR??join(roots.runtime,'submissions'),
+            projectRegistry:loaded.registry,registryFile,registryDigest:loaded.digest,
+            allowlist:loadAcceptanceAllowlist({file:acceptanceAllowlistFile(env)}),acceptanceCommandAllowed});
+          sendJson(res,result.ok?(result.created?201:200):422,shape(result));return;
+        }
         if (path === '/api/v2/tasks/create') {
           // §6 G2 + G6: dedicated V2 submission. The trusted acceptance identity and the change
           // policy come from the CONTROL-PLANE registry, never from the request body.
@@ -225,12 +243,13 @@ export function createReadApi({
             sendJson(res, 422, shape({ ok: false, created: false, reason: loadedRegistry.reason }));
             return;
           }
-          const allowlist = loadAcceptanceAllowlist({ file: acceptanceAllowlistFile(env, process.cwd()) });
+          const allowlist = loadAcceptanceAllowlist({ file: acceptanceAllowlistFile(env) });
           const model = createV2Task({
             spec: payload.spec,
             allowedRoots,
             tasksDir: roots.tasks,
-            submissionsDir: payload.submissions_dir ?? null,
+            submissionsDir: env.AF_SUBMISSION_DIR ?? join(roots.runtime, 'submissions'),
+            env,
             projectRegistry: loadedRegistry.registry,
             registryFile,
             registryDigest: loadedRegistry.digest,
@@ -242,7 +261,13 @@ export function createReadApi({
         }
         if (messageMatch) {
           const taskId = messageMatch[1];
-          if (!readTaskJson(roots.tasks, taskId)) { sendJson(res, 404, shape({ error: 'not_found', reason: `no such task: ${taskId}` })); return; }
+          const task=readTaskJson(roots.tasks, taskId);
+          if (!task) { sendJson(res, 404, shape({ error: 'not_found', reason: `no such task: ${taskId}` })); return; }
+          if(task.team_binding) {
+            const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,ensure:ensureController,
+              teamId:task.team_binding.team_id,commandId:payload.command_id,actor:payload.author??'operator',command:{type:'message',agent_id:payload.agent_id??'lead',message:payload.message,work_item_id:payload.work_item_id??null}});
+            sendJson(res,202,shape(result));return;
+          }
           const queued = queueMessage({
             runtimeDir: roots.runtime ?? join(process.cwd(), 'runtime'),
             taskId,
@@ -255,6 +280,12 @@ export function createReadApi({
         if (actionMatch) {
           const [, taskId, action] = actionMatch;
           if (action === 'cancel') {
+            const task=readTaskJson(roots.tasks,taskId);
+            if(task?.team_binding) {
+              const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,ensure:ensureController,
+                teamId:task.team_binding.team_id,commandId:payload.command_id,actor:payload.requested_by??'operator',command:{type:'cancel',reason:payload.reason??null}});
+              sendJson(res,202,shape({...result,note:'team cancellation is queued; its receipt confirms when all member scopes have stopped'}));return;
+            }
             const model = requestCancel({ tasksDir: roots.tasks, taskId, requestedBy: payload.requested_by ?? 'operator', reason: payload.reason ?? null });
             if (!model.ok) { sendJson(res, 422, shape(model)); return; }
             const outcome = readCancelRequest({ tasksDir: roots.tasks, taskId });
@@ -263,21 +294,36 @@ export function createReadApi({
             return;
           }
           // start: hand the run to a DETACHED worker so the request lifetime never owns it.
-          const spawner = spawnWorker ?? ((id) => {
-            const child = spawn(process.execPath, [join(WEB_ROOT, '..', 'af-admin.mjs'), 'v2', 'start', '--task', id, '--tasks-dir', roots.tasks, ...(locksDir ? ['--locks-dir', locksDir] : [])], { detached: true, stdio: 'ignore' });
-            child.unref();
-            return { pid: child.pid };
+          const boundTask=readTaskJson(roots.tasks,taskId);
+          if(boundTask?.team_binding) {
+            const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,ensure:ensureController,
+              teamId:boundTask.team_binding.team_id,commandId:payload.command_id,command:{type:'start'}});
+            sendJson(res,202,shape({...result,note:'team start is queued; the leased controller owns member execution'}));return;
+          }
+          const spawner = spawnWorker ?? ((id, operation) => {
+            const args = [join(WEB_ROOT, '..', 'af-admin.mjs'), 'v2', 'start', '--task', id,
+              '--tasks-dir', operation.tasksDir, '--locks-dir', operation.locksDir,
+              '--runtime-dir', operation.runtimeDir, '--operation-id', operation.operationId,
+              ...(operation.allowFailedReentry ? ['--allow-failed-reentry'] : [])];
+            const child = spawnManaged(process.execPath, args, {
+              detached: true, stdio: 'ignore',
+              env: { ...process.env, ...env, AF_TASKS_DIR: operation.tasksDir, AF_LOCKS_DIR: operation.locksDir, AF_RUNTIME_DIR: operation.runtimeDir },
+            });
+            return new Promise((resolve, reject) => {
+              child.once('error', reject);
+              child.once('spawn', () => { child.unref(); resolve({ pid: child.pid }); });
+            });
           });
-          const accepted = await startOrResumeV2Task({
+          const accepted = await dispatchV2Task({
             taskId,
             tasksDir: roots.tasks,
-            locksDir: locksDir ?? join(roots.runtime ?? roots.tasks, 'locks'),
+            locksDir: locksDir ?? roots.locks,
+            runtimeDir: roots.runtime,
             allowFailedReentry: payload.allow_failed_reentry === true,
-            // The route only CLAIMS ownership and dispatches; the worker itself is the runner.
-            runner: async ({ task }) => { spawner(task.task_id); },
+            dispatcher: spawner,
           });
           const status = accepted.ok ? 202 : (accepted.outcome === 'already_running' ? 409 : 422);
-          sendJson(res, status, shape({ ...accepted, operation_id: `op-${taskId}`, note: 'accepted: a detached worker owns the run, so closing the browser cannot stop it' }));
+          sendJson(res, status, shape({ ...accepted, note: accepted.ok ? 'accepted: a detached worker is dispatched and will claim the run; closing the browser cannot stop it' : accepted.reason }));
           return;
         }
         if (path === '/api/v2/tasks/preflight') {
@@ -295,13 +341,16 @@ export function createReadApi({
         const model = recoveryPlanFor({ taskId: recoveryMatch[1], roots, expectedStateVersion: payload.expected_state_version ?? null, now: now() });
         sendJson(res, model.status, shape(model));
       } catch (err) {
-        sendJson(res, 500, { error: 'operation_failed', reason: String(err?.message ?? err) });
+        sendJson(res, err.code?.startsWith('TEAM_')?(err.code==='TEAM_NOT_FOUND'?404:err.code==='TEAM_VERSION_CONFLICT'?409:422):500, { error: 'operation_failed', reason: String(err?.message ?? err) });
       }
       return;
     }
 
     const at = now();
     try {
+      if(path==='/api/teams') return sendJson(res,200,shape({teams:listTeams(roots.runtime).map(t=>teamView(roots.runtime,t.team_id))}));
+      const teamMatch=/^\/api\/teams\/([^/]+)$/.exec(path);
+      if(teamMatch){const model=teamView(roots.runtime,teamMatch[1]);return sendJson(res,model?200:404,shape(model??{error:'not_found'}));}
       if (path === '/api/v2/capabilities') {
         const registry = loadProjectRegistry({ file: env.AF_PROJECTS_FILE ?? join(process.cwd(), 'config', 'projects.json') });
         return sendJson(res, 200, shape({

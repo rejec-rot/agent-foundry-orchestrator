@@ -105,6 +105,12 @@ function printUsage() {
   af-admin v2 cancel --task <id> --reason "<why>" --confirm                 (durable request; honoured at a trusted boundary)
   af-admin v2 create --spec <file.json> --root <dir> [--profile <id>] [--json]   (V2 submission; needs a control-plane\n                      project registry: config/projects.json or AF_PROJECTS_FILE)
   af-admin v2 start --task <id> [--allow-failed-reentry] [--json]        (single execution owner; resumes, never re-authors)
+  af-admin team create --spec <file.json> --root <dir> [--workers 3]
+  af-admin team serve|list
+  af-admin team show|start|pause|resume|cancel|deliver --team <id>
+  af-admin team message --team <id> --agent <id> --message "<text>"
+  af-admin team adjust --team <id> --work-item <id> --expected-revision <n> --message "<direction>" [--agent <worker>]
+  af-admin team replan --team <id> --expected-goal-revision <n> --goal "<goal>"
   af-admin submit --spec <file.json> --root <dir> [--preview|--record] [--json]   (record never starts a task)
   af-admin projects show [--file <path>] [--json]                                       (read-only view of the project registry)
   af-admin preview plan|list [--task <id>] [--command <c>] [--workspace <dir>] [--json]   (off/static/live; never executes in plan)
@@ -505,6 +511,11 @@ async function main() {
     console.error(`unknown a1a subcommand: ${subCmd} (expected: status, explain, sweep)`);
     printUsage();
     process.exit(1);
+  } else if (mainCmd === 'team') {
+    const {runTeamCli}=await import('./af-team.mjs');
+    const result=await runTeamCli(args.slice(1));
+    console.log(JSON.stringify(result,null,2));
+    if(result?.ok===false) process.exitCode=1;
   } else if (mainCmd === 'v2') {
     if (subCmd === 'gate-resume') {
       // Operator entry for a parked V2 Human Gate (Band D) item. Library/CLI only (no web UI).
@@ -529,13 +540,19 @@ async function main() {
         return { verified: true, signature, keyId: process.env.AF_OPERATOR_KEY_ID || 'local-operator-key' };
       };
 
-      const res = resolveV2HumanGate({
+      const gateLocksDir=argValue('--locks-dir')||resolveDataRoots().locks;
+      const gateLock=acquireTaskLock(gateLocksDir,taskId,{orchestratorInstanceId:`gate-${process.pid}`});
+      let res;
+      try {
+      task=JSON.parse(readFileSync(taskPath,'utf8'));
+      res = resolveV2HumanGate({
         task,
         operatorIdentity: operator,
         justification: reason.trim(),
         operatorAuthenticator,
         saveTask: (t) => saveTaskWithVersion(tasksDir, t),
       });
+      } finally {releaseTaskLock(gateLocksDir,taskId,gateLock.lock);}
       if (!res.ok) {
         console.error(`error: ${res.code ?? 'REFUSED'}: ${res.reason}`);
         process.exit(1);
@@ -543,8 +560,7 @@ async function main() {
       console.log(`v2 gate approve: ok (operator=${operator}, paths=${res.approved_paths.join(', ')})`);
       console.log(`  evidence file: ${taskPath}`);
       console.log(`  approved at  : ${task.trusted_import.human_approval.resolved_at}`);
-      console.log('  resume       : re-run the task through the V2 entrypoint with a humanApprovalProvider');
-      console.log('                 (the provider re-mints the approval in-process; without it the task parks again)');
+      console.log(`  resume       : af-admin v2 start --task ${taskId} (with AF_OPERATOR_KEY configured; the entry verifies the persisted signature)`);
       process.exit(0);
     }
     if (subCmd === 'create' || subCmd === 'start') {
@@ -569,7 +585,7 @@ async function main() {
         const registryFile = argValue('--projects-file') || process.env.AF_PROJECTS_FILE || projectRegistryFile(process.env);
         const loadedRegistry = loadProjectRegistry({ file: registryFile });
         if (!loadedRegistry.ok) { console.error(`error: ${loadedRegistry.reason}`); process.exit(1); }
-        const allowlist = loadAcceptanceAllowlist({ file: acceptanceAllowlistFile(process.env, process.cwd()) });
+        const allowlist = loadAcceptanceAllowlist({ file: acceptanceAllowlistFile(process.env) });
         const res = createV2Task({
           spec,
           allowedRoots: roots,
@@ -595,16 +611,13 @@ async function main() {
 
       const taskId = argValue('--task') ?? (args[2] && !args[2].startsWith('-') ? args[2] : null);
       if (!taskId) { console.error('error: --task <id> is required'); process.exit(2); }
-      const { continueTask } = await import('./orchestrator.mjs');
       const res = await startOrResumeV2Task({
         taskId,
         tasksDir,
         locksDir,
+        runtimeDir: argValue('--runtime-dir') || resolveDataRoots(process.env, AF_ROOT).runtime,
+        operationId: argValue('--operation-id') || null,
         allowFailedReentry: args.includes('--allow-failed-reentry'),
-        runner: async ({ mode, task }) => {
-          console.log(`v2 start: ${mode} ${taskId} (state=${task.state})`);
-          await continueTask(taskId, undefined, { tasksDir, allowV2FailedReentry: args.includes('--allow-failed-reentry') });
-        },
       });
       if (args.includes('--json')) console.log(JSON.stringify(res, null, 2));
       else if (!res.ok) console.error(`error: ${res.outcome}: ${res.reason}`);
@@ -619,6 +632,15 @@ async function main() {
       if (!reason || !reason.trim()) { console.error('error: --reason "<why>" is required'); process.exit(2); }
       if (!args.includes('--confirm')) { console.error('error: cancelling is an explicit operator action; re-run with --confirm'); process.exit(2); }
       const tasksDir = argValue('--tasks-dir') || TASKS_DIR;
+      const boundTask=JSON.parse(readFileSync(join(tasksDir,`${taskId}.json`),'utf8'));
+      if(boundTask.team_binding) {
+        const {commandTeam}=await import('./lib/team/service.mjs');
+        const roots=resolveDataRoots();
+        const result=await commandTeam({tasksDir,locksDir:argValue('--locks-dir')||roots.locks,runtimeDir:argValue('--runtime-dir')||roots.runtime,
+          teamId:boundTask.team_binding.team_id,actor:argValue('--requested-by')||process.env.USER||'operator',command:{type:'cancel',reason:reason.trim()}});
+        console.log(`team cancel: ${result.status} (${result.command_id}); inspect the team receipt for verified termination`);
+        process.exit(0);
+      }
       const res = requestCancel({ tasksDir, taskId, requestedBy: argValue('--requested-by') || process.env.USER || 'operator', reason: reason.trim() });
       if (!res.ok) { console.error(`error: ${res.reason}`); process.exit(1); }
       console.log(`v2 cancel: ${res.created ? 'requested' : 'already requested (idempotent)'} for ${taskId}`);
@@ -672,7 +694,7 @@ async function main() {
       allowedRoots: writeRoots.length > 0 ? writeRoots : (allowWrite ? [dataRoots.tasks] : []),
       allowRecord: allowWrite,
       token,
-      locksDir: argValue('--locks-dir') || join(dataRoots.runtime ?? dataRoots.tasks, 'locks'),
+      locksDir: argValue('--locks-dir') || dataRoots.locks,
       logger: (line) => console.log(line),
     });
     if (allowWrite) {

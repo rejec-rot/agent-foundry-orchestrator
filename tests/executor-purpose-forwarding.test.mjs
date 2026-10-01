@@ -53,7 +53,7 @@ test('PURPOSE-2: every adapter forwards the capsule purpose verbatim', () => {
 });
 
 test('PURPOSE-3: the V2 author capsule actually carries trusted_import', () => {
-  const orchestrator = readFileSync(join(ROOT, 'orchestrator.mjs'), 'utf8');
+  const orchestrator = readFileSync(join(ROOT, 'lib', 'task-execution.mjs'), 'utf8');
   assert.match(orchestrator, /purpose: task\.trusted_import\?\.enabled === true \? 'trusted_import' : undefined/,
     'the author/review capsules must announce the trusted-import purpose, or the guard has nothing to match');
 });

@@ -26,6 +26,10 @@ runtime/executor-safety-state.json
 runtime/executor-safety-state.json.initialized
 # Any per-instance state file a future safety component may add.
 runtime/*.initialized
+runtime/*.slots.json
+runtime/safety-*.lock
+runtime/teams/
+runtime/team-controller.log
 
 # Historical execution tasks (keep only standard templates)
 tasks/*.json

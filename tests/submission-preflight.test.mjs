@@ -279,9 +279,9 @@ test('SUB-13: this slice cannot execute anything (static and runtime)', () => {
   for (const forbidden of ['child_process', 'submitTask(', 'adapters.mjs', 'scheduler.mjs', 'runTrustedImportTask', 'spawn(', 'execSync', 'fork(']) {
     assert.strictEqual(source.includes(forbidden), false, `submission.mjs must not reference ${forbidden}`);
   }
-  // The two allowed imports are read-only capability probes; assert they are the only heavy ones.
+  // Entry imports only capability probes, policy and storage; no execution dependency.
   const imports = [...source.matchAll(/^import .*from '([^']+)';$/gm)].map((match) => match[1]);
-  assert.deepStrictEqual(imports.sort(), ['node:crypto', 'node:fs', 'node:path', './executor-status.mjs', './host-boundary.mjs'].sort());
+  assert.deepStrictEqual(imports.sort(), ['node:fs', 'node:path', './acceptance-policy.mjs', './data-roots.mjs', './executor-status.mjs', './host-boundary.mjs', './submission-store.mjs'].sort());
   // Recording must not touch the process environment, start timers or write outside its directory.
   const ws = workspace();
   try {

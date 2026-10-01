@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Foundry · 团队协作</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/teams.css"></head>
+<body>
+<header class="rail"><div class="brand"><h1>Agent Foundry<span class="sub"> · 团队协作</span></h1><a href="/">交付工作台</a></div><span id="connection" role="status">连接中…</span></header>
+<main class="team-shell">
+  <aside class="pane"><div class="pane-head"><span class="eyebrow">目标与团队</span><button class="btn" id="refresh" type="button">刷新</button></div><div id="teams" class="rows" aria-label="团队列表"></div>
+    <details class="disclosure" open><summary>创建协作目标</summary><form id="create-form" class="form disclosure-body">
+      <label class="field"><span>目标</span><textarea id="goal" required rows="3" placeholder="描述团队需要完成的成果"></textarea></label>
+      <label class="field"><span>项目目录</span><input id="target" required placeholder="已注册的项目路径"></label>
+      <label class="field"><span>验收命令</span><input id="command" value="node" required></label>
+      <label class="field"><span>验收参数（JSON 数组）</span><input id="args" value='["--test","tests/gate.test.mjs"]' required></label>
+      <label class="field"><span>提交标识</span><input id="key" required placeholder="相同标识重试返回同一个团队"></label>
+      <label class="field"><span>worker 数量</span><input id="workers" type="number" min="1" max="8" value="3" required></label>
+      <button class="btn primary" id="create" data-write type="submit" disabled>创建团队</button>
+    </form></details>
+    <details class="disclosure"><summary>操作令牌</summary><div class="disclosure-body form"><label class="field"><span>令牌</span><input id="token" type="password" autocomplete="off"></label><button class="btn" id="save-token" type="button">保存到本次会话</button></div></details>
+  </aside>
+  <section class="pane team-main" aria-label="协作进展"><div class="pane-head"><span class="eyebrow">团队目标</span><span id="team-state" class="count"></span></div>
+    <div class="work-body"><h2 id="team-goal">选择一个团队</h2><p id="team-meta" class="hint"></p>
+      <div class="actions"><button class="btn primary" id="start" data-write disabled>启动 / 恢复团队</button><button class="btn" id="pause" data-write disabled>暂停</button><button class="btn danger" id="cancel" data-write disabled>取消</button><button class="btn" id="deliver" data-write disabled>继续交付</button></div>
+      <h3>成员</h3><div id="members" class="member-grid"></div>
+      <h3>工作项与依赖</h3><div id="work-items" class="work-graph"><p class="hint">主作者规划后会显示真实分工。</p></div>
+      <h3>交付</h3><p id="delivery" class="hint">尚未整合候选。</p>
+      <details class="disclosure"><summary>运行记录与产物</summary><div id="runs" class="disclosure-body"></div><div id="artifacts" class="disclosure-body"></div></details>
+      <h3>成员通信</h3><div id="messages" class="team-history"></div>
+      <h3>操作回执</h3><div id="receipts" class="team-history"></div>
+    </div>
+  </section>
+  <aside class="pane"><div class="pane-head"><span class="eyebrow">调整与沟通</span></div><div class="disclosure-body form">
+    <label class="field"><span>成员</span><select id="member-target"><option value="lead">主作者</option></select></label>
+    <label class="field"><span>给成员的消息</span><textarea id="message" rows="3" placeholder="询问进展、补充约束或请求接口"></textarea></label>
+    <button class="btn" id="send-message" data-write disabled>发送消息</button>
+    <hr><p id="selected-work" class="hint">点击工作项后，可以修改该项的方向。</p>
+    <label class="field"><span>新的工作方向</span><textarea id="direction" rows="5" placeholder="保留什么、调整什么、成果需要怎样变化"></textarea></label>
+    <label class="field"><span>负责这项工作的成员</span><select id="worker-target"></select></label>
+    <button class="btn primary" id="adjust" data-write disabled>调整这个工作项</button><button class="btn" id="retry" data-write disabled>重试这个工作项</button>
+    <p class="hint">调整会停止该项的旧尝试，并更新受影响的依赖；其他成员继续工作。已完成的目标再次调整时，会开始新的目标版本。</p>
+    <hr><label class="field"><span>修改整体目标</span><textarea id="new-goal" rows="3"></textarea></label><button class="btn" id="replan" data-write disabled>交给主作者重新规划</button>
+    <p id="notice" class="team-notice" role="status" aria-live="polite"></p>
+  </div></aside>
+</main>
+<footer class="foot">消息会在成员的下一轮工作中领取。交付需要人工审批时，可在交付工作台查看待审批内容。</footer>
+<script type="module" src="/teams.js"></script>
+</body></html>

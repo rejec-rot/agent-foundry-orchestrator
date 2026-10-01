@@ -6,7 +6,7 @@
 import './helpers/executors-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,8 @@ import { createV2Task, startOrResumeV2Task } from '../lib/v2-service.mjs';
 import { acquireTaskLock, releaseTaskLock } from '../lib/tasklock.mjs';
 import { loadProjectRegistry, PROJECT_REGISTRY_SCHEMA } from '../lib/projects.mjs';
 import { acceptanceCommandAllowed, loadAcceptanceAllowlist } from '../lib/submission.mjs';
+import { recordSubmission } from '../lib/submission.mjs';
+import { submissionKeyDigest } from '../lib/submission-store.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ALLOWLIST = loadAcceptanceAllowlist({ file: join(ROOT, 'config', 'acceptance-allowlist.json') });
@@ -234,4 +236,91 @@ test('V2SVC-8: the service never consults the legacy planning path', () => {
   assert.doesNotMatch(src, /require\(['"]\.\/planner|from ['"]\.\/planner|planner_result/i, 'no planning-layer dependency may exist in the V2 submission path');
   assert.doesNotMatch(src, /withIntentGate|withPlan/, 'the legacy submit flags must not appear');
   assert.doesNotMatch(src, /intent-gate|action-validator/, 'the intent gate must not be invoked');
+});
+
+test('V2SVC-11: record and create share one ledger, including subsequent record retries', () => {
+  const fx = fixture('af-v2svc-ledger-');
+  try {
+    const spec = specFor(fx);
+    const env = { ...process.env, AF_SUBMISSION_DIR: fx.submissionsDir };
+    const prepared = recordSubmission({ spec, allowedRoots: [fx.target], env });
+    assert.equal(prepared.ok, true, prepared.reason);
+    assert.equal(prepared.record.state, 'PREPARED');
+    const created = create(fx);
+    assert.equal(created.ok, true, created.reason);
+    const retry = recordSubmission({ spec, allowedRoots: [fx.target], env });
+    assert.equal(retry.record.state, 'TASK_CREATED');
+    assert.equal(retry.record.task_id, created.task_id);
+    assert.deepEqual(readdirSync(fx.submissionsDir), [`${submissionKeyDigest(spec.idempotency_key)}.json`]);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('V2SVC-12: reusing a key with changed goal, context or scope is refused', () => {
+  const fx = fixture('af-v2svc-identity-');
+  try {
+    const first = create(fx);
+    assert.equal(first.ok, true, first.reason);
+    for (const changes of [{ goal: 'a different goal' }, { context: 'new context' }, { proposed_required: ['src/**'] }]) {
+      const retry = create(fx, changes);
+      assert.equal(retry.ok, false);
+      assert.match(retry.reason, /IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_SPEC/);
+    }
+    assert.equal(readdirSync(fx.tasksDir).length, 1);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('V2SVC-13: interrupted creation repairs the ledger and reuses the assigned task id', () => {
+  const fx = fixture('af-v2svc-crash-');
+  try {
+    const first = create(fx);
+    const ledgerPath = join(fx.submissionsDir, `${submissionKeyDigest(specFor(fx).idempotency_key)}.json`);
+    const record = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+    record.state = 'CREATING';
+    writeFileSync(ledgerPath, JSON.stringify(record));
+    unlinkSync(join(fx.tasksDir, `${first.task_id}.json`));
+    const repaired = create(fx);
+    assert.equal(repaired.ok, true, repaired.reason);
+    assert.equal(repaired.task_id, first.task_id);
+    assert.equal(JSON.parse(readFileSync(ledgerPath, 'utf8')).state, 'TASK_CREATED');
+    assert.equal(readdirSync(fx.tasksDir).length, 1);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('V2SVC-14: a legacy binding is adopted without replacing its task', () => {
+  const fx = fixture('af-v2svc-legacy-');
+  try {
+    const first = create(fx);
+    const digest = submissionKeyDigest(specFor(fx).idempotency_key);
+    unlinkSync(join(fx.submissionsDir, `${digest}.json`));
+    writeFileSync(join(fx.submissionsDir, `${digest}.task.json`), JSON.stringify({ task_id: first.task_id }));
+    const adopted = create(fx);
+    assert.equal(adopted.ok, true, adopted.reason);
+    assert.equal(adopted.created, false);
+    assert.equal(adopted.task_id, first.task_id);
+    assert.equal(JSON.parse(readFileSync(join(fx.submissionsDir, `${digest}.json`), 'utf8')).task_id, first.task_id);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('V2SVC-15: healthy but unschedulable executors are refused at creation', () => {
+  const fx = fixture('af-v2svc-eligibility-');
+  try {
+    const res = create(fx, {}, {
+      authorExecutor: 'blocked', reviewerExecutor: 'ready',
+      adapters: { blocked: { health: () => ({ ok: true }), schedulable: false }, ready: { health: () => ({ ok: true }) } },
+      capabilityMap: new Map(), availabilityMap: new Map(), runtimeGuard: null,
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.reason, /not schedulable/);
+    assert.equal(readdirSync(fx.tasksDir).length, 0);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('V2SVC-16: the configured fix budget is persisted in the V2 phase contract', () => {
+  const fx = fixture('af-v2svc-budget-');
+  try {
+    const res = create(fx, {}, { maxRevisions: 0 });
+    assert.equal(res.ok, true, res.reason);
+    assert.equal(res.task.trusted_import.max_revisions, 0);
+    assert.equal(res.task.trusted_import.phase, 'CREATED');
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });

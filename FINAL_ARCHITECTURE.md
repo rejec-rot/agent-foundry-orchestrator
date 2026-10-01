@@ -1,8 +1,10 @@
 # Agent Foundry Orchestrator — Architecture Specification (Full Stack v1.2)
 
-> **当前架构版本：** Production Release v1.2 (Full Capabilities Baseline)  
+> **文档范围：** 历史 Production Release v1.2 (Full Capabilities Baseline)
 > **自动化测试状态：** **182 / 182 PASS (100%)**  
 > **设计核心：** 零外部数据库、零常驻守护进程、纯文件系统原子持久化、环境自适应无硬编码路径。
+
+2026-10-01 的方案二协作核心通过 [ADR 0011](docs/adr/0011-team-collaboration-controller.md) 更新了“零常驻守护进程”假设：团队任务由一个持租约的本地控制器管理，Trusted Import 负责交付，旧 scheduler 保留历史任务兼容。下文与测试数字保留为 v1.2 基线记录；当前协作入口与支持范围以 [README](README.md) 和[方案二](docs/design/MULTI-AGENT-PLAN-B-COLLABORATION-CORE.md) 为准。
 
 ---
 
