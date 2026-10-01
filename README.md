@@ -1,15 +1,90 @@
 # Agent Foundry Next
 
-面向多执行器任务的控制平面：组织 author、独立 reviewer 和确定性验收，通过 **Trusted Import V2** 将获准的候选改动提升为正式代码版本。
+面向共享目标的多 agents 协作平台：主作者组织分工与整合，多个 worker 独立执行、交换消息，用户能调整指定工作项。**Trusted Import V2** 负责成果的独立评审、授权、验收与正式代码提升。
 
-当前版本：`2.0.0-dev`。已完成本地 Docker 部署验收及 Codex＋Cline 真实 V2 冒烟；不代表所有执行器、任务类型和部署环境均已通过生产验收。
+当前版本：`2.0.0-dev`。方案二的首期协作核心已实现，入口是 **`/teams.html`** 和 **`af-admin team`**。历史单作者 V2 链路完成过本地 Docker 部署验收及 Codex＋Cline 冒烟；新团队链路的真实模型账号联调仍需单独验收。
 
 项目源自 `opperl1114/agent-foundry-orchestrator` 的 `434114e`（v1.2.0），是独立升级线。许可仍为 `UNLICENSED`，公开发布条件见 [NOTICE.md](NOTICE.md) 和 [ADR-0003](docs/adr/0003-upstream-license-unresolved.md)。
+
+## 新人先看：一个目标怎样完成
+
+你提供目标、项目路径和验收要求。主作者把目标拆成有依赖关系的工作项；workers 执行分工、交换信息并提交成果；主作者整合后，交付服务完成独立评审、授权和验收。
+
+下面的 Mermaid 流程图可在 GitHub README 中直接查看。主线按从上到下阅读，虚线表示用户介入与成员通信。不支持 Mermaid 的阅读器可打开[协作流程 SVG](docs/diagrams/team-workflow.svg)。
+
+```mermaid
+flowchart TD
+    USER["用户提交目标、项目与验收要求"] --> CONTROL["团队控制器登记目标并绑定成员"]
+    CONTROL --> LEAD["主作者拆解工作项、分工与依赖"]
+    LEAD --> WORK["Workers 按依赖执行<br/>额度允许时，独立任务并行"]
+    WORK -. "下一轮执行领取" .-> MESSAGE["成员请求与回复"]
+    MESSAGE -. "交换信息" .-> WORK
+    USER -. "定向调整或改派" .-> ADJUST["更新工作项版本<br/>停止旧尝试，使受影响下游失效"]
+    ADJUST --> WORK
+    WORK --> ARTIFACT["提交不可变成果<br/>拒绝过期尝试的结果"]
+    ARTIFACT --> INTEGRATE["主作者整合团队成果"]
+    INTEGRATE --> SEAL["确认所有写者停止<br/>捕获并密封候选代码"]
+    SEAL --> REVIEW{"独立评审通过？"}
+    REVIEW -- "需返工且有预算" --> FIX["主作者选择相关工作项返工"]
+    FIX --> WORK
+    REVIEW -- "通过" --> AUTH["授权检查<br/>必要时等待人工批准"]
+    AUTH --> VERIFY["执行受信验收命令<br/>绑定候选与验收证据"]
+    VERIFY --> PASS{"验收通过？"}
+    PASS -- "通过" --> PROMOTE["最终校验并原子晋升正式版本"]
+    PROMOTE --> DONE["记录完成状态与交付证据"]
+    PASS -- "不通过" --> BLOCK["阻止交付<br/>查看失败证据后处理"]
+    REVIEW -- "无法继续" --> BLOCK
+```
+
+这张图描述正常协作与交付路径。授权未通过、整合发生冲突、执行预算耗尽或旧执行范围无法确认时，系统会停留在相应待处理状态；不会绕过检查直接交付。
+
+## 谁负责什么
+
+| 角色 | 职责 |
+|---|---|
+| 用户 | 定义目标与验收要求，查看进展，调整工作方向、改派、暂停或取消，处理人工审批 |
+| 主作者 | 规划工作图与依赖，协调成员，整合成果，根据评审反馈选择局部返工 |
+| Workers | 完成各自工作项，向成员提问或回复，提交可追踪的成果 |
+| 团队控制器 | 管理调度、消息、版本、运行记录与恢复；这是后台服务，不是模型成员 |
+| 独立评审者 | 审查密封候选；其执行器与所有团队写入执行器分别绑定 |
+| Trusted Import V2 | 承接代码交付，检查授权、执行验收并晋升正式版本 |
+
+默认团队是一名主作者加三个 worker，worker 数量可配置为 **1–8 个**。成员身份与执行器、模型账号、CLI 会话分别记录；成员数量不等于不同账号的数量，也不保证所有成员同时执行。
+
+## 中途改需求会怎样
+
+例如，主作者把登录功能分成接口、独立的页面框架和集成测试。这里假定页面框架不依赖接口实现，集成测试依赖二者。你调整接口工作项后，接口和受影响的测试重新执行，页面框架成果保留。
+
+```mermaid
+flowchart LR
+    USER["用户调整接口要求"] --> API["接口工作项<br/>新版本重新执行"]
+    API --> TEST["集成测试<br/>依赖受影响，重新执行"]
+    UI["独立页面框架<br/>保留已接受成果"] --> TEST
+    OLD["接口旧尝试的迟到结果"] -. "版本校验拒绝" .-> REJECT["不能覆盖新方向"]
+    classDef rerun fill:#fff3cd,stroke:#946200,color:#332600;
+    classDef retained fill:#e6f4ea,stroke:#26713d,color:#153e22;
+    classDef rejected fill:#fce8e6,stroke:#a83228,color:#591b16;
+    class API,TEST rerun;
+    class UI retained;
+    class OLD,REJECT rejected;
+```
+
+也可直接打开[局部返工 SVG](docs/diagrams/team-rework.svg)。是否保留成果由工作图的实际依赖决定。页面和命令行通过 `queued`（已排队）、`received`（已接收）、`applied`（已落实）区分操作回执；成员消息的领取和落实以受控执行记录为依据。消息在下一轮执行时领取，目前不支持运行中的即时注入。
+
+## 从哪里开始
+
+1. 阅读上面的流程和[当前能力与边界](#当前能力与边界)，了解协作与交付分别负责什么。
+2. 按[环境与配置](#环境与配置)准备 Node.js、Git、执行器认证与隔离；配置项目注册表和受信验收 profile。
+3. 按[团队入口](#团队入口)创建并启动目标，在 `/teams.html` 查看分工、依赖、消息、成果和交付状态。
+4. 开发者从 `lib/team/`、`server/read-api.mjs` 和 `tests/team-*.test.mjs` 开始；部署与恢复参考[运维手册](OPERATOR_RUNBOOK.md)。
 
 ## 当前能力与边界
 
 | 能力 | 当前状态 |
 |---|---|
+| 团队协作 | 常驻控制器、主作者与 1–8 个注册 worker、工作依赖、独立尝试与不可变产物 |
+| 成员通信与人工调整 | 版本化消息、成员回复、工作项改派、定向失效、queued/received/applied 回执 |
+| 团队恢复 | 租约与提交序号、指令去重、已确认 scope 的中断恢复；未知写者阻止重跑与交付 |
 | V2 主入口 | 显式设置 `trusted_import.enabled: true` 后启用 |
 | 独立评审 | 显式指定独立 reviewer，评审密封候选快照 |
 | 捕获与授权 | 文件系统捕获、内容寻址存储（CAS）、快照、差异及累计授权闭包 |
@@ -18,7 +93,36 @@
 | 写者回收 | Docker 或 delegated cgroup；进程组退出本身不证明所有写者已停止 |
 | 持久化回收 | 未确认 scope 清空时保留句柄；dry-run 不执行 scope 回收 |
 
-V2 当前仅接纳单任务 `workspace` 流程，拒绝 `governed_write` 和多步骤规划。旧版规划、多步骤与治理路径仍保留，但不等于已接入 V2。Scope Verifier、Human Gate 等库模块存在，也不代表主入口已支持完整人工审批与自动修复循环。
+Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图、通信和调整由协作控制器管理。独立评审反馈能返回主作者选择局部返工，签名审批通过正常入口恢复。旧历史任务保留原流程；新的团队任务由兼容入口转交协作控制器，旧 scheduler 不能再直接派发。
+
+## 团队入口
+
+先按既有部署要求配置项目注册表、验收 profile 和执行器隔离。创建使用与 V2 相同的提交 JSON：`goal`、`target_path`、`acceptance`、`idempotency_key`；执行器由平台绑定。
+
+将下面的示例保存为 `team-goal.json`，并替换项目路径、目标与验收命令。验收命令必须与项目已登记的受信 profile 一致；`idempotency_key` 用于识别同一提交的重试。
+
+```json
+{
+  "goal": "为已登记的项目完成登录功能，并通过验收测试",
+  "target_path": "/path/to/registered-project",
+  "acceptance": {"command": "node", "args": ["--test", "tests/auth.test.mjs"]},
+  "idempotency_key": "login-feature-001"
+}
+```
+
+```bash
+node af-admin.mjs team create --spec team-goal.json --root /path/to/registered-project --workers 3
+node af-admin.mjs team list
+node af-admin.mjs team start --team TEAM-your-task-id
+node af-admin.mjs team show --team TEAM-your-task-id
+node af-admin.mjs team adjust --team TEAM-your-task-id --work-item your-work-item --expected-revision 1 --message "新的工作方向"
+```
+
+首次操作会启动持有全局团队租约的本地控制器；也可用 `node af-admin.mjs team serve` 在前台运行。前台服务收到 SIGINT/SIGTERM 时停止派发并等待受控执行范围退出。运行目录与任务目录通过 `AF_RUNTIME_DIR`、`AF_TASKS_DIR`、`AF_LOCKS_DIR` 或对应 CLI 参数配置，所有入口应使用同一组目录。自动启动的进程 PID 和 owner token 在 `locks/team-controller.lock`，日志在 `runtime/team-controller.log`。
+
+Web 使用现有令牌鉴权启动：`node af-admin.mjs web serve --allow-write --root /path/to/registered-project`，打开 `/teams.html`。页面支持创建、启动、查看分工、成员消息、定向调整、暂停和继续交付。消息在下一轮执行中领取；不会显示未经控制器确认的“已落实”。额度允许时独立工作项并行执行，单项调整保留无关产物；已完成目标再次调整会采用最新 canonical 基线进入新目标版本。
+
+首期使用原子文件和不可变顺序日志，未引入数据库或模型框架。跨目标成员共享与模型运行中实时消息注入尚未实现。设计、部署假设和验收证据分别见[方案二](docs/design/MULTI-AGENT-PLAN-B-COLLABORATION-CORE.md)、[ADR 0011](docs/adr/0011-team-collaboration-controller.md) 和[实施记录](docs/reviews/2026-10-01-team-core-implementation.md)。
 
 ## Trusted Import 流程
 
@@ -47,6 +151,8 @@ V2 当前仅接纳单任务 `workspace` 流程，拒绝 `governed_write` 和多�
 
 | 范围 | 记录结果 | 说明 |
 |---|---|---|
+| 协作核心与全量回归（2026-10-01） | 802 项：799 通过、3 跳过、0 失败、0 取消 | 模型输出使用受控适配器；文件投影、CAS、锁、验收和 Git 晋升使用实际实现；见[实施记录](docs/reviews/2026-10-01-team-core-implementation.md) |
+| 团队页面（2026-10-01） | 桌面与手机浏览器检查通过 | 覆盖创建、鉴权、消息回执、定向调整、无关成果保留、旧尝试拒绝及刷新恢复；使用受控模型适配器 |
 | V2、回收与终止句柄回归（`8c91800`） | 68/68 通过 | 包括 dry-run、取消、并发与崩溃恢复 |
 | Docker 部署验收（`358f99c`） | 2/2 通过 | 本地确定性执行器，`node:24-alpine`，网络为 `none` |
 | 默认回归（`358f99c` 阶段） | 362 项：359 通过、3 跳过、0 失败、0 取消 | 跳过两个部署用例及真实 Codex GP-4 |
@@ -143,6 +249,8 @@ GP-4 是运行时护栏探针，不等于完整 V2 冒烟。报告应分别列�
 
 ## 已知限制
 
+- 团队协作首期的模型执行通过受控适配器验证；真实模型账号的完整团队任务与新控制器的生产部署尚未验收。
+- 跨目标成员共享、模型运行中的实时消息注入和团队日志压缩尚未实现。
 - 真实端到端已验证的是上述 Codex＋Cline 组合；CLI 安装或 health 通过不代表其他执行器已完成真实任务验证。
 - AGY 容器认证与服务可用性仍待解决：已有诊断发现容器无法匹配登录 profile，宿主已认证请求遇到区域拒绝，不能据此认定当前账号封禁。区域拒绝被识别为不可重试的环境故障。
 - 镜像、CLI、账号认证、网络和服务端模型可用性都是部署条件；一次冒烟不覆盖所有环境。
@@ -153,6 +261,12 @@ GP-4 是运行时护栏探针，不等于完整 V2 冒烟。报告应分别列�
 
 | 路径 | 用途 |
 |---|---|
+| `af-team.mjs`、`af-admin.mjs team` | 团队创建、查询、控制与控制器入口 |
+| `lib/team/` | 目标与成员模型、工作依赖、通信、调度、成果整合及交付衔接 |
+| `web/teams.html`、`server/read-api.mjs` | 团队页面与 HTTP 入口 |
+| `tests/team-*.test.mjs`、`qa/team-browser.mjs` | 团队回归与真实浏览器检查；模型输出使用受控适配器 |
+| `prototypes/` | 前端视觉与交互原型，使用模拟数据，与正式团队页面分别维护 |
+| [协作核心决策](docs/adr/0011-team-collaboration-controller.md) | 控制器、持久化、恢复与执行边界 |
 | `orchestrator.mjs` | 任务入口、执行与恢复 |
 | `lib/trusted-import/` | 捕获、快照、授权、证据、提升与 V2 适配 |
 | `lib/adapters.mjs`、`bin/` | 执行器协议与启动器 |
