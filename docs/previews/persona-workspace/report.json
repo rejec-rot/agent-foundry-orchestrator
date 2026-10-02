@@ -23,9 +23,11 @@
     "local Chinese heading and body typography",
     "cut action and arrow plate",
     "360–1920px responsive layouts",
-    "reduced motion"
+    "reduced motion",
+    "Planner model and effort persist through browser creation",
+    "Reviewer receives the selected configuration"
   ],
   "desktop": "team-desktop.png",
   "mobile": "team-mobile.png",
-  "verified_at": "2026-10-02T08:05:47.917Z"
+  "verified_at": "2026-10-02T09:41:48.499Z"
 }

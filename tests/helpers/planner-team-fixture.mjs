@@ -3,17 +3,20 @@ import { join } from 'node:path';
 import { fixture, adaptersFor, plan, output, END } from './team-fixture.mjs';
 import { readTeam, commitTeam, submitTeamCommand } from '../../lib/team/store.mjs';
 
-export function plannerFixture({dispatch='human',run,revise,proposal}={}) {
+export function plannerFixture({dispatch='human',run,revise,proposal,effort=null}={}) {
   const fx=fixture(),io=adaptersFor(fx,{run}),calls=[];
   fx.task.reviewer_executor='writer';fx.task.author_model='planning-model';fx.task.reviewer_model='planning-model';
   fx.task.team_review_policy={mode:'planner-model-fresh-session',team_id:fx.team.team_id,executor_type:'writer',model:'planning-model'};
+  if(effort){fx.task.author_effort=effort;fx.task.reviewer_effort=effort;fx.task.team_review_policy.effort=effort;}
   writeFileSync(join(fx.options.tasksDir,fx.task.task_id+'.json'),JSON.stringify(fx.task));
   const team=readTeam(fx.options.runtimeDir,fx.team.team_id);
   team.state='DISCUSSING';team.rework_requests=[];
   team.members[0].model='planning-model';
-  team.planning={workflow:'planner',dispatch_mode:dispatch,planner:{executor_type:'writer',model:'planning-model'},eligible_executors:[{executor_type:'writer',supports_model:true}],approved_plan_revision:null};
+  if(effort)team.members[0].effort=effort;
+  team.planning={workflow:'planner',dispatch_mode:dispatch,planner:{executor_type:'writer',model:'planning-model',...(effort?{effort}:{})},eligible_executors:[{executor_type:'writer',supports_model:true,supports_effort:true,reasoning_efforts:['low','medium','high'],models:[]}],approved_plan_revision:null};
   commitTeam(fx.options.runtimeDir,team,'planner-fixture',null,()=>{});
   const original=io.adapters.writer.run;io.adapters.writer.supportsModel=true;
+  io.adapters.writer.reasoningEfforts=['low','medium','high'];
   io.adapters.writer.run=async capsule=>{
     calls.push(capsule);
     if(capsule.assigned_role==='reviewer')return io.adapters.reviewer.run(capsule);

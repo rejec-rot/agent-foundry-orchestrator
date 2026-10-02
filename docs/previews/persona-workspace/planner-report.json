@@ -21,7 +21,15 @@
     "320–1920px responsive layouts",
     "mobile dispatch dialog",
     "keyboard focus",
-    "reduced motion"
+    "reduced motion",
+    "compact goal creation",
+    "custom model selection",
+    "executor-specific effort choices",
+    "changing Agent clears incompatible overrides",
+    "model-specific effort gating",
+    "Planner effort reaches execution",
+    "per-worker effort reaches execution",
+    "mobile create dialog"
   ],
-  "verified_at": "2026-10-02T08:07:08.738Z"
+  "verified_at": "2026-10-02T09:43:53.834Z"
 }

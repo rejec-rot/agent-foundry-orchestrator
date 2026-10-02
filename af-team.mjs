@@ -31,11 +31,12 @@ export async function runTeamCli(args=process.argv.slice(2)) {
     const registryFile=process.env.AF_PROJECTS_FILE??join(ROOT,'config','projects.json');
     const loaded=loadProjectRegistry({file:registryFile});if(!loaded.ok) throw new Error(loaded.reason);
     const allowedRoots=[];args.forEach((arg,i)=>{if(arg==='--root'&&args[i+1])allowedRoots.push(args[i+1]);});
-    const planning=args.includes('--planning')||value('--planner-executor')||value('--planner-model')||value('--dispatch-mode')?{
+    const planning=args.includes('--planning')||value('--planner-executor')||value('--planner-model')||value('--planner-effort')||value('--dispatch-mode')?{
       dispatch_mode:value('--dispatch-mode')??'human',
-      ...(value('--planner-executor')?{planner:{executor_type:value('--planner-executor'),model:value('--planner-model')??null}}:{}),
+      ...(value('--planner-executor')?{planner:{executor_type:value('--planner-executor'),model:value('--planner-model')??null,effort:value('--planner-effort')??null}}:{}),
     }:null;
     if(value('--planner-model')&&!value('--planner-executor'))throw new Error('--planner-model requires --planner-executor');
+    if(value('--planner-effort')&&!value('--planner-executor'))throw new Error('--planner-effort requires --planner-executor');
     return createCollaborationTeam({...options,spec,allowedRoots,workerCount:Number(value('--workers')??3),planning,
       projectRegistry:loaded.registry,registryFile,registryDigest:loaded.digest,
       allowlist:loadAcceptanceAllowlist({file:acceptanceAllowlistFile(process.env)}),acceptanceCommandAllowed});

@@ -101,11 +101,15 @@ try {
   await browser.waitFor("document.querySelector('#create-dialog .dialog-feedback')?.textContent.includes('JSON')&&!document.getElementById('create')?.disabled");
   assert.equal(await browser.evaluate("document.getElementById('create-dialog').open&&document.getElementById('goal').value==='browser-created team'"),true,'invalid input keeps the dialog and user draft');
   await browser.evaluate('document.getElementById("args").value=JSON.stringify(["--test","tests/gate.test.mjs"])');
-  await browser.evaluate("document.getElementById('planner-executor').value='codex';document.getElementById('planner-executor').dispatchEvent(new Event('change',{bubbles:true}))");
+  await browser.evaluate("document.getElementById('planner-executor').value='codex';document.getElementById('planner-executor').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('planner-model-select').value='__custom';document.getElementById('planner-model-select').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('planner-model-input').value='selected/planner-model';document.getElementById('planner-model-input').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('planner-effort').value='high'");
   await browser.click('#create');
   await browser.waitFor("document.getElementById('team-goal')?.textContent==='browser-created team'");
   assert.equal(await browser.evaluate("document.getElementById('create-dialog').open"),false,'successful creation closes the dialog');
   assert.equal(await browser.evaluate("document.querySelectorAll('[data-member]').length"),4);
+  const created=readTeam(fx.options.runtimeDir,await browser.evaluate("document.getElementById('team-meta').title"));
+  assert.deepEqual(created.planning.planner,{executor_type:'codex',model:'selected/planner-model',effort:'high'});
+  const deliveryTask=JSON.parse(readFileSync(join(fx.options.tasksDir,created.delivery_task_id+'.json'),'utf8'));
+  assert.equal(deliveryTask.reviewer_model,'selected/planner-model');assert.equal(deliveryTask.reviewer_effort,'high');
   for(const width of [360,768,1024,1920]){await browser.send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:width<720});assert.equal(await browser.evaluate('document.documentElement.scrollWidth<=innerWidth+2'),true,`no overflow at ${width}px`);}
   await browser.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   assert.equal(await browser.evaluate("getComputedStyle(document.querySelector('.member-card')).transitionDuration==='0s'"),true,'reduced motion is honored');
@@ -114,7 +118,7 @@ try {
   await browser.waitFor("document.querySelectorAll('#tasks .row').length>=2");
   assert.equal(await browser.evaluate('location.hash'),'#'+fx.task.task_id,'historical task bookmarks retain their task identity');
   assert.deepEqual(browser.errors,[]);assert.deepEqual(tickErrors,[]);
-  report={ok:true,browser:'Chromium',model_adapters:'controlled test adapters',checks:['default collaboration entry','historical task bookmark compatibility','authenticated pointer actions','four registered members','dependency graph','member message receipt','message escaping','scoped adjustment','unchanged peer artifact','old result discarded','reload persistence','aligned desktop Planner and plan','mobile navigation and focus restoration','registered-profile creation dialog','inline error feedback preserves user draft','keyboard activity tabs','self-hosted display font','local Chinese heading and body typography','cut action and arrow plate','360–1920px responsive layouts','reduced motion'],desktop:'team-desktop.png',mobile:'team-mobile.png',verified_at:new Date().toISOString()};
+  report={ok:true,browser:'Chromium',model_adapters:'controlled test adapters',checks:['default collaboration entry','historical task bookmark compatibility','authenticated pointer actions','four registered members','dependency graph','member message receipt','message escaping','scoped adjustment','unchanged peer artifact','old result discarded','reload persistence','aligned desktop Planner and plan','mobile navigation and focus restoration','registered-profile creation dialog','inline error feedback preserves user draft','keyboard activity tabs','self-hosted display font','local Chinese heading and body typography','cut action and arrow plate','360–1920px responsive layouts','reduced motion','Planner model and effort persist through browser creation','Reviewer receives the selected configuration'],desktop:'team-desktop.png',mobile:'team-mobile.png',verified_at:new Date().toISOString()};
 } finally {
   clearInterval(timer);browser?.close();
   if(chrome.exitCode===null&&chrome.signalCode===null)await new Promise(resolve=>{

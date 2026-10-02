@@ -40,6 +40,9 @@ import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 import { disabledExecutors } from '../lib/operator-control.mjs';
 import { createCollaborationTeam, commandTeam } from '../lib/team/service.mjs';
 import { supportsModel, supportsPlanner } from '../lib/team/planner.mjs';
+import { agentOptions } from '../lib/team/agent-options.mjs';
+import { loadCapabilityMap } from '../lib/executor-router.mjs';
+import { ADAPTERS } from '../lib/adapters.mjs';
 import { listTeams, teamView } from '../lib/team/store.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -379,17 +382,23 @@ export function createReadApi({
         // says whether it MAY. Showing "AVAILABLE" for an executor the system will refuse is a false
         // statement to the operator, so the disable list wins here too.
         const operatorDisabled = new Set(disabledExecutors());
-        const executors = [...(status?.values?.() ?? [])].map((entry) => ({
+        const definitions = loadCapabilityMap();
+        const entries = new Map(status);
+        for (const id of Object.keys(ADAPTERS).filter(id => supportsPlanner(id))) {
+          if (!entries.has(id)) entries.set(id, { executor_id:id, availability_status:'UNREGISTERED', capability_status:'UNKNOWN', reason:'executor registry entry missing; model choices are configuration only' });
+        }
+        const executors = [...entries.values()].map((entry) => ({
           id: entry.executor_id,
           availability: operatorDisabled.has(entry.executor_id) ? 'DISABLED_BY_OPERATOR' : entry.availability_status,
           capability: entry.capability_status,
           supports_model: supportsModel(entry.executor_id),
           supports_planner: supportsPlanner(entry.executor_id),
+          ...agentOptions(entry.executor_id, { definition:definitions.get(entry.executor_id) ?? {} }),
           reason: operatorDisabled.has(entry.executor_id)
             ? 'disabled by the operator (config/operator-executors.json); the platform will refuse to bind or run it'
             : (entry.reason ?? null),
         }));
-        return sendJson(res, 200, shape({ schema: 'af-v2-executors-v1', generated_at: new Date(at).toISOString(), executors, source: 'executor capability registry (read-only projection)' }));
+        return sendJson(res, 200, shape({ schema: 'af-v2-executors-v1', generated_at: new Date(at).toISOString(), executors, registry_configured:status.size > 0, source: 'executor capability registry and local model metadata (read-only projection)' }));
       }
       if (path === '/api/v2/environment') {
         return sendJson(res, 200, shape({

@@ -12,16 +12,22 @@
 {
   "planning": {
     "dispatch_mode": "human",
-    "planner": {"executor_type": "codex", "model": null},
+    "planner": {"executor_type": "codex", "model": null, "effort": "high"},
     "workers": [
-      {"executor_type": "codex", "model": null},
-      {"executor_type": "cline", "model": null}
+      {"executor_type": "codex", "model": null, "effort": "low"},
+      {"executor_type": "cline", "model": null, "effort": "xhigh"}
     ]
   }
 }
 ```
 
 `workers` 可省略，使用 `worker_count` 作为初始参考编组。模型填执行器支持的 ID，`null` 沿用 CLI 默认值。每个 Worker 可以使用相同或不同的配置。服务端仍拒绝未知、不可用、被操作员禁用的执行器，以及适配器不支持的模型覆盖；Planner/Reviewer 要求支持独立会话身份。
+
+`effort` 可省略或设为 `null`，沿用执行器默认思考强度；显式等级须通过服务端执行器和模型元数据校验。创建页直接展示 Planner 的 Agent、模型与思考强度，默认折叠开工授权与验收参数，不提前要求 Worker 人数。Planner 的编组提案可选择每位 Worker 的模型与 `effort`，手动确认时可调整。Planner 配置持久化到成员、任务的 `author_effort` / `reviewer_effort` 和同模型复检策略，每次执行会传入 capsule；运行记录也保存强度。
+
+`GET /api/v2/executors` 增加 `models`、`reasoning_efforts`、`default_model`、`default_effort`。Codex 从本地 `models_cache.json` 读取可展示模型及各模型等级，Cline 只展示当前 provider 的配置模型；其他模型可自定义或由唯一执行器注册表提供 `model_options: [{"id":"model-id","label":"Model","reasoning_efforts":["low","high"]}]`。读取时只投影白名单字段，绝不返回 provider key 或账户身份。未注册适配器的目录标记 `UNREGISTERED`，允许预览配置，禁止创建和派工，不能作为可运行注册表事实。已停用状态仍优先。
+
+思考强度不跨执行器硬套一组值。OpenAI Docs 将 `model_reasoning_effort` 定义为所选模型公布的等级，实际可选等级取决于模型与客户端；参见 [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。Cline 的等级与已安装 CLI 的 `--thinking` 一致。自定义模型没有本地元数据时只按执行器校验，最终可用性仍由模型提供方确认。
 
 团队从 `DISCUSSING` 开始。`message` 发给 `lead` 会启动只讨论、不编辑文件的 Planner 回合；回复来自受控运行的真实 `summary`，持久化到带 `from_run_id` 的对话记录。`propose_plan` 请求计划，Planner 返回 `workers` 推荐编组与完整工作图。
 
@@ -52,7 +58,7 @@ Planner 回合不能修改工作文件。版本或工作图变化后，旧 Plann
 
 ## 同模型 Reviewer
 
-仅 Planner 团队使用服务端写入的 `planner-model-fresh-session` 策略。Reviewer 使用相同执行器与模型参数，但每次通过 `adapter.run` 创建新运行，不恢复 Planner/Worker 会话。缺失复检会话身份或与任何已记录 Planner/Worker 会话冲突时拒绝结果。默认 V2 的不同执行器约束保留。
+仅 Planner 团队使用服务端写入的 `planner-model-fresh-session` 策略。Reviewer 使用相同执行器、模型与显式思考强度参数，但每次通过 `adapter.run` 创建新运行，不恢复 Planner/Worker 会话。缺失复检会话身份或与任何已记录 Planner/Worker 会话冲突时拒绝结果。默认 V2 的不同执行器约束保留。Planner 团队的执行与复检禁止静默模型降级；配额不足直接保留失败原因，不触发 Cline 的旧模型/强度回退。
 
 成果仍经过既有停止证明、快照密封、候选绑定、授权、受信验收与最终提升。选择同模型不会跳过这些交付检查。
 

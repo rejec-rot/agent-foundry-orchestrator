@@ -117,11 +117,34 @@ test('CLINE-7: Cline adapter sets max reasoning effort (xhigh) for deepseek fall
     const effortIndex = args.indexOf('--thinking');
     assert.ok(effortIndex >= 0, 'the adapter must pass --thinking for a deepseek model');
     assert.strictEqual(args[effortIndex + 1], 'xhigh', 'deepseek models must run at xhigh reasoning effort');
+    await ClineAdapter.run({task_id:'TASK-CLINE-7-explicit',assigned_role:'author',prompt:'Respect the selected effort',model:'cline-pass/deepseek-v4-flash',effort:'low',cwd:tmpdir(),timeout_ms:15000});
+    const explicitArgs=readFileSync(STUB_ARGV_LOG,'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line)).at(-1);
+    assert.strictEqual(explicitArgs[explicitArgs.indexOf('--thinking')+1],'low','explicit effort wins over the deepseek default');
   } finally {
     if (previousLauncher === undefined) delete process.env.CLINE_LAUNCHER;
     else process.env.CLINE_LAUNCHER = previousLauncher;
     if (previousLog === undefined) delete process.env.AF_STUB_ARGV_LOG;
     else process.env.AF_STUB_ARGV_LOG = previousLog;
+  }
+});
+
+test('CLINE-12: Planner-bound model choices never silently switch model or effort on quota refusal', async () => {
+  const { RATE_LIMIT_STUB, STUB_ARGV_LOG } = await import('./helpers/executor-stub-launcher.mjs');
+  const { runtimeGuard } = await import('../lib/executor-runtime-guard.mjs');
+  const previousLauncher=process.env.CLINE_LAUNCHER,previousLog=process.env.AF_STUB_ARGV_LOG;
+  process.env.CLINE_LAUNCHER=RATE_LIMIT_STUB;process.env.AF_STUB_ARGV_LOG=STUB_ARGV_LOG;
+  rmSync(STUB_ARGV_LOG,{force:true});
+  try {
+    const result=await ClineAdapter.run({task_id:'TASK-CLINE-12',assigned_role:'author',prompt:'Preserve operator model configuration',model:'selected/model',effort:'high',allow_model_fallback:false,cwd:tmpdir(),timeout_ms:15000});
+    assert.strictEqual(result.status,'failed');assert.strictEqual(result.error_classification.category,'RATE_LIMIT');
+    assert.strictEqual(result.fallback_blocked,undefined);
+    const calls=readFileSync(STUB_ARGV_LOG,'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line));
+    assert.strictEqual(calls.length,1);assert.strictEqual(calls[0][calls[0].indexOf('-m')+1],'selected/model');
+    assert.strictEqual(calls[0][calls[0].indexOf('--thinking')+1],'high');
+  } finally {
+    if(previousLauncher===undefined)delete process.env.CLINE_LAUNCHER;else process.env.CLINE_LAUNCHER=previousLauncher;
+    if(previousLog===undefined)delete process.env.AF_STUB_ARGV_LOG;else process.env.AF_STUB_ARGV_LOG=previousLog;
+    runtimeGuard.resetCircuit('cline',{reset_by:'test',reason:'CLINE-12 cleanup'});
   }
 });
 

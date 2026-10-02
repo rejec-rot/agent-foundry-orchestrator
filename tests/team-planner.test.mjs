@@ -15,7 +15,7 @@ function approve(fx,c,extra={}) {
 }
 
 test('Planner chat and plan proposals never dispatch workers before human confirmation; mixed models reach real capsules',async()=>{
-  const fx=plannerFixture(),c=new TeamController({...fx.options,...fx.io,autoDeliver:false});
+  const fx=plannerFixture({effort:'high'}),c=new TeamController({...fx.options,...fx.io,autoDeliver:false});
   try {
     fx.send({type:'message',agent_id:'lead',message:'讨论目标与约束'},'CMD-chat');
     await drive(c,()=>c.read(fx.team.team_id).commands['CMD-chat']?.status==='applied');
@@ -25,24 +25,42 @@ test('Planner chat and plan proposals never dispatch workers before human confir
     assert.equal(fx.calls.filter(x=>['a','b','c'].includes(x.work_item_id)).length,0);
     fx.send({type:'start'},'CMD-no-bypass');await c.tick();assert.equal(c.read(fx.team.team_id).commands['CMD-no-bypass'].status,'rejected');
     fx.send({type:'approve_plan',expected_plan_revision:0,expected_goal_revision:1},'CMD-stale');await c.tick();assert.equal(c.read(fx.team.team_id).commands['CMD-stale'].code,'TEAM_VERSION_CONFLICT');
-    approve(fx,c,{workers:[{executor_type:'writer',model:'worker-fast'},{executor_type:'writer',model:'worker-deep'}],assignments:{a:'worker-1',b:'worker-2',c:'worker-2'}});
+    approve(fx,c,{workers:[{executor_type:'writer',model:'worker-fast',effort:'low'},{executor_type:'writer',model:'worker-deep',effort:'high'}],assignments:{a:'worker-1',b:'worker-2',c:'worker-2'}});
     await drive(c,()=>c.read(fx.team.team_id).state==='READY_FOR_REVIEW');
     assert.equal(fx.calls.find(x=>x.work_item_id==='discuss').model,'planning-model');
+    assert.equal(fx.calls.find(x=>x.work_item_id==='discuss').effort,'high');
+    assert.equal(fx.calls.find(x=>x.work_item_id==='discuss').allow_model_fallback,false);
+    assert.equal(fx.calls.find(x=>x.work_item_id==='plan').effort,'high');
     assert.equal(fx.calls.find(x=>x.work_item_id==='a').model,'worker-fast');
     assert.equal(fx.calls.find(x=>x.work_item_id==='c').model,'worker-deep');
+    assert.equal(fx.calls.find(x=>x.work_item_id==='a').effort,'low');
+    assert.equal(fx.calls.find(x=>x.work_item_id==='c').effort,'high');
+    assert.equal(c.read(fx.team.team_id).runs.find(r=>r.work_item_id==='a').effort,'low');
     assert.equal(teamView(fx.options.runtimeDir,fx.team.team_id).planning.approved_plan_revision,1);
   } finally {await c.close();fx.cleanup();}
 });
 
 test('Planner can recommend worker count and dispatch automatically, then the same model reviews in a fresh session',async()=>{
-  const fx=plannerFixture({dispatch:'planner',proposal:()=>output({summary:'由一位 Worker 顺序完成。',workers:[{executor_type:'writer',model:'worker-model'}],work_items:plan().map(i=>({...i,agent_id:'worker-1'}))})});
+  const fx=plannerFixture({dispatch:'planner',effort:'high',proposal:()=>output({summary:'由一位 Worker 顺序完成。',workers:[{executor_type:'writer',model:'worker-model',effort:'medium'}],work_items:plan().map(i=>({...i,agent_id:'worker-1'}))})});
   const c=new TeamController({...fx.options,...fx.io});
   try {
     fx.send({type:'propose_plan'});await drive(c,()=>c.read(fx.team.team_id).state==='COMPLETED');
     const team=c.read(fx.team.team_id);
     assert.equal(team.members.filter(m=>m.role==='worker').length,1);assert.equal(team.delivery.phase,'PROMOTED');
     const review=fx.calls.find(x=>x.assigned_role==='reviewer');assert.equal(review.model,'planning-model');
+    assert.equal(review.effort,'high');assert.equal(review.allow_model_fallback,false);assert.equal(fx.calls.find(x=>x.work_item_id==='a').effort,'medium');
     assert.ok(!team.runs.some(r=>r.session_ref==='review-'+review.runId));
+  }finally{await c.close();fx.cleanup();}
+});
+
+test('an unsupported Planner effort recommendation blocks automatic dispatch before any Worker starts',async()=>{
+  const fx=plannerFixture({dispatch:'planner',proposal:()=>output({workers:[{executor_type:'writer',model:'worker-model',effort:'ultra'}],work_items:plan().map(i=>({...i,agent_id:'worker-1'}))})});
+  const c=new TeamController({...fx.options,...fx.io,autoDeliver:false});
+  try {
+    fx.send({type:'propose_plan'});await drive(c,()=>c.read(fx.team.team_id).state==='BLOCKED');
+    assert.match(c.read(fx.team.team_id).failure_reason,/does not support reasoning effort/);
+    assert.equal(fx.calls.filter(x=>['a','b','c'].includes(x.work_item_id)).length,0);
+    assert.equal(c.read(fx.team.team_id).planning.approved_plan_revision,null);
   }finally{await c.close();fx.cleanup();}
 });
 
@@ -78,6 +96,18 @@ test('review rejects missing session identity or reuse of any earlier Planner/Wo
     for(const session_ref of [null,'old-planner-session']) {
       await assert.rejects(runReview(fx.task,1,{writer:{type:'writer',run:async()=>({status:'completed',session_ref,structured_result:{result:'{}'},writer_termination:END})}},{requireIndependentExecutor:true}),/fresh session/);
     }
+  }finally{fx.cleanup();}
+});
+
+test('a Planner-bound Cline Reviewer keeps executor defaults when no effort was selected',async()=>{
+  const fx=plannerFixture(),capsules=[];
+  try {
+    const task={...fx.task,author_executor:'cline',reviewer_executor:'cline',author_session_executor_type:'cline',author_session_ref:'earlier-session',red_lines:[],review_rules:[],team_review_policy:{...fx.task.team_review_policy,executor_type:'cline'}};
+    await runReview(task,1,{cline:{type:'cline',run:async capsule=>{
+      capsules.push(capsule);return {status:'completed',session_ref:'fresh-review-session',structured_result:{parsed:{decision:'PASS',summary:'checked',issues:[],required_changes:[],evidence:['fixture'],task_id:task.task_id,revision:1}},writer_termination:END};
+    }}},{requireIndependentExecutor:true});
+    assert.equal(capsules.length,1);assert.equal(capsules[0].effort,undefined,'the legacy xhigh review default cannot override Planner defaults');
+    assert.equal(capsules[0].allow_model_fallback,false);
   }finally{fx.cleanup();}
 });
 

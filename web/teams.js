@@ -13,6 +13,8 @@ const labels = {
 const commandLabels = { start: '启动团队', pause: '暂停协作', cancel: '结束协作', deliver: '继续交付',
   message: '发送消息', adjust: '调整工作项', retry: '重试工作项', replan: '重新规划', propose_plan: '请求行动计划', approve_plan: '确认编组并派工' };
 const label = value => labels[value] ?? value;
+const effortLabels = { none:'关闭', minimal:'极低', low:'轻量', medium:'标准', high:'深入', xhigh:'高强度', max:'最高', ultra:'Ultra' };
+const effortLabel = value => effortLabels[value] ?? value;
 const htmlCache = new Map();
 const emptyMembers = $('members').innerHTML;
 const emptyBoard = $('work-items').innerHTML;
@@ -95,7 +97,7 @@ function openDialog(id) {
   if (id === 'dispatch-dialog') {
     if (team.state !== 'PLAN_READY') { notice('等待 Planner 提交计划后，再确认编组。'); return; }
     dispatchBase = { teamId:team.team_id, revision:team.plan_revision, goalRevision:team.goal_revision, items:team.work_items.map(i=>({...i})) };
-    profileDraft = team.members.filter(m=>m.role==='worker').map(({executor_type,model})=>({executor_type,model}));
+    profileDraft = team.members.filter(m=>m.role==='worker').map(({executor_type,model,effort})=>({executor_type,model,effort}));
     $('dispatch-workers').value=String(profileDraft.length);
     $('dispatch-plan-version').textContent='计划 v'+dispatchBase.revision+' · '+dispatchBase.items.length+' 个工作项 · 按 Planner 提案预填，可自由调整。';
     renderDispatch();
@@ -113,6 +115,8 @@ function writes() {
     button.disabled = !enabled || (button.id !== 'create' && !team) ||
       (terminal && !['create', 'adjust', 'replan'].includes(button.id));
   }
+  const plannerEntry=executorCatalog?.find(e=>e.id===$('planner-executor').value);
+  $('create').disabled ||= !plannerEntry || plannerEntry.availability!=='AVAILABLE' || !plannerEntry.supports_planner;
   $('adjust').disabled = !enabled || !workId || editBase?.teamId !== team?.team_id ||
     ['CANCELLED', 'RECOVERY_REQUIRED'].includes(team?.state);
   $('retry').disabled = !enabled || !workId || editBase?.teamId !== team?.team_id || terminal;
@@ -137,6 +141,7 @@ function writes() {
     capabilities && !capabilities.write?.team_command ? '当前空间为只读模式，可查看团队状态与交付记录。' :
     '连接操作令牌后，即可启动和调整团队。';
   $('create-auth-hint').textContent = writable ? '创建后先进入 Planner 商讨；开工方式以你的选择为准。' : $('access-hint').textContent;
+  $('create-auth-hint').hidden=Boolean(writable);
 }
 function memberName(id) {
   const member = team?.members.find(m => m.agent_id === id);
@@ -151,7 +156,7 @@ function renderPlanner() {
   $('planner-chat-form').hidden=legacy;
   document.querySelector('.chat-suggestions').hidden=legacy;
   const planner=team?.planning?.planner??team?.members.find(m=>m.role==='lead');
-  $('planner-model').textContent=planner?planner.executor_type+' / '+(planner.model??'CLI 默认模型'):'选择模型，建立你的行动小队。';
+  $('planner-model').textContent=planner?planner.executor_type+' / '+(planner.model??'默认模型')+' · '+(planner.effort?effortLabel(planner.effort)+'思考':'默认强度'):'选择模型与思考强度，建立你的行动小队。';
   $('dispatch-mode-label').textContent=legacy?'此团队保留原有启动流程。':team?.planning?.dispatch_mode==='planner'?'Planner 推荐编组后自动开工。':'由你确认，团队才开工。';
   $('propose-plan').innerHTML=(team?.state==='PLAN_READY'?'重新生成计划':team?.planning?.dispatch_mode==='planner'?'生成计划并开工':'生成行动计划')+' '+icon('arrow');
   $('adjust').innerHTML=(legacy?'更新方向':'暂停并交给 Planner')+' '+icon('arrow');
@@ -172,32 +177,56 @@ function renderPlanner() {
   setHTML('rework-status',requests.map(q=>'<strong>↯ '+esc(q.work_item_id)+' · 暂停 → Planner 改向 → 重新派工</strong><p>'+esc(q.feedback)+'</p>').join(''));
 }
 function executorOptions(selectedId, forTeam=false) {
-  const entries=forTeam&&team?.planning?team.planning.eligible_executors.map(e=>({id:e.executor_type,supports_model:e.supports_model})):executorCatalog??[];
-  return entries.map(e=>'<option value="'+esc(e.id)+'"'+(e.id===selectedId?' selected':'')+(['UNAVAILABLE','DISABLED_BY_OPERATOR'].includes(e.availability)||(!forTeam&&e.supports_planner===false)?' disabled':'')+'>'+esc(e.id)+(e.availability==='DISABLED_BY_OPERATOR'?' · 操作员已禁用':e.availability==='UNAVAILABLE'?' · 当前不可用':!forTeam&&e.supports_planner===false?' · 用于 Worker':'')+'</option>').join('')||'<option value="">没有可用执行器</option>';
+  const entries=forTeam&&team?.planning?team.planning.eligible_executors.map(e=>({...e,id:e.executor_type})):executorCatalog??[];
+  return entries.map(e=>'<option value="'+esc(e.id)+'"'+(e.id===selectedId?' selected':'')+(!forTeam&&e.supports_planner===false?' disabled':'')+'>'+esc(e.id)+(e.availability==='DISABLED_BY_OPERATOR'?' · 已停用':e.availability==='UNAVAILABLE'?' · 当前不可用':e.availability==='UNREGISTERED'?' · 待接入':!forTeam&&e.supports_planner===false?' · 用于 Worker':'')+'</option>').join('')||'<option value="">没有已接入的 Agent</option>';
 }
 function renderExecutorSelect() {
   const chosen=$('planner-executor').value;
   setHTML('planner-executor',executorOptions(chosen));
   if(chosen && [...$('planner-executor').options].some(o=>o.value===chosen))$('planner-executor').value=chosen;
-  else {const option=[...$('planner-executor').options].find(o=>!o.disabled);$('planner-executor').value=option?.value??'';}
-  updateModelInput($('planner-executor'),$('planner-model-input'),false);
+  else {const entries=executorCatalog?.filter(e=>e.supports_planner)??[];const option=entries.find(e=>e.availability==='AVAILABLE')??entries.find(e=>e.availability==='UNREGISTERED'&&e.models?.length)??entries.find(e=>e.availability==='UNREGISTERED')??entries[0];$('planner-executor').value=option?.id??'';}
+  updatePlannerControls();
 }
-function updateModelInput(select,input,forTeam=true) {
-  if(!select.value){input.disabled=true;input.placeholder='先选择可用执行器';if(!forTeam)$('model-selection-hint').textContent='未读取到可用执行器，请先在服务端配置执行器注册表和可用状态。';return;}
-  const support=forTeam?team?.planning?.eligible_executors.find(e=>e.executor_type===select.value)?.supports_model:executorCatalog?.find(e=>e.id===select.value)?.supports_model;
-  input.disabled=!support;input.placeholder=support?'留空使用 CLI 默认模型':'此执行器使用其配置模型';
-  if(!support)input.value='';
-  if(!forTeam)$('model-selection-hint').textContent=support?'填写执行器支持的模型 ID；留空沿用 CLI 默认模型。':'此执行器未提供模型覆盖功能，使用它的配置模型。';
+function entryFor(id,forTeam=false) {
+  return forTeam?team?.planning?.eligible_executors.find(e=>e.executor_type===id):executorCatalog?.find(e=>e.id===id);
+}
+function updateEffort(select,entry,model) {
+  const chosen=select.value, levels=entry?.models?.find(m=>m.id===(model||entry.default_model))?.reasoning_efforts??entry?.reasoning_efforts??[];
+  select.innerHTML='<option value="">默认</option>'+levels.map(level=>'<option value="'+esc(level)+'">'+esc(effortLabel(level))+' · '+esc(level)+'</option>').join('');
+  select.disabled=!levels.length;
+  select.value=levels.includes(chosen)?chosen:'';
+}
+function updatePlannerControls(reset=false) {
+  const entry=entryFor($('planner-executor').value),input=$('planner-model-input'),select=$('planner-model-select');
+  if(reset){input.value='';$('planner-effort').value='';}
+  const chosen=input.value.trim();
+  select.innerHTML='<option value="">'+esc(entry?.default_model?'默认 · '+entry.default_model:'默认模型')+'</option>'+(entry?.models??[]).map(m=>'<option value="'+esc(m.id)+'">'+esc(m.label??m.id)+'</option>').join('')+(entry?.supports_model?'<option value="__custom">自定义模型…</option>':'');
+  select.value=chosen?entry?.models?.some(m=>m.id===chosen)?chosen:'__custom':'';
+  select.disabled=!entry?.supports_model;
+  input.hidden=select.value!=='__custom';input.disabled=!entry?.supports_model||input.hidden;
+  updateEffort($('planner-effort'),entry,chosen);
+  $('model-selection-hint').textContent=!entry?'没有已接入的 Agent。':entry.availability==='UNREGISTERED'?'此 Agent 待接入；可以先选择模型与思考强度。':entry.availability==='DISABLED_BY_OPERATOR'?'此 Agent 已停用，切换已接入的 Agent 后开始。':entry.availability==='UNAVAILABLE'?'此 Agent 当前不可用，请选择其他 Agent。':entry.models?.length?'可选模型来自本地配置；也可以输入自定义模型 ID。':'输入自定义模型 ID，或沿用 Agent 默认模型。';
+  $('model-selection-hint').dataset.ready=String(entry?.availability==='AVAILABLE');
+  writes();
+}
+function updateWorkerControls(row,reset=false) {
+  const executor=row.querySelector('[data-profile-executor]'),input=row.querySelector('[data-profile-model]'),effort=row.querySelector('[data-profile-effort]');
+  const entry=entryFor(executor.value,true);
+  if(reset){input.value='';effort.value='';}
+  input.disabled=!entry?.supports_model;input.placeholder=entry?.default_model?'默认 · '+entry.default_model:'默认模型或输入模型 ID';
+  if(input.disabled)input.value='';
+  row.querySelector('datalist').innerHTML=(entry?.models??[]).map(m=>'<option value="'+esc(m.id)+'">'+esc(m.label??m.id)+'</option>').join('');
+  updateEffort(effort,entry,input.value.trim());
 }
 function readDispatchDraft() {
-  profileDraft=[...document.querySelectorAll('.worker-profile')].map(row=>({executor_type:row.querySelector('select').value,model:row.querySelector('input').value.trim()||null}));
+  profileDraft=[...document.querySelectorAll('.worker-profile')].map(row=>({executor_type:row.querySelector('[data-profile-executor]').value,model:row.querySelector('[data-profile-model]').value.trim()||null,effort:row.querySelector('[data-profile-effort]').value||null}));
 }
 function renderDispatch() {
   const count=Number($('dispatch-workers').value),lead=team.planning.planner;
   while(profileDraft.length<count)profileDraft.push({...lead});profileDraft=profileDraft.slice(0,count);
   $('dispatch-workers-output').value=String(count);
-  $('worker-profiles').innerHTML=profileDraft.map((p,i)=>'<div class="worker-profile"><strong aria-label="Worker '+(i+1)+'">'+String(i+1).padStart(2,'0')+'</strong><label class="field"><span>执行器</span><select data-profile-executor="'+i+'" aria-label="Worker '+(i+1)+' 执行器">'+executorOptions(p.executor_type,true)+'</select></label><label class="field"><span>模型</span><input data-profile-model="'+i+'" maxlength="160" value="'+esc(p.model??'')+'" aria-label="Worker '+(i+1)+' 模型"></label></div>').join('');
-  for(const row of document.querySelectorAll('.worker-profile'))updateModelInput(row.querySelector('select'),row.querySelector('input'));
+  $('worker-profiles').innerHTML=profileDraft.map((p,i)=>'<div class="worker-profile"><strong aria-label="Worker '+(i+1)+'">'+String(i+1).padStart(2,'0')+'</strong><label class="field"><span>Agent</span><select data-profile-executor="'+i+'" aria-label="Worker '+(i+1)+' 执行器">'+executorOptions(p.executor_type,true)+'</select></label><label class="field"><span>模型</span><input data-profile-model="'+i+'" list="worker-models-'+i+'" maxlength="160" value="'+esc(p.model??'')+'" aria-label="Worker '+(i+1)+' 模型"><datalist id="worker-models-'+i+'"></datalist></label><label class="field worker-effort"><span>思考强度</span><select data-profile-effort="'+i+'" aria-label="Worker '+(i+1)+' 思考强度"><option value="'+esc(p.effort??'')+'" selected>'+esc(effortLabel(p.effort??'默认'))+'</option></select></label></div>').join('');
+  for(const row of document.querySelectorAll('.worker-profile'))updateWorkerControls(row);
   const previous=Object.fromEntries([...document.querySelectorAll('[data-assignment]')].map(s=>[s.dataset.assignment,s.value]));
   $('work-assignments').innerHTML=dispatchBase.items.map(item=>{
     const wanted=previous[item.work_item_id]??item.agent_id;
@@ -239,7 +268,7 @@ function render() {
       '" aria-label="与' + esc(memberName(member.agent_id)) + '对话"><span class="member-avatar" aria-hidden="true">' +
       (member.role === 'lead' ? 'P' : String(index).padStart(2, '0')) + '</span><span class="member-detail"><strong>' +
       esc(memberName(member.agent_id)) + '</strong><small>' + esc(member.executor_type) + (member.model?' / '+esc(member.model):' / 默认模型') +
-      '</small><span class="member-status">' + esc(status) + '</span></span>' + icon('arrow', 'member-cta') + '</button>';
+      (member.effort?' · '+esc(effortLabel(member.effort)):'')+'</small><span class="member-status">' + esc(status) + '</span></span>' + icon('arrow', 'member-cta') + '</button>';
   }).join('') + (team.planning ? '<div class="member-card reviewer"><span class="member-avatar" aria-hidden="true">R</span><span class="member-detail"><strong>Reviewer</strong><small>'+esc(team.planning.planner.executor_type)+' / '+esc(team.planning.planner.model??'默认模型')+'</small><span class="member-status">'+(['DELIVERING','WAITING_HUMAN','COMPLETED'].includes(team.state)?'独立复检 · '+esc(label(team.delivery?.status??team.state)):'与 Planner 同模型 · 独立会话')+'</span></span></div>' : ''));
   const chosen = $('member-target').value, chosenWorker = $('worker-target').value;
   setHTML('member-target', team.members.map(m => '<option value="' + esc(m.agent_id) + '">' +
@@ -293,7 +322,7 @@ function render() {
     '<div class="empty-activity">' + icon('check') + '<p>每次行动，都会有回应。</p><span>操作提交后，在这里查看落实情况。</span></div>');
   setHTML('runs', team.runs.slice(-30).reverse().map(run => '<article class="history-card"><strong>' +
     esc(memberName(run.agent_id)) + ' · ' + esc(run.work_item_id) + '</strong><span class="history-state">' +
-    esc(label(run.status)) + ' · ' + esc(run.executor_type) + '</span><p>' + esc(run.run_id) + '</p></article>').join('') ||
+    esc(label(run.status)) + ' · ' + esc(run.executor_type) + '</span><p>'+esc(run.model??'默认模型')+' · '+esc(run.effort?effortLabel(run.effort)+'思考':'默认强度')+'</p><small>' + esc(run.run_id) + '</small></article>').join('') ||
     '<p class="hint">团队启动后，会在这里记录每次执行。</p>');
   setHTML('artifacts', team.artifacts.slice(-12).reverse().map(artifact => '<article class="history-card"><strong>' +
     esc(artifact.work_item_id) + ' · 版本 ' + esc(artifact.revision) + '</strong><p>' + esc(artifact.summary) +
@@ -301,13 +330,13 @@ function render() {
     ' 项文件变化</small></article>').join('') || '<p class="hint">成员提交的成果会保留在这里。</p>');
   writes();
 }
-async function refresh() {
+async function refresh(reloadCatalog=false) {
   if (refreshing) return;
   refreshing = true;
   $('refresh').setAttribute('aria-busy', 'true');
   try {
     if (!capabilities) capabilities = await request('/api/v2/capabilities');
-    if (!executorCatalog) { executorCatalog=(await request('/api/v2/executors')).executors; renderExecutorSelect(); }
+    if (!executorCatalog || reloadCatalog===true) { executorCatalog=(await request('/api/v2/executors')).executors; renderExecutorSelect(); }
     const listing = await request('/api/teams');
     if (selected && !listing.teams.some(item => item.team_id === selected)) { selected = null; team = null; workId = null; }
     if (!selected && listing.teams.length) selected = listing.teams[0].team_id;
@@ -369,7 +398,7 @@ const mobile = matchMedia('(max-width:720px)');
 const syncNavigation = () => { navigation(false); $('sidebar').inert = mobile.matches; };
 mobile.addEventListener('change', syncNavigation);
 syncNavigation();
-$('refresh').onclick = refresh;
+$('refresh').onclick = ()=>refresh(true);
 $('teams').onclick = handle(async event => {
   const id = event.target.closest('[data-team]')?.dataset.team;
   if (!id || id === selected) return;
@@ -431,8 +460,16 @@ $('replan-form').onsubmit = handle(async () => {
   await command({ type: 'replan', goal, expected_goal_revision: goalBase.revision }, goalBase.teamId);
   $('replan-dialog').close();
 });
-$('workers').oninput = () => { $('workers-output').value = $('workers').value; };
-$('planner-executor').onchange=()=>updateModelInput($('planner-executor'),$('planner-model-input'),false);
+$('planner-executor').onchange=()=>updatePlannerControls(true);
+$('planner-model-select').onchange=()=>{
+  const select=$('planner-model-select'),input=$('planner-model-input');
+  input.value=select.value==='__custom'?'':select.value;
+  input.hidden=select.value!=='__custom';input.disabled=input.hidden;
+  updateEffort($('planner-effort'),entryFor($('planner-executor').value),input.value);
+  if(!input.hidden)input.focus();
+};
+$('planner-model-input').oninput=()=>updateEffort($('planner-effort'),entryFor($('planner-executor').value),$('planner-model-input').value.trim());
+$('dispatch-mode').onchange=()=>{$('create-mode-summary').textContent=$('dispatch-mode').value==='planner'?'Planner 编组并自动开工':'看过计划，再确认开工';};
 $('planner-chat-form').onsubmit=handle(async()=>{
   const message=$('planner-input').value.trim();if(!message)throw new Error('先写下你想和 Planner 商讨的内容。');
   await command({type:'message',agent_id:'lead',message});$('planner-input').value='';$('planner-input').focus();
@@ -440,7 +477,8 @@ $('planner-chat-form').onsubmit=handle(async()=>{
 for(const suggestion of document.querySelectorAll('[data-prompt]'))suggestion.onclick=()=>{$('planner-input').value=suggestion.dataset.prompt;$('planner-input').focus();};
 $('propose-plan').onclick=handle(()=>command({type:'propose_plan'}));
 $('dispatch-workers').oninput=()=>{readDispatchDraft();renderDispatch();};
-$('worker-profiles').onchange=event=>{const select=event.target.closest('[data-profile-executor]');if(select)updateModelInput(select,select.closest('.worker-profile').querySelector('input'));};
+$('worker-profiles').onchange=event=>{const select=event.target.closest('[data-profile-executor]');if(select)updateWorkerControls(select.closest('.worker-profile'),true);};
+$('worker-profiles').oninput=event=>{const input=event.target.closest('[data-profile-model]');if(input)updateWorkerControls(input.closest('.worker-profile'));};
 $('dispatch-form').onsubmit=handle(async()=>{
   if(!dispatchBase)throw new Error('重新打开计划，确认最新编组。');readDispatchDraft();
   const assignments=Object.fromEntries([...document.querySelectorAll('[data-assignment]')].map(s=>[s.dataset.assignment,s.value]));
@@ -454,11 +492,11 @@ $('create-form').onsubmit = handle(async () => {
   const result = await request('/api/teams', { spec: {
     goal: $('goal').value.trim(), target_path: $('target').value.trim(),
     acceptance: { command: $('command').value.trim(), args }, idempotency_key: $('key').value,
-  }, worker_count: Number($('workers').value), planning:{dispatch_mode:$('dispatch-mode').value,
-    planner:{executor_type:$('planner-executor').value,model:$('planner-model-input').value.trim()||null}} });
+  }, planning:{dispatch_mode:$('dispatch-mode').value,
+    planner:{executor_type:$('planner-executor').value,model:$('planner-model-input').value.trim()||null,effort:$('planner-effort').value||null}} });
   selected = result.team_id; workId = null; editBase = null;
   $('create-dialog').close(); $('create-form').reset(); $('key').value = operationId('goal-');
-  $('workers-output').value = $('workers').value;
+  $('create-mode-summary').textContent='看过计划，再确认开工';$('create-settings').open=false;
   renderExecutorSelect();notice('团队已创建。先与 Planner 商讨你的目标。');
   await refresh();
 });

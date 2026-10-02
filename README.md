@@ -2,7 +2,7 @@
 
 [![regression](https://github.com/rejec-rot/agent-foundry-orchestrator/actions/workflows/regression.yml/badge.svg?branch=main)](https://github.com/rejec-rot/agent-foundry-orchestrator/actions/workflows/regression.yml?query=branch%3Amain)
 
-面向共享目标的多 agents 协作平台：先和 **Planner 聊天形成计划**，由操作员或 Planner 决定 **1–8 位 Worker 的数量、模型和分工**；Planner 所选模型同时用于 **Reviewer 的独立复检会话**。执行中调整单项工作，会先暂停受影响的尝试，经 Planner 改写后重新派工。**Trusted Import V2** 负责成果的独立评审、授权、验收与正式代码提升。
+面向共享目标的多 agents 协作平台：先选择 **Planner 的 Agent、模型与思考强度**，通过聊天形成计划，由操作员或 Planner 决定 **1–8 位 Worker 的数量、模型、思考强度和分工**；Planner 所选配置同时用于 **Reviewer 的独立复检会话**。执行中调整单项工作，会先暂停受影响的尝试，经 Planner 改写后重新派工。**Trusted Import V2** 负责成果的独立评审、授权、验收与正式代码提升。
 
 当前版本：`2.0.0-dev`。方案二的首期协作核心已实现，入口是 **`/teams.html`** 和 **`af-admin team`**。历史单作者 V2 链路完成过本地 Docker 部署验收及 Codex＋Cline 冒烟；新团队链路的真实模型账号联调仍需单独验收。
 
@@ -10,15 +10,15 @@
 
 ## 新人先看：一个目标怎样完成
 
-你提供目标、项目路径和验收要求，并选择 Planner 的执行器与模型。先与 Planner 商讨边界和验收，再生成行动提案。默认由你确认 Worker 的数量、相同或不同的模型以及每项任务的分配；也可以在创建时选择由 Planner 推荐编组后自动开工。Planner 整合成果后，同模型 Reviewer 通过独立会话复检，交付服务继续授权、验收和正式提升。
+创建页只需填写目标、项目并选择 Planner 的 Agent、模型与思考强度；开工授权和验收参数放在“更多设置”。先与 Planner 商讨边界和验收，再生成行动提案。Planner 推荐 Worker 的数量、模型、思考强度与任务分工，你确认或调整后开工；也可授权 Planner 推荐编组后自动开工。Planner 整合成果后，同配置 Reviewer 通过独立会话复检，交付服务继续授权、验收和正式提升。
 
 下面的 Mermaid 流程图可在 GitHub README 中直接查看。主线按从上到下阅读，虚线表示用户介入与成员通信。不支持 Mermaid 的阅读器可打开[协作流程 SVG](docs/diagrams/team-workflow.svg)。
 
 ```mermaid
 flowchart TD
-    USER["操作员提交目标、项目与验收要求"] --> MODEL["选择 Planner 模型<br/>Reviewer 使用相同模型，独立会话"]
+    USER["操作员提交目标、项目与验收要求"] --> MODEL["选择 Planner Agent、模型与思考强度<br/>Reviewer 沿用配置，独立会话"]
     MODEL --> CHAT["与 Planner 聊天<br/>商讨目标、约束与验收"]
-    CHAT --> PLAN["Planner 提交行动计划<br/>推荐 Worker 数量、模型与分工"]
+    CHAT --> PLAN["Planner 提交行动计划<br/>推荐 Worker 数量、模型、强度与分工"]
     PLAN --> MODE{"谁来决定开工？"}
     MODE -- "操作员" --> CONFIRM["确认编组和每项任务分配<br/>未确认时不派工"]
     MODE -- "Planner" --> AUTO["验证推荐编组后自动派工"]
@@ -53,10 +53,10 @@ flowchart TD
 | Planner | 与操作员商讨，规划工作图与编组，接收改向请求，协调成员与整合成果，根据复检反馈选择局部返工 |
 | Workers | 完成各自工作项，向成员提问或回复，提交可追踪的成果 |
 | 团队控制器 | 管理调度、消息、版本、运行记录与恢复；这是后台服务，不是模型成员 |
-| Reviewer | 使用 Planner 所选的执行器与模型，建立独立会话审查密封候选；复检会话不得复用 Planner 或 Worker 的会话 |
+| Reviewer | 使用 Planner 所选的执行器、模型与思考强度，建立独立会话审查密封候选；复检会话不得复用 Planner 或 Worker 的会话 |
 | Trusted Import V2 | 承接代码交付，检查授权、执行验收并晋升正式版本 |
 
-创建时默认参考编组三位 Worker；计划形成后可以调整为 **1–8 位 Worker**。Planner 与 Reviewer 使用同一模型配置，承担不同角色。成员身份与执行器、模型账号、CLI 会话分别记录；成员数量不等于不同账号的数量，也不保证所有成员同时执行。
+创建时内部默认参考编组三位 Worker，页面不要求提前决定人数；计划形成后可以调整为 **1–8 位 Worker**。Planner 与 Reviewer 使用同一模型与思考强度配置，承担不同角色。每位 Worker 可单独选配置。成员身份与执行器、模型账号、CLI 会话分别记录；成员数量不等于不同账号的数量，也不保证所有成员同时执行。
 
 ## 中途改需求会怎样
 
@@ -143,7 +143,9 @@ node af-admin.mjs team show --team TEAM-your-task-id
 node af-admin.mjs team adjust --team TEAM-your-task-id --work-item your-work-item --expected-revision 1 --message "新的工作方向"
 ```
 
-在页面中点击“确认编组”确认并开工；CLI 可用 `team command --file dispatch.json` 提交 `approve_plan`，字段与 HTTP 协议一致，见 [Planner 协议](docs/adr/0012-planner-workspace.md)。`--planner-executor` 和 `--planner-model` 选择模型；`--dispatch-mode planner` 允许 Planner 推荐后自动开工。不加 `--planning` 的既有 CLI 调用保留原团队启动流程。
+在页面中点击“确认编组”确认并开工；CLI 可用 `team command --file dispatch.json` 提交 `approve_plan`，字段与 HTTP 协议一致，见 [Planner 协议](docs/adr/0012-planner-workspace.md)。`--planner-executor`、`--planner-model`、`--planner-effort` 选择 Agent、模型与思考强度，例如 `--planner-executor codex --planner-model your-model-id --planner-effort high`；`--dispatch-mode planner` 允许 Planner 推荐后自动开工。不加 `--planning` 的既有 CLI 调用保留原团队启动流程。
+
+模型选项读取本地 Codex 模型目录、当前执行器配置以及注册表可选的 `model_options`；也支持自定义模型 ID。思考强度以执行器和具体模型支持的等级为准，未指定时保留执行器默认值。模型目录只读取公开配置字段，不返回凭据，不发送模型请求。未注册或已停用的 Agent 仍能查看配置，但不能开始任务。Planner 团队发生配额错误时保留所选配置并报告失败，不自动换模型或强度。
 
 首次操作会启动持有全局团队租约的本地控制器；也可用 `node af-admin.mjs team serve` 在前台运行。前台服务收到 SIGINT/SIGTERM 时停止派发并等待受控执行范围退出。运行目录与任务目录通过 `AF_RUNTIME_DIR`、`AF_TASKS_DIR`、`AF_LOCKS_DIR` 或对应 CLI 参数配置，所有入口应使用同一组目录。自动启动的进程 PID 和 owner token 在 `locks/team-controller.lock`，日志在 `runtime/team-controller.log`。
 
@@ -178,7 +180,7 @@ Web 使用现有令牌鉴权启动：`node af-admin.mjs web serve --allow-write 
 
 | 范围 | 记录结果 | 说明 |
 |---|---|---|
-| Planner 工作台（2026-10-02） | 本地全量 812 项：809 通过、3 跳过、0 失败；Planner 浏览器 19 项、既有界面 21 项通过 | 覆盖聊天、计划确认、数量/模型选择、局部暂停与改向、同模型新会话复检、重启恢复；使用受控模型适配器 |
+| Planner 工作台（2026-10-02） | 本地全量 819 项：816 通过、3 跳过、0 失败；Planner 浏览器 27 项、既有界面 23 项通过 | 覆盖简洁创建、模型与思考强度选择、聊天、计划确认、局部暂停与改向、同配置新会话复检、重启恢复；使用受控模型适配器 |
 | 协作核心与全量回归（2026-10-01） | 802 项：799 通过、3 跳过、0 失败、0 取消 | 模型输出使用受控适配器；文件投影、CAS、锁、验收和 Git 晋升使用实际实现；见[实施记录](docs/reviews/2026-10-01-team-core-implementation.md) |
 | 团队页面（2026-10-01） | 桌面与手机浏览器检查通过 | 覆盖创建、鉴权、消息回执、定向调整、无关成果保留、旧尝试拒绝及刷新恢复；使用受控模型适配器 |
 | V2、回收与终止句柄回归（`8c91800`） | 68/68 通过 | 包括 dry-run、取消、并发与崩溃恢复 |

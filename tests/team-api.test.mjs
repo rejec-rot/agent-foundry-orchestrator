@@ -9,12 +9,22 @@ import {PROJECT_REGISTRY_SCHEMA} from '../lib/projects.mjs';
 import {pendingCommands,readTeam} from '../lib/team/store.mjs';
 import {Scheduler} from '../lib/scheduler.mjs';
 import {ADAPTERS} from '../lib/adapters.mjs';
+import {createCollaborationTeam} from '../lib/team/service.mjs';
 
 // Team execution already uses adaptersFor(); admission must also be independent
 // of installed model accounts while retaining the real routing policy.
 for(const id of ['codex','cline','command-code'])mock.method(ADAPTERS[id],'health',()=>({ok:true}));
 
 const TOKEN='team-test-token';
+
+test('an installed but unregistered Planner cannot create a team even with a healthy adapter',()=>{
+  const fx=fixture();
+  try {
+    const result=createCollaborationTeam({...fx.options,adapters:{codex:{health:()=>({ok:true})}},capabilityMap:new Map(),availabilityMap:new Map(),planning:{planner:{executor_type:'codex',model:'any-model',effort:'high'}}});
+    assert.equal(result.ok,false);assert.match(result.reason,/not available/);
+    assert.deepEqual(readdirSync(fx.options.tasksDir),[fx.task.task_id+'.json']);
+  }finally{fx.cleanup();}
+});
 const AUTH={authorization:`Bearer ${TOKEN}`,'x-af-csrf':'1'};
 const post=(url,path,body,headers=AUTH)=>fetch(url+path,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body)});
 async function serve(fx,options={}) {
@@ -96,20 +106,25 @@ test('the legacy scheduler cannot enqueue, start or cancel a team delivery task'
 test('Planner intake binds the selected model to an independent Reviewer session and rejects changed configurations',async()=>{
   const fx=fixture(),server=await serve(fx);
   const spec={goal:'discuss then dispatch',target_path:fx.repo,idempotency_key:'planner-api-create',acceptance:{command:'node',args:['--test','tests/gate.test.mjs']}};
-  const planning={dispatch_mode:'human',planner:{executor_type:'codex',model:'operator-selected-model'},workers:[{executor_type:'codex',model:'worker-model'},{executor_type:'cline',model:null}]};
+  const planning={dispatch_mode:'human',planner:{executor_type:'codex',model:'operator-selected-model',effort:'high'},workers:[{executor_type:'codex',model:'worker-model',effort:'low'},{executor_type:'cline',model:null,effort:'xhigh'}]};
   try {
     const response=await post(server.url,'/api/teams',{spec,planning});assert.equal(response.status,201,JSON.stringify(await response.clone().json()));
     const id=(await response.json()).model.team_id,team=readTeam(fx.options.runtimeDir,id);
     assert.equal(team.state,'DISCUSSING');assert.equal(team.members[0].model,'operator-selected-model');
+    assert.equal(team.members[0].effort,'high');assert.equal(team.planning.planner.effort,'high');
     assert.deepEqual(team.members.filter(m=>m.role==='worker').map(m=>m.executor_type),['codex','cline']);
     const task=JSON.parse(readFileSync(join(fx.options.tasksDir,team.delivery_task_id+'.json'),'utf8'));
     assert.equal(task.reviewer_executor,task.author_executor);assert.equal(task.reviewer_model,task.author_model);
+    assert.equal(task.author_effort,'high');assert.equal(task.reviewer_effort,'high');assert.equal(task.team_review_policy.effort,'high');
     assert.equal(task.team_review_policy.team_id,id);
     assert.equal((await post(server.url,'/api/teams',{spec,planning})).status,200);
     const health=ADAPTERS.codex.health;
     try {ADAPTERS.codex.health=()=>({ok:false});assert.equal((await post(server.url,'/api/teams',{spec,planning})).status,200,'an executor becoming unhealthy does not change an existing submission identity');}
     finally {ADAPTERS.codex.health=health;}
     assert.equal((await post(server.url,'/api/teams',{spec,planning:{...planning,planner:{executor_type:'codex',model:'different-model'}}})).status,422);
+    assert.equal((await post(server.url,'/api/teams',{spec,planning:{...planning,planner:{...planning.planner,effort:'low'}}})).status,422);
+    assert.equal((await post(server.url,'/api/teams',{spec:{...spec,idempotency_key:'invalid-effort'},planning:{...planning,planner:{...planning.planner,effort:'high"; unsafe'}}})).status,422);
+    assert.equal((await post(server.url,'/api/teams',{spec:{...spec,idempotency_key:'wrong-executor-effort'},planning:{...planning,planner:{executor_type:'cline',effort:'max'}}})).status,422);
     assert.equal((await post(server.url,'/api/teams',{spec:{...spec,idempotency_key:'invalid-profile'},planning:{...planning,planner:{executor_type:'unknown'}}})).status,422);
     assert.equal((await post(server.url,'/api/teams',{spec:{...spec,idempotency_key:'invalid-planning'},planning:'bad'})).status,422);
   }finally{await server.close();fx.cleanup();}
