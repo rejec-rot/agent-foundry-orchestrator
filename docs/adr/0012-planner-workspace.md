@@ -21,7 +21,7 @@
 }
 ```
 
-`workers` 可省略，使用 `worker_count` 作为初始参考编组。模型填执行器支持的 ID，`null` 沿用 CLI 默认值。每个 Worker 可以使用相同或不同的配置。服务端仍拒绝未知、不可用、被操作员禁用的执行器，以及适配器不支持的模型覆盖；Planner/Reviewer 要求支持独立会话身份。
+`workers` 可省略，使用 `worker_count` 作为初始参考编组；显式提供时持久化为操作员的 `planning.worker_preferences`，Planner 必须保留人数和配置。模型填执行器支持的 ID，`null` 沿用 CLI 默认值。每个 Worker 可以使用相同或不同的配置。服务端仍拒绝未知、不可用、被操作员禁用的执行器，以及适配器不支持的模型覆盖；Planner/Reviewer 要求支持独立会话身份。
 
 `effort` 可省略或设为 `null`，沿用执行器默认思考强度；显式等级须通过服务端执行器和模型元数据校验。创建页直接展示 Planner 的 Agent、模型与思考强度，默认折叠开工授权与验收参数，不提前要求 Worker 人数。Planner 的编组提案可选择每位 Worker 的模型与 `effort`，手动确认时可调整。Planner 配置持久化到成员、任务的 `author_effort` / `reviewer_effort` 和同模型复检策略，每次执行会传入 capsule；运行记录也保存强度。
 
@@ -40,6 +40,7 @@
   "type": "approve_plan",
   "expected_plan_revision": 1,
   "expected_goal_revision": 1,
+  "expected_agent_config_revision": 0,
   "workers": [
     {"executor_type": "codex", "model": null},
     {"executor_type": "cline", "model": null}
@@ -49,6 +50,25 @@
 ```
 
 示例工作项 ID 必须替换为当前提案中的真实 ID。确认需要为每项工作明确分配一个有效 Worker；过期版本或尚未结束的 Planner 对话会拒绝派工。
+
+## 修改 Agent 配置
+
+Planner 面板常驻 Agent、模型与思考强度选项。“选择 Worker Agents”入口在创建前、商讨中及暂停后均可打开，逐位选择执行器、目录模型或自定义模型，以及该执行器和模型支持的思考强度。创建前的预设仅保存在页面草稿，随创建请求提交；现有团队的修改通过同一鉴权命令入口提交：
+
+```json
+{
+  "type": "configure_agents",
+  "expected_goal_revision": 1,
+  "expected_plan_revision": 0,
+  "expected_agent_config_revision": 0,
+  "planner": {"executor_type": "codex", "model": "model-id", "effort": "high"},
+  "workers": [{"executor_type": "cline", "model": null, "effort": "low"}]
+}
+```
+
+`planner` 和 `workers` 至少提供一项。操作在 `DISCUSSING`、`PLAN_READY` 或从商讨、规划、工作、阻塞阶段暂停且全部执行范围已停止的团队中应用。开工后只允许修改成员配置，人数保持不变。保存不会启动新运行；清除 `effort` 恢复执行器默认值。配置更新原子写入团队日志，增加 `planning.agent_config_revision`，重放相同命令不重复应用。
+
+提案尚未确认时，修改配置会增加计划版本；删掉 Worker 后，其工作项暂时分配给第一个 Worker，确认窗口仍要求逐项审核。批准提案同时检查配置版本，避免旧窗口覆盖刚保存的选择；未修改过配置的旧客户端仍可使用原确认字段。操作员预设约束 Planner 的推荐，数量不一致会在派工前阻塞。团队日志是配置事实来源，交付 runner 持有任务锁后将最新 Planner 配置绑定到任务与 Reviewer；历史运行记录和已接受成果保持不变。
 
 ## 执行中改向
 
@@ -62,4 +82,4 @@ Planner 回合不能修改工作文件。版本或工作图变化后，旧 Plann
 
 成果仍经过既有停止证明、快照密封、候选绑定、授权、受信验收与最终提升。选择同模型不会跳过这些交付检查。
 
-验证入口：`tests/team-planner.test.mjs`、`tests/team-api.test.mjs`、`qa/planner-browser.mjs`。浏览器及后端场景使用受控模型输出，真实 HTTP、控制器、文件系统和版本校验参与执行。
+验证入口：`tests/team-agent-configuration.test.mjs`、`tests/team-planner.test.mjs`、`tests/team-api.test.mjs`、`qa/planner-browser.mjs`。浏览器及后端场景使用受控模型输出，真实 HTTP、控制器、文件系统和版本校验参与执行。

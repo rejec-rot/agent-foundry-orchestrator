@@ -2,6 +2,66 @@
   "ok": true,
   "checks": [
     {
+      "name": "Planner settings visible before creation",
+      "ok": true
+    },
+    {
+      "name": "Planner custom model synchronizes creation form",
+      "ok": true
+    },
+    {
+      "name": "selected Planner opens the create dialog",
+      "ok": true
+    },
+    {
+      "name": "read-only creation remains disabled",
+      "ok": true
+    },
+    {
+      "name": "Worker settings accessible before creation",
+      "ok": true
+    },
+    {
+      "name": "Worker custom model keeps its visible dropdown",
+      "ok": true
+    },
+    {
+      "name": "local Worker preset shown in crew summary",
+      "ok": true
+    },
+    {
+      "name": "local Worker preset preserved when reopened",
+      "ok": true
+    },
+    {
+      "name": "visible selector layout fits 1920",
+      "ok": true
+    },
+    {
+      "name": "visible selector layout fits 1440",
+      "ok": true
+    },
+    {
+      "name": "visible selector layout fits 1024",
+      "ok": true
+    },
+    {
+      "name": "visible selector layout fits 768",
+      "ok": true
+    },
+    {
+      "name": "visible selector layout fits 390",
+      "ok": true
+    },
+    {
+      "name": "visible selector layout fits 320",
+      "ok": true
+    },
+    {
+      "name": "read-only preview receives no API writes",
+      "ok": true
+    },
+    {
       "name": "create-dialog fits 1440",
       "ok": true
     },
@@ -302,6 +362,6 @@
       "ok": true
     }
   ],
-  "source": "read-only live preview; DOM-only long-label samples; no API writes",
-  "verified_at": "2026-10-02T11:30:37.571Z"
+  "source": "read-only live preview; local Planner/Worker presets and DOM-only long-label samples; no API writes",
+  "verified_at": "2026-10-02T13:10:30.986Z"
 }

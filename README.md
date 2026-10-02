@@ -10,7 +10,7 @@
 
 ## 新人先看：一个目标怎样完成
 
-创建页只需填写目标、项目并选择 Planner 的 Agent、模型与思考强度；开工授权和验收参数放在“更多设置”。先与 Planner 商讨边界和验收，再生成行动提案。Planner 推荐 Worker 的数量、模型、思考强度与任务分工，你确认或调整后开工；也可授权 Planner 推荐编组后自动开工。Planner 整合成果后，同配置 Reviewer 通过独立会话复检，交付服务继续授权、验收和正式提升。
+创建页只需填写目标、项目并选择 Planner 的 Agent、模型与思考强度；开工授权和验收参数放在“更多设置”。协作页的 Planner 面板也可直接选择这三项，“你的团队”旁的“选择 Worker Agents”可预设每位 Worker 的配置。保存配置后，先与 Planner 商讨边界和验收，再生成行动提案。未预设时由 Planner 推荐编组，你确认或调整后开工；也可授权 Planner 自动开工。Planner 整合成果后，同配置 Reviewer 通过独立会话复检，交付服务继续授权、验收和正式提升。
 
 下面的 Mermaid 流程图可在 GitHub README 中直接查看。主线按从上到下阅读，虚线表示用户介入与成员通信。不支持 Mermaid 的阅读器可打开[协作流程 SVG](docs/diagrams/team-workflow.svg)。
 
@@ -18,7 +18,7 @@
 flowchart TD
     USER["操作员提交目标、项目与验收要求"] --> MODEL["选择 Planner Agent、模型与思考强度<br/>Reviewer 沿用配置，独立会话"]
     MODEL --> CHAT["与 Planner 聊天<br/>商讨目标、约束与验收"]
-    CHAT --> PLAN["Planner 提交行动计划<br/>推荐 Worker 数量、模型、强度与分工"]
+    CHAT --> PLAN["Planner 提交行动计划<br/>遵循预设编组，或推荐数量、模型与分工"]
     PLAN --> MODE{"谁来决定开工？"}
     MODE -- "操作员" --> CONFIRM["确认编组和每项任务分配<br/>未确认时不派工"]
     MODE -- "Planner" --> AUTO["验证推荐编组后自动派工"]
@@ -56,7 +56,9 @@ flowchart TD
 | Reviewer | 使用 Planner 所选的执行器、模型与思考强度，建立独立会话审查密封候选；复检会话不得复用 Planner 或 Worker 的会话 |
 | Trusted Import V2 | 承接代码交付，检查授权、执行验收并晋升正式版本 |
 
-创建时内部默认参考编组三位 Worker，页面不要求提前决定人数；计划形成后可以调整为 **1–8 位 Worker**。Planner 与 Reviewer 使用同一模型与思考强度配置，承担不同角色。每位 Worker 可单独选配置。成员身份与执行器、模型账号、CLI 会话分别记录；成员数量不等于不同账号的数量，也不保证所有成员同时执行。
+创建时内部默认参考编组三位 Worker，页面不要求提前决定人数；可选的 Worker 配置入口允许提前预设 **1–8 位 Worker**，也可等计划形成后再确认。Planner 与 Reviewer 使用同一模型与思考强度配置，承担不同角色。每位 Worker 可独立选择 Agent、模型与思考强度。成员身份与执行器、模型账号、CLI 会话分别记录；成员数量不等于不同账号的数量，也不保证所有成员同时执行。
+
+商讨阶段修改配置并保存不会启动任务。已开工的团队先暂停并确认运行范围停止，再修改成员配置；新配置用于后续尝试，保留其他成员已接受的成果。派工后不能通过配置入口改变人数。每次保存和确认均校验配置版本，Reviewer 在交付时读取最新 Planner 配置并建立独立会话。
 
 ## 中途改需求会怎样
 
@@ -111,6 +113,8 @@ Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图�
 两页的面板、成员卡片、工作项、表单、折叠设置与全部弹窗共用 P5 边框：黑色描边、斜切角、错位底板，以及表示选中或执行状态的红色强调。文字输入保留完整区域，弹窗仍使用原生焦点与滚动；高对比模式保留系统边框。交付队列独立滚动，长卡片保持文字和状态标签的完整高度。
 
 [Planner 桌面预览](docs/previews/persona-workspace/planner-desktop.png) · [Planner 手机预览](docs/previews/persona-workspace/planner-mobile.png) · [手机编组窗口](docs/previews/persona-workspace/planner-dispatch-mobile.png) · [界面与验证说明](docs/design/PERSONA-COLLABORATION-WORKSPACE.md)
+
+[常驻 Planner 选择](docs/previews/persona-workspace/planner-config-desktop.png) · [逐位 Worker 配置](docs/previews/persona-workspace/worker-config-desktop.png) · [手机 Worker 配置](docs/previews/persona-workspace/worker-config-mobile.png)
 
 [交付工作台桌面预览](docs/previews/persona-workspace/workbench-desktop.png) · [交付工作台手机预览](docs/previews/persona-workspace/workbench-mobile.png)
 

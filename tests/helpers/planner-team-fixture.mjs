@@ -16,6 +16,7 @@ export function plannerFixture({dispatch='human',run,revise,proposal,effort=null
   team.planning={workflow:'planner',dispatch_mode:dispatch,planner:{executor_type:'writer',model:'planning-model',...(effort?{effort}:{})},eligible_executors:[{executor_type:'writer',supports_model:true,supports_effort:true,reasoning_efforts:['low','medium','high'],models:[]}],approved_plan_revision:null};
   commitTeam(fx.options.runtimeDir,team,'planner-fixture',null,()=>{});
   const original=io.adapters.writer.run;io.adapters.writer.supportsModel=true;
+  io.adapters.writer.supportsFreshSession=true;
   io.adapters.writer.reasoningEfforts=['low','medium','high'];
   io.adapters.writer.run=async capsule=>{
     calls.push(capsule);

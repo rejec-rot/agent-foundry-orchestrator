@@ -11,7 +11,7 @@ const labels = {
   rejected: '已拒绝', superseded: '方向已更新', delivered: '已回复',
 };
 const commandLabels = { start: '启动团队', pause: '暂停协作', cancel: '结束协作', deliver: '继续交付',
-  message: '发送消息', adjust: '调整工作项', retry: '重试工作项', replan: '重新规划', propose_plan: '请求行动计划', approve_plan: '确认编组并派工' };
+  message: '发送消息', adjust: '调整工作项', retry: '重试工作项', replan: '重新规划', propose_plan: '请求行动计划', approve_plan: '确认编组并派工', configure_agents:'更新 Agent 配置' };
 const label = value => labels[value] ?? value;
 const effortLabels = { none:'关闭', minimal:'极低', low:'轻量', medium:'标准', high:'深入', xhigh:'高强度', max:'最高', ultra:'Ultra' };
 const effortLabel = value => effortLabels[value] ?? value;
@@ -24,6 +24,7 @@ try { token = sessionStorage.getItem('af-write-token') ?? ''; } catch {}
 let selected = null, workId = null, team = null, capabilities = null, refreshing = false;
 let pending = 0, editBase = null, goalBase = null, noticeTimer = null, lastConnectionError = null;
 let executorCatalog = null, dispatchBase = null, profileDraft = [];
+let createWorkersDraft = null, consoleProfileBase = null, consoleProfileDirty = false, consoleProfileKey = '', consoleProfileEditable = null, configCommand = null;
 const emptyConversation = $('planner-conversation').innerHTML;
 
 function operationId(prefix) {
@@ -79,8 +80,8 @@ function navigation(open) {
   $('workspace').inert = mobile && open;
   if (mobile && open) $('sidebar').querySelector('.nav-item').focus();
 }
-function openDialog(id) {
-  if (!['create-dialog', 'token-dialog'].includes(id) && !team) {
+function openDialog(id, configureWorkers=false) {
+  if (!['create-dialog', 'token-dialog', 'dispatch-dialog'].includes(id) && !team) {
     notice('先选择或创建一个团队。');
     return;
   }
@@ -95,11 +96,19 @@ function openDialog(id) {
     goalBase = { teamId: team.team_id, revision: team.goal_revision };
   }
   if (id === 'dispatch-dialog') {
-    if (team.state !== 'PLAN_READY') { notice('等待 Planner 提交计划后，再确认编组。'); return; }
-    dispatchBase = { teamId:team.team_id, revision:team.plan_revision, goalRevision:team.goal_revision, items:team.work_items.map(i=>({...i})) };
-    profileDraft = team.members.filter(m=>m.role==='worker').map(({executor_type,model,effort})=>({executor_type,model,effort}));
+    if(!executorCatalog){notice('正在读取 Agent 配置，请稍后打开。');return;}
+    if(team && !team.planning){notice('此团队使用原有启动流程；新建 Planner 目标后可配置 Agents。');return;}
+    const mode=!team?'local':!configureWorkers&&team.state==='PLAN_READY'?'approve':'configure';
+    dispatchBase = {mode,teamId:team?.team_id??null, revision:team?.plan_revision??0, goalRevision:team?.goal_revision??0,
+      configRevision:team?.planning?.agent_config_revision??0,items:team?.work_items.map(i=>({...i}))??[]};
+    profileDraft = team?team.members.filter(m=>m.role==='worker').map(({executor_type,model,effort})=>({executor_type,model,effort})):structuredClone(createWorkersDraft??Array.from({length:3},()=>consoleProfile()));
     $('dispatch-workers').value=String(profileDraft.length);
-    $('dispatch-plan-version').textContent='计划 v'+dispatchBase.revision+' · '+dispatchBase.items.length+' 个工作项 · 按 Planner 提案预填，可自由调整。';
+    $('dispatch-workers').disabled=Boolean(team?.planning?.approved_plan_revision!==null&&team?.planning?.approved_plan_revision!==undefined);
+    $('dispatch-heading').textContent=mode==='approve'?'这一次，让谁行动？':'选择你的 Worker Agents。';
+    $('dispatch-plan-version').textContent=mode==='approve'?'计划 v'+dispatchBase.revision+' · '+dispatchBase.items.length+' 个工作项 · 确认模型、强度与分工。':mode==='local'?'预设编组会随新目标一起保存；也可让 Planner 推荐。':'每位 Worker 可用相同或不同的 Agent、模型与思考强度。';
+    $('worker-profile-hint').textContent=mode==='approve'?'确认后才开始执行。Planner / Reviewer 的配置保持一致。':team&& !canConfigureAgents()?'执行中先暂停团队，待全部尝试停止后再保存配置。':'保存配置不会开工。生成计划时，Planner 会遵循你预设的 Worker 编组。';
+    $('assignment-heading').hidden=mode!=='approve';$('work-assignments').hidden=mode!=='approve';
+    $('approve-plan').innerHTML=(mode==='approve'?'确认并开工':mode==='local'?'使用这套编组':'保存 Worker 配置')+' '+icon('arrow');
     renderDispatch();
   }
   navigation(false);
@@ -121,10 +130,13 @@ function writes() {
     ['CANCELLED', 'RECOVERY_REQUIRED'].includes(team?.state);
   $('retry').disabled = !enabled || !workId || editBase?.teamId !== team?.team_id || terminal;
   if(team?.planning && ['DRAFT','HELD'].includes(team.work_items.find(i=>i.work_item_id===workId)?.status)){ $('adjust').disabled=true; $('retry').disabled=true; }
-  $('planner-send').disabled = !enabled || !team?.planning || !['DISCUSSING','PLAN_READY','WORKING','BLOCKED'].includes(team.state);
-  $('propose-plan').disabled = !enabled || !team?.planning || !['DISCUSSING','PLAN_READY'].includes(team.state) || team.members.find(m=>m.role==='lead')?.status==='RUNNING';
+  $('planner-send').disabled = !enabled || consoleProfileDirty || Boolean(configCommand) || !team?.planning || !['DISCUSSING','PLAN_READY','WORKING','BLOCKED'].includes(team.state);
+  $('propose-plan').disabled = !enabled || consoleProfileDirty || Boolean(configCommand) || !team?.planning || !['DISCUSSING','PLAN_READY'].includes(team.state) || team.members.find(m=>m.role==='lead')?.status==='RUNNING';
   $('configure-dispatch').disabled = !enabled || team?.state!=='PLAN_READY' || team.members.find(m=>m.role==='lead')?.status==='RUNNING' || team.messages.some(m=>m.to_agent_id==='lead'&&['queued','received'].includes(m.status));
-  $('approve-plan').disabled = $('configure-dispatch').disabled || dispatchBase?.teamId!==team?.team_id || dispatchBase?.revision!==team?.plan_revision;
+  $('approve-plan').disabled = pending>0 || Boolean(configCommand) || (dispatchBase?.mode==='local'?false:
+    !enabled || dispatchBase?.teamId!==team?.team_id || dispatchBase?.revision!==team?.plan_revision || dispatchBase?.configRevision!==(team?.planning?.agent_config_revision??0) ||
+    (dispatchBase?.mode==='approve'?$('configure-dispatch').disabled:!canConfigureAgents()));
+  $('save-console-planner').disabled=pending>0 || Boolean(configCommand) || (team ? !enabled || !canConfigureAgents() || !consoleProfileDirty : !$('console-planner-executor').value);
   $('pause').disabled ||= ['CREATED', 'PAUSED'].includes(team?.state);
   $('deliver').disabled ||= !team?.integration || ['CREATED', 'PLANNING', 'WORKING', 'INTEGRATING', 'PAUSED'].includes(team?.state);
   $('start').disabled ||= ['PLANNING', 'WORKING', 'INTEGRATING', 'DELIVERING', 'PAUSING'].includes(team?.state);
@@ -153,6 +165,20 @@ function memberName(id) {
 function renderPlanner() {
   document.body.dataset.hasTeam=String(Boolean(team));
   const legacy=Boolean(team&&!team.planning);
+  $('console-planner-form').hidden=legacy;
+  $('configure-workers').hidden=legacy;$('worker-config-summary').hidden=legacy;
+  renderConsoleProfile();
+  if(configCommand && configCommand.teamId!==team?.team_id)configCommand=null;
+  if(configCommand) {
+    const receipt=team?.team_id===configCommand.teamId?team.commands.find(c=>c.command_id===configCommand.commandId):null;
+    if(receipt && ['applied','rejected'].includes(receipt.status)) {
+      if(receipt.status==='applied') {if(configCommand.role==='planner')consoleProfileDirty=false;consoleProfileKey='';notice('Agent 配置已保存，下一次执行使用新配置。');}
+      else notice(receipt.reason??'配置未保存，请刷新后重新确认。','error');
+      configCommand=null;renderConsoleProfile();
+    }
+  }
+  const workerCount=team?.members.filter(m=>m.role==='worker').length??createWorkersDraft?.length;
+  $('worker-config-summary').textContent=workerCount?workerCount+' 位 Worker · 点击「选择 Worker Agents」逐个设置模型与思考强度。':'可预设每位 Worker 的 Agent、模型与思考强度，也可让 Planner 推荐。';
   $('planner-chat-form').hidden=legacy;
   document.querySelector('.chat-suggestions').hidden=legacy;
   const planner=team?.planning?.planner??team?.members.find(m=>m.role==='lead');
@@ -207,25 +233,76 @@ function updatePlannerControls(reset=false) {
   updateEffort($('planner-effort'),entry,chosen);
   $('model-selection-hint').textContent=!entry?'没有已接入的 Agent。':entry.availability==='UNREGISTERED'?'此 Agent 待接入；可以先选择模型与思考强度。':entry.availability==='DISABLED_BY_OPERATOR'?'此 Agent 已停用，切换已接入的 Agent 后开始。':entry.availability==='UNAVAILABLE'?'此 Agent 当前不可用，请选择其他 Agent。':entry.models?.length?'可选模型来自本地配置；也可以输入自定义模型 ID。':'输入自定义模型 ID，或沿用 Agent 默认模型。';
   $('model-selection-hint').dataset.ready=String(entry?.availability==='AVAILABLE');
+  if(!team){consoleProfileKey='';renderConsoleProfile();}
   writes();
 }
+function canConfigureAgents() {
+  return Boolean(team?.planning && (['DISCUSSING','PLAN_READY'].includes(team.state) ||
+    (team.state==='PAUSED' && ['DISCUSSING','PLAN_READY','PLANNING','WORKING','BLOCKED'].includes(team.paused_from_state))) &&
+    ![...team.runs,...team.delivery_runs].some(r=>['RUNNING','UNCONFIRMED'].includes(r.status)));
+}
+function consoleProfile() {
+  return {executor_type:$('console-planner-executor').value,model:$('console-planner-model-input').value.trim()||null,effort:$('console-planner-effort').value||null};
+}
+function updateConsoleControls(reset=false) {
+  const entry=entryFor($('console-planner-executor').value,Boolean(team?.planning)),input=$('console-planner-model-input'),select=$('console-planner-model-select');
+  const custom=select.value==='__custom'&&!reset;
+  if(reset){input.value='';$('console-planner-effort').value='';}
+  const chosen=input.value.trim();
+  select.innerHTML='<option value="">'+esc(entry?.default_model?'默认 · '+entry.default_model:'默认模型')+'</option>'+(entry?.models??[]).map(m=>'<option value="'+esc(m.id)+'">'+esc(m.label??m.id)+'</option>').join('')+(entry?.supports_model?'<option value="__custom">自定义模型…</option>':'');
+  select.value=chosen?(entry?.models?.some(m=>m.id===chosen)?chosen:'__custom'):custom&&entry?.supports_model?'__custom':'';
+  select.disabled=!entry?.supports_model;input.hidden=select.value!=='__custom';input.disabled=!entry?.supports_model||input.hidden;
+  updateEffort($('console-planner-effort'),entry,chosen);
+  if(team && !canConfigureAgents())for(const control of $('console-planner-form').querySelectorAll('select,input'))control.disabled=true;
+}
+function renderConsoleProfile() {
+  if(!executorCatalog)return;
+  const key=(team?.team_id??'new')+':'+(team?.planning?.agent_config_revision??0);
+  if(consoleProfileBase?.teamId!==(team?.team_id??null)){consoleProfileDirty=false;consoleProfileKey='';}
+  if(!consoleProfileDirty && (key!==consoleProfileKey || !consoleProfileBase)) {
+    const p=team?.planning?.planner??{executor_type:$('planner-executor').value,model:$('planner-model-input').value||null,effort:$('planner-effort').value||null};
+    $('console-planner-executor').innerHTML=executorOptions(p.executor_type,Boolean(team?.planning));
+    $('console-planner-executor').value=p.executor_type;
+    $('console-planner-model-select').value='';
+    $('console-planner-model-input').value=p.model??'';$('console-planner-effort').innerHTML='<option value="'+esc(p.effort??'')+'">'+esc(p.effort??'默认')+'</option>';
+    updateConsoleControls();consoleProfileKey=key;
+    consoleProfileBase={teamId:team?.team_id??null,revision:team?.plan_revision??0,goalRevision:team?.goal_revision??0,configRevision:team?.planning?.agent_config_revision??0};
+  }
+  // Status updates may unlock the editor without changing its saved profile.
+  const editable=!team||canConfigureAgents();
+  $('console-planner-executor').disabled=!editable;
+  if(editable!==consoleProfileEditable){if(editable)updateConsoleControls();else for(const control of $('console-planner-form').querySelectorAll('select,input'))control.disabled=true;consoleProfileEditable=editable;}
+  if(!consoleProfileDirty)consoleProfileBase={teamId:team?.team_id??null,revision:team?.plan_revision??0,goalRevision:team?.goal_revision??0,configRevision:team?.planning?.agent_config_revision??0};
+  const entry=entryFor($('console-planner-executor').value,Boolean(team?.planning));
+  $('console-profile-hint').textContent=configCommand?'配置正在保存，请等待回执。':!team?(entry?.availability==='AVAILABLE'?'选择后，新目标会使用这套 Planner 配置。':'此 Agent 待接入；可先选择模型与思考强度。'):!editable?'正在执行或交付；先暂停团队，再修改配置。':consoleProfileDirty?'有未保存的配置，保存后再继续商讨。':'配置已生效；修改后点击保存。';
+  $('save-console-planner').innerHTML=(team?'保存配置':'使用此 Planner')+' '+icon('arrow');
+}
+function syncConsoleToCreate() {
+  const p=consoleProfile();$('planner-executor').value=p.executor_type;
+  $('planner-model-input').value=p.model??'';
+  $('planner-effort').innerHTML='<option value="'+esc(p.effort??'')+'">'+esc(p.effort??'默认')+'</option>';
+  updatePlannerControls();
+}
 function updateWorkerControls(row,reset=false) {
-  const executor=row.querySelector('[data-profile-executor]'),input=row.querySelector('[data-profile-model]'),effort=row.querySelector('[data-profile-effort]');
-  const entry=entryFor(executor.value,true);
+  const executor=row.querySelector('[data-profile-executor]'),input=row.querySelector('[data-profile-model]'),effort=row.querySelector('[data-profile-effort]'),select=row.querySelector('[data-profile-model-select]');
+  const entry=entryFor(executor.value,Boolean(team?.planning));
   if(reset){input.value='';effort.value='';}
   input.disabled=!entry?.supports_model;input.placeholder=entry?.default_model?'默认 · '+entry.default_model:'默认模型或输入模型 ID';
   if(input.disabled)input.value='';
   row.querySelector('datalist').innerHTML=(entry?.models??[]).map(m=>'<option value="'+esc(m.id)+'">'+esc(m.label??m.id)+'</option>').join('');
+  select.innerHTML='<option value="">'+esc(entry?.default_model?'默认 · '+entry.default_model:'默认模型')+'</option>'+(entry?.models??[]).map(m=>'<option value="'+esc(m.id)+'">'+esc(m.label??m.id)+'</option>').join('')+(entry?.supports_model?'<option value="__custom">自定义模型…</option>':'');
+  const chosen=input.value.trim();select.value=chosen?(entry?.models?.some(m=>m.id===chosen)?chosen:'__custom'):'';
+  select.disabled=!entry?.supports_model;input.hidden=select.value!=='__custom';input.disabled=!entry?.supports_model||input.hidden;
   updateEffort(effort,entry,input.value.trim());
 }
 function readDispatchDraft() {
   profileDraft=[...document.querySelectorAll('.worker-profile')].map(row=>({executor_type:row.querySelector('[data-profile-executor]').value,model:row.querySelector('[data-profile-model]').value.trim()||null,effort:row.querySelector('[data-profile-effort]').value||null}));
 }
 function renderDispatch() {
-  const count=Number($('dispatch-workers').value),lead=team.planning.planner;
+  const count=Number($('dispatch-workers').value),lead=team?.planning?.planner??consoleProfile();
   while(profileDraft.length<count)profileDraft.push({...lead});profileDraft=profileDraft.slice(0,count);
   $('dispatch-workers-output').value=String(count);
-  $('worker-profiles').innerHTML=profileDraft.map((p,i)=>'<div class="worker-profile"><strong aria-label="Worker '+(i+1)+'">'+String(i+1).padStart(2,'0')+'</strong><label class="field"><span>Agent</span><select data-profile-executor="'+i+'" aria-label="Worker '+(i+1)+' 执行器">'+executorOptions(p.executor_type,true)+'</select></label><label class="field"><span>模型</span><input data-profile-model="'+i+'" list="worker-models-'+i+'" maxlength="160" value="'+esc(p.model??'')+'" aria-label="Worker '+(i+1)+' 模型"><datalist id="worker-models-'+i+'"></datalist></label><label class="field worker-effort"><span>思考强度</span><select data-profile-effort="'+i+'" aria-label="Worker '+(i+1)+' 思考强度"><option value="'+esc(p.effort??'')+'" selected>'+esc(effortLabel(p.effort??'默认'))+'</option></select></label></div>').join('');
+  $('worker-profiles').innerHTML=profileDraft.map((p,i)=>'<div class="worker-profile"><strong aria-label="Worker '+(i+1)+'">'+String(i+1).padStart(2,'0')+'</strong><label class="field"><span>Agent</span><select data-profile-executor="'+i+'" aria-label="Worker '+(i+1)+' 执行器">'+executorOptions(p.executor_type,true)+'</select></label><label class="field"><span>模型</span><select data-profile-model-select="'+i+'" aria-label="Worker '+(i+1)+' 模型选择"></select><input data-profile-model="'+i+'" list="worker-models-'+i+'" maxlength="160" value="'+esc(p.model??'')+'" aria-label="Worker '+(i+1)+' 自定义模型 ID"><datalist id="worker-models-'+i+'"></datalist></label><label class="field worker-effort"><span>思考强度</span><select data-profile-effort="'+i+'" aria-label="Worker '+(i+1)+' 思考强度"><option value="'+esc(p.effort??'')+'" selected>'+esc(effortLabel(p.effort??'默认'))+'</option></select></label></div>').join('');
   for(const row of document.querySelectorAll('.worker-profile'))updateWorkerControls(row);
   const previous=Object.fromEntries([...document.querySelectorAll('[data-assignment]')].map(s=>[s.dataset.assignment,s.value]));
   $('work-assignments').innerHTML=dispatchBase.items.map(item=>{
@@ -460,29 +537,65 @@ $('replan-form').onsubmit = handle(async () => {
   await command({ type: 'replan', goal, expected_goal_revision: goalBase.revision }, goalBase.teamId);
   $('replan-dialog').close();
 });
-$('planner-executor').onchange=()=>updatePlannerControls(true);
+$('planner-executor').onchange=()=>{if(!team)consoleProfileDirty=false;updatePlannerControls(true);};
 $('planner-model-select').onchange=()=>{
   const select=$('planner-model-select'),input=$('planner-model-input');
   input.value=select.value==='__custom'?'':select.value;
   input.hidden=select.value!=='__custom';input.disabled=input.hidden;
   updateEffort($('planner-effort'),entryFor($('planner-executor').value),input.value);
+  syncCreationProfile();
   if(!input.hidden)input.focus();
 };
-$('planner-model-input').oninput=()=>updateEffort($('planner-effort'),entryFor($('planner-executor').value),$('planner-model-input').value.trim());
+$('planner-model-input').oninput=()=>{updateEffort($('planner-effort'),entryFor($('planner-executor').value),$('planner-model-input').value.trim());syncCreationProfile();};
+$('planner-effort').onchange=syncCreationProfile;
+function syncCreationProfile(){if(!team){consoleProfileDirty=false;consoleProfileKey='';renderConsoleProfile();writes();}}
+function consoleChanged(reset=false){consoleProfileDirty=true;updateConsoleControls(reset);if(!team)syncConsoleToCreate();renderConsoleProfile();writes();}
+$('console-planner-executor').onchange=()=>consoleChanged(true);
+$('console-planner-model-select').onchange=()=>{
+  const input=$('console-planner-model-input');input.value=$('console-planner-model-select').value==='__custom'?'':$('console-planner-model-select').value;
+  // Preserve custom mode while the operator starts typing a model ID.
+  if($('console-planner-model-select').value==='__custom'){input.hidden=false;input.disabled=false;input.focus();consoleProfileDirty=true;updateEffort($('console-planner-effort'),entryFor($('console-planner-executor').value,Boolean(team)),null);writes();}
+  else consoleChanged();
+};
+$('console-planner-model-input').oninput=()=>{consoleProfileDirty=true;updateEffort($('console-planner-effort'),entryFor($('console-planner-executor').value,Boolean(team)),$('console-planner-model-input').value.trim());if(!team)syncConsoleToCreate();writes();};
+$('console-planner-effort').onchange=()=>consoleChanged();
+$('console-planner-form').onsubmit=handle(async()=>{
+  if($('console-planner-model-select').value==='__custom'&&!$('console-planner-model-input').value.trim())throw new Error('填写自定义模型 ID，或选择默认模型。');
+  if(!team){syncConsoleToCreate();consoleProfileDirty=false;openDialog('create-dialog');return;}
+  if(!consoleProfileBase || consoleProfileBase.teamId!==team.team_id)throw new Error('重新选择当前团队后再配置 Planner。');
+  const result=await command({type:'configure_agents',expected_plan_revision:consoleProfileBase.revision,expected_goal_revision:consoleProfileBase.goalRevision,
+    expected_agent_config_revision:consoleProfileBase.configRevision,planner:consoleProfile()},consoleProfileBase.teamId);
+  configCommand={teamId:consoleProfileBase.teamId,commandId:result.command_id,role:'planner'};
+  render();
+});
+$('configure-workers').onclick=()=>{if(team&&consoleProfileDirty){notice('先保存 Planner 配置，再设置 Worker Agents。');return;}openDialog('dispatch-dialog',true);};
 $('dispatch-mode').onchange=()=>{$('create-mode-summary').textContent=$('dispatch-mode').value==='planner'?'Planner 编组并自动开工':'看过计划，再确认开工';};
 $('planner-chat-form').onsubmit=handle(async()=>{
+  if(consoleProfileDirty||configCommand)throw new Error('先保存 Planner 配置，再发送消息。');
   const message=$('planner-input').value.trim();if(!message)throw new Error('先写下你想和 Planner 商讨的内容。');
   await command({type:'message',agent_id:'lead',message});$('planner-input').value='';$('planner-input').focus();
 });
 for(const suggestion of document.querySelectorAll('[data-prompt]'))suggestion.onclick=()=>{$('planner-input').value=suggestion.dataset.prompt;$('planner-input').focus();};
-$('propose-plan').onclick=handle(()=>command({type:'propose_plan'}));
+$('propose-plan').onclick=handle(()=>{if(consoleProfileDirty||configCommand)throw new Error('先保存 Planner 配置，再生成行动计划。');return command({type:'propose_plan'});});
 $('dispatch-workers').oninput=()=>{readDispatchDraft();renderDispatch();};
-$('worker-profiles').onchange=event=>{const select=event.target.closest('[data-profile-executor]');if(select)updateWorkerControls(select.closest('.worker-profile'),true);};
+$('worker-profiles').onchange=event=>{
+  const executor=event.target.closest('[data-profile-executor]');if(executor){updateWorkerControls(executor.closest('.worker-profile'),true);return;}
+  const select=event.target.closest('[data-profile-model-select]');if(select){const row=select.closest('.worker-profile'),input=row.querySelector('[data-profile-model]');input.value=select.value==='__custom'?'':select.value;
+    if(select.value==='__custom'){input.hidden=false;input.disabled=false;input.focus();updateEffort(row.querySelector('[data-profile-effort]'),entryFor(row.querySelector('[data-profile-executor]').value,Boolean(team)),null);}
+    else updateWorkerControls(row);}
+};
 $('worker-profiles').oninput=event=>{const input=event.target.closest('[data-profile-model]');if(input)updateWorkerControls(input.closest('.worker-profile'));};
 $('dispatch-form').onsubmit=handle(async()=>{
   if(!dispatchBase)throw new Error('重新打开计划，确认最新编组。');readDispatchDraft();
+  if(profileDraft.some(p=>!p.executor_type))throw new Error('为每位 Worker 选择一个 Agent。');
+  for(const row of document.querySelectorAll('.worker-profile'))if(row.querySelector('[data-profile-model-select]').value==='__custom'&&!row.querySelector('[data-profile-model]').value.trim())throw new Error('填写 Worker 的自定义模型 ID，或选择默认模型。');
+  if(dispatchBase.mode==='local'){createWorkersDraft=structuredClone(profileDraft);$('dispatch-dialog').close();render();notice('Worker 编组已预设，将随新目标一起保存。');return;}
+  if(dispatchBase.mode==='configure'){
+    const result=await command({type:'configure_agents',expected_plan_revision:dispatchBase.revision,expected_goal_revision:dispatchBase.goalRevision,expected_agent_config_revision:dispatchBase.configRevision,workers:profileDraft},dispatchBase.teamId);
+    configCommand={teamId:dispatchBase.teamId,commandId:result.command_id,role:'workers'};$('dispatch-dialog').close();render();return;
+  }
   const assignments=Object.fromEntries([...document.querySelectorAll('[data-assignment]')].map(s=>[s.dataset.assignment,s.value]));
-  await command({type:'approve_plan',expected_plan_revision:dispatchBase.revision,expected_goal_revision:dispatchBase.goalRevision,workers:profileDraft,assignments},dispatchBase.teamId);
+  await command({type:'approve_plan',expected_plan_revision:dispatchBase.revision,expected_goal_revision:dispatchBase.goalRevision,expected_agent_config_revision:dispatchBase.configRevision,workers:profileDraft,assignments},dispatchBase.teamId);
   $('dispatch-dialog').close();
 });
 $('create-form').onsubmit = handle(async () => {
@@ -493,8 +606,9 @@ $('create-form').onsubmit = handle(async () => {
     goal: $('goal').value.trim(), target_path: $('target').value.trim(),
     acceptance: { command: $('command').value.trim(), args }, idempotency_key: $('key').value,
   }, planning:{dispatch_mode:$('dispatch-mode').value,
-    planner:{executor_type:$('planner-executor').value,model:$('planner-model-input').value.trim()||null,effort:$('planner-effort').value||null}} });
+    planner:{executor_type:$('planner-executor').value,model:$('planner-model-input').value.trim()||null,effort:$('planner-effort').value||null},...(createWorkersDraft?{workers:createWorkersDraft}:{})} });
   selected = result.team_id; workId = null; editBase = null;
+  createWorkersDraft=null;consoleProfileDirty=false;consoleProfileKey='';
   $('create-dialog').close(); $('create-form').reset(); $('key').value = operationId('goal-');
   $('create-mode-summary').textContent='看过计划，再确认开工';$('create-settings').open=false;
   renderExecutorSelect();notice('团队已创建。先与 Planner 商讨你的目标。');

@@ -11,6 +11,8 @@
 主流程是“选择 Planner 模型 → 聊天商讨 → 生成行动计划 → 确认 Worker 数量、模型与分工 → 开工 → 同模型独立会话复检”。创建时也可选择由 Planner 推荐编组后自动开工。左侧常驻真实 Planner 对话，右侧是提案、派工确认与工作项；动态和回执收在下方。已选择团队时缩小顶部海报，手机成员采用横向滚动。漫画对话气泡、斜切面具徽章、calling card、四步行动条与返工条加强 P5 视觉，也标记真实阶段。
 
 - 点击 Planner 聚焦常驻对话框；点击 Worker，选择真实接收者并发送消息。
+- Planner 面板常驻 Agent、模型与思考强度选单；“你的团队”旁的“选择 Worker Agents”逐位配置 Worker，创建前和商讨阶段即可预设。目录模型用下拉选单，自定义模型显示额外输入框；保存配置不会开工，未保存的 Planner 修改会阻止继续聊天或请求提案。
+- 已开工的团队先暂停，全部执行范围停止后才能换配置；保留已接受成果，配置用于后续尝试。确认同时绑定配置版本，Reviewer 在交付时继承最新 Planner 配置并建立独立会话。
 - 点击执行中的工作项，暂停旧尝试与受影响的依赖并提交反馈；Planner 改写后才重新派工。提交绑定打开编辑器时的版本，防止静默覆盖后续修改。
 - 计划提案默认停在 `PLAN_READY`；编组窗口允许 1–8 位 Worker、相同或不同的执行器/模型以及逐项分配。确认绑定计划版本和目标版本。
 - Reviewer 与 Planner 的模型配置一致，但建立独立会话；拒绝缺失身份或与任一 Planner/Worker 会话冲突的复检。
@@ -51,9 +53,11 @@
 
 [简化后的创建页](../previews/persona-workspace/planner-create-desktop.png) · [手机模型与思考强度选择](../previews/persona-workspace/planner-create-mobile.png)
 
+[常驻 Planner 配置](../previews/persona-workspace/planner-config-desktop.png) · [逐位 Worker 配置](../previews/persona-workspace/worker-config-desktop.png) · [手机 Worker 配置](../previews/persona-workspace/worker-config-mobile.png)
+
 [尚未创建团队时的完整边框](../previews/persona-workspace/teams-empty-desktop.png) · [手机创建弹窗视口](../previews/persona-workspace/create-dialog-viewport.png)
 
-创建入口只保留目标、项目和 Planner 的 Agent / 模型 / 思考强度。Worker 人数在计划确认时选择；开工授权、验收参数与提交标识收进“更多设置”。模型和强度联动：切换 Agent 清除不兼容覆盖，没有思考等级的模型禁用强度覆盖。手机端底部主按钮保持可见。Reviewer 沿用 Planner 配置并开启独立会话。
+创建入口只保留目标、项目和 Planner 的 Agent / 模型 / 思考强度。Worker 人数默认在计划确认时选择，也可提前通过独立配置入口预设；开工授权、验收参数与提交标识收进“更多设置”。模型和强度联动：切换 Agent 清除不兼容覆盖，没有思考等级的模型禁用强度覆盖。手机端底部主按钮保持可见。Reviewer 沿用 Planner 配置并开启独立会话。
 
 ![交付工作台](../previews/persona-workspace/workbench-desktop.png)
 
@@ -69,15 +73,16 @@ node qa/team-browser.mjs --output-dir /tmp/af-persona-browser
 node verification/web-console-smoke.mjs
 node verification/web-write-browser.mjs
 node verification/deploy-preflight.mjs
-node --test tests/team-planner.test.mjs tests/team-api.test.mjs tests/web-api-readonly.test.mjs tests/web-api-write-auth.test.mjs tests/web-style-scale.test.mjs
+node --test tests/team-agent-configuration.test.mjs tests/team-planner.test.mjs tests/team-api.test.mjs tests/web-api-readonly.test.mjs tests/web-api-write-auth.test.mjs tests/web-style-scale.test.mjs
 ```
 
 - 协作页 Chromium 验证 23 项行为：默认入口、历史任务书签、鉴权操作、成员和依赖、消息回执与转义、定向调整、无关产物保留、旧结果拒绝、刷新恢复、桌面网格、手机导航与焦点、新建弹窗、错误草稿保留、键盘标签、本地字体、中文标题与正文排版、斜切按钮、响应式与减少动画，以及浏览器创建时 Planner 配置落库与 Reviewer 配置绑定。
-- Planner 页 Chromium 验证 27 项行为，覆盖真实聊天、消息转义、确认前不派工、计划后修改人数、不同执行器与模型、逐项分配、暂停、Planner 改写、下游挂起、旧结果拒绝、无关成果保留、重载与手机编组窗口；新增简洁创建、模型选择、执行器和模型的强度限制、切换时清理不兼容参数，以及 Planner / Worker 强度传递。
+- Planner 页 Chromium 验证 36 项行为，覆盖真实聊天、消息转义、确认前不派工、计划后修改人数、不同执行器与模型、逐项分配、暂停、Planner 改写、下游挂起、旧结果拒绝、无关成果保留、重载与手机编组窗口；包括简洁创建、常驻 Planner 配置保存、商讨阶段的 Worker 配置、模型下拉与自定义、执行器和模型的强度限制，以及真实执行请求中的 Planner / Worker 强度。
 - 新流程覆盖 320–1920px，无页面横向溢出；成员列表在手机端可单独横向滚动。
 - Planner 后端检查覆盖手动与自动派工、复检新会话、版本冲突、计划与改向的重启恢复，以及无关定义保护。既有团队链路继续回归。
+- 新增 Agent 配置后端检查 6/6 通过：保存不派工、模型与强度传入执行、最新 Reviewer 绑定、非法配置拒绝、版本冲突和重启恢复、暂停后换配置保留无关成果，以及预设人数约束。完整测试 825 项：822 通过、3 跳过、0 失败。
 - 交付页浏览器检查：只读 30/30、写操作 22/22 通过，覆盖本地字体、同款按钮、真实 CTA 点击、提交标识、只读预检、设置错误展开、任务创建/启动/取消、消息队列、令牌与响应式布局；320–1440px 的较长状态信息保留在卡片内。
-- 边框专项浏览器复检：75/75 通过，检查全部 7 个原生弹窗在 1440px、390px、320px 下的边界、焦点与滚动，高对比和减少动画模式，两页布局，以及长交付卡片的高度与换行。使用当前只读预览服务；长状态样例仅加入浏览器 DOM，不创建业务数据或调用写接口。此为视觉复检记录，工作流的自动回归仍由上面的脚本覆盖。
+- 当前只读预览专项复检：90/90 通过，检查创建前 Planner 选择与创建弹窗同步、Worker 草稿保存并重开、320–1920px 配置布局，全部 7 个原生弹窗的边界、焦点与滚动，高对比和减少动画模式，以及长交付卡片的高度与换行。只修改页面草稿和长状态 DOM 样例，未调用写接口。此为专项复检记录，工作流的自动回归仍由上面的脚本覆盖。
 - 部署静态预检：46/46 通过，覆盖两页资源、共享边框样式、字体许可与控制项。该预检检查部署输入，不等同于系统服务安装或真实模型验收。
 - 原始浏览器结果：[Planner 页](../previews/persona-workspace/planner-report.json)、[既有协作链路](../previews/persona-workspace/report.json)、[交付页](../previews/persona-workspace/workbench-report.json)。
 - 边框复检记录：[两页、全部弹窗与可访问性](../previews/persona-workspace/frame-review.json)。

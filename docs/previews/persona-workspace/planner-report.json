@@ -29,7 +29,16 @@
     "model-specific effort gating",
     "Planner effort reaches execution",
     "per-worker effort reaches execution",
-    "mobile create dialog"
+    "mobile create dialog",
+    "visible cockpit Agent/model/effort controls",
+    "console model-specific effort gating",
+    "unsaved Planner configuration blocks old-model chat",
+    "live Planner configuration persists",
+    "Worker settings available before planning",
+    "explicit per-Worker model dropdowns",
+    "operator Worker presets persist",
+    "configuration does not dispatch any agents",
+    "sticky mobile Worker configuration action"
   ],
-  "verified_at": "2026-10-02T11:30:45.677Z"
+  "verified_at": "2026-10-02T13:05:39.228Z"
 }
