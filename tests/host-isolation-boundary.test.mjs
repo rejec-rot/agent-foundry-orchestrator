@@ -84,6 +84,29 @@ const CGROUP_BASE = '/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service
 // deliberately retain a boundary, which records an alert.
 process.env.AF_BOUNDARY_ALERTS_FILE = join(mkdtempSync(join(tmpdir(), 'af-test-alerts-')), 'alerts.jsonl');
 
+// Isolation rejection must be tested without an installed provider CLI or a
+// sibling governance checkout. If the launcher reaches this stub, exit 99
+// exposes the missing rejection without invoking a model account.
+function agyIsolationFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'af-agy-isolation-'));
+  const binary = join(root, 'agy');
+  const governance = join(root, 'AGENTS.md');
+  writeFileSync(binary, '#!/bin/sh\nexit 99\n', { mode: 0o755 });
+  writeFileSync(governance, '# Isolation test governance\n');
+  return {
+    env: {
+      ...process.env,
+      AGY_BIN: binary,
+      AF_GLOBAL_DIR: root,
+      AF_CANONICAL_AGENTS_MD: governance,
+      AF_SANDBOX_EXECUTORS: 'off',
+      AF_EXTERNAL_ISOLATION_VERIFIED: '0',
+      AF_CGROUP_BASE: '',
+    },
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
 test('HIB-1: Non-owner DAC boundary prevents chmod on canonical repo, CAS, and task state (EPERM)', () => {
   const root = mkdtempSync(join(tmpdir(), 'af-hib1-'));
   const canonicalDir = join(root, 'canonical');
@@ -285,19 +308,17 @@ test('HIB-6: CodexAdapter refuses --dangerously-bypass-approvals-and-sandbox whe
 });
 
 test('HIB-7: bin/agy-af fails closed when AF_REQUIRE_ISOLATION=1 and isolation is unverified', () => {
+  const fx = agyIsolationFixture();
   const agyAf = join(process.cwd(), 'bin', 'agy-af');
-  const res = spawnSync(agyAf, ['--version'], {
-    env: {
-      ...process.env,
-      AF_REQUIRE_ISOLATION: '1',
-      AF_EXTERNAL_ISOLATION_VERIFIED: '0',
-      AF_CGROUP_BASE: '',
-    },
-    encoding: 'utf8',
-  });
+  try {
+    const res = spawnSync(agyAf, ['--version'], {
+      env: { ...fx.env, AF_REQUIRE_ISOLATION: '1' },
+      encoding: 'utf8',
+    });
 
-  assert.strictEqual(res.status, 2, 'agy-af must exit with code 2 when isolation is required but unverified');
-  assert.match(res.stderr, /refusing to append --dangerously-skip-permissions/);
+    assert.strictEqual(res.status, 2, 'agy-af must exit with code 2 when isolation is required but unverified');
+    assert.match(res.stderr, /refusing to append --dangerously-skip-permissions/);
+  } finally { fx.cleanup(); }
 });
 
 test('HIB-8: Credential isolation guarantees sibling keys are absent from executor environment', () => {
@@ -392,27 +413,30 @@ test('HIB-10: 伪造隔离标志拦截: isExternalIsolationVerified rejects asse
 });
 
 test('HIB-11: 直接传入危险参数拦截: bin/agy-af rejects --dangerously-skip-permissions when external isolation is unverified', () => {
+  const fx = agyIsolationFixture();
   const agyAf = join(process.cwd(), 'bin', 'agy-af');
 
-  // Direct pass without isolation flags
-  const resDirect = spawnSync(agyAf, ['--dangerously-skip-permissions', '--version'], {
-    env: { ...process.env },
-    encoding: 'utf8',
-  });
-  assert.strictEqual(resDirect.status, 2, 'Directly passing --dangerously-skip-permissions must exit code 2');
-  assert.match(resDirect.stderr, /refusing explicit --dangerously-skip-permissions: external isolation is unverified/);
+  try {
+    // Direct pass without isolation flags
+    const resDirect = spawnSync(agyAf, ['--dangerously-skip-permissions', '--version'], {
+      env: fx.env,
+      encoding: 'utf8',
+    });
+    assert.strictEqual(resDirect.status, 2, 'Directly passing --dangerously-skip-permissions must exit code 2');
+    assert.match(resDirect.stderr, /refusing explicit --dangerously-skip-permissions: external isolation is unverified/);
 
-  // Direct pass with forged environment flags
-  const resForged = spawnSync(agyAf, ['--dangerously-skip-permissions', '--version'], {
-    env: {
-      ...process.env,
-      AF_EXTERNAL_ISOLATION_VERIFIED: '1',
-      AF_CGROUP_BASE: '/sys/fs/cgroup',
-    },
-    encoding: 'utf8',
-  });
-  assert.strictEqual(resForged.status, 2, 'Passing --dangerously-skip-permissions with forged env must exit code 2');
-  assert.match(resForged.stderr, /refusing explicit --dangerously-skip-permissions: external isolation is unverified/);
+    // Direct pass with forged environment flags
+    const resForged = spawnSync(agyAf, ['--dangerously-skip-permissions', '--version'], {
+      env: {
+        ...fx.env,
+        AF_EXTERNAL_ISOLATION_VERIFIED: '1',
+        AF_CGROUP_BASE: '/sys/fs/cgroup',
+      },
+      encoding: 'utf8',
+    });
+    assert.strictEqual(resForged.status, 2, 'Passing --dangerously-skip-permissions with forged env must exit code 2');
+    assert.match(resForged.stderr, /refusing explicit --dangerously-skip-permissions: external isolation is unverified/);
+  } finally { fx.cleanup(); }
 });
 
 test('HIB-12: Docker socket 访问阻断与特权剥离: restricted sandbox masks docker.sock and strips sudo/groups', () => {

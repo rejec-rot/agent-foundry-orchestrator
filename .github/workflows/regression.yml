@@ -19,6 +19,14 @@ jobs:
         with:
           node-version: '24'
 
+      # Intake preflight checks the real restricted-sandbox capability. The
+      # runner needs the isolation tool, but no model-provider CLI or account.
+      - name: install restricted sandbox
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y bubblewrap
+          bwrap --version
+
       # The suite must be green on a CLEAN checkout: no sibling repositories, no
       # provider CLIs, no pre-existing runtime state.
       - name: full test suite

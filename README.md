@@ -1,5 +1,7 @@
 # Agent Foundry Next
 
+[![regression](https://github.com/rejec-rot/agent-foundry-orchestrator/actions/workflows/regression.yml/badge.svg?branch=agent-foundry-next)](https://github.com/rejec-rot/agent-foundry-orchestrator/actions/workflows/regression.yml?query=branch%3Aagent-foundry-next)
+
 面向共享目标的多 agents 协作平台：主作者组织分工与整合，多个 worker 独立执行、交换消息，用户能调整指定工作项。**Trusted Import V2** 负责成果的独立评审、授权、验收与正式代码提升。
 
 当前版本：`2.0.0-dev`。方案二的首期协作核心已实现，入口是 **`/teams.html`** 和 **`af-admin team`**。历史单作者 V2 链路完成过本地 Docker 部署验收及 Codex＋Cline 冒烟；新团队链路的真实模型账号联调仍需单独验收。
@@ -171,6 +173,8 @@ Web 使用现有令牌鉴权启动：`node af-admin.mjs web serve --allow-write 
 ## 环境与配置
 
 需要 Node.js >= 20、Git，以及对应执行器 CLI 和有效认证。已验证的 Docker 镜像使用 Node.js 24。
+
+默认提交预检还检查宿主机的 bubblewrap（`bwrap`）可用性，Linux 部署需要安装该工具。GitHub 回归会安装 bubblewrap，模型输出仍使用受控测试适配器。
 
 真实 V2 需要 Docker writer scope 或可用的 Linux delegated cgroup v2；缺少强写者范围时拒绝启动。cgroup 负责进程范围与回收，不单独提供文件系统或凭据隔离，部署仍需保护 canonical、CAS 和控制面状态。
 
