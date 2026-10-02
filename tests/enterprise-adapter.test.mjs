@@ -8,7 +8,6 @@
 //   TEST 6A-5: ROLE != PLATFORM: same vertex executor acts dynamically as author and reviewer
 
 import { test, after } from 'node:test';
-import './helpers/runtime-state-fixture.mjs';
 import assert from 'node:assert';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -111,7 +110,15 @@ test('TEST 6A-4: health returns standard health status', async () => {
 
   assert.ok(health, 'health object must exist');
   assert.strictEqual(health.executor_type, 'vertex-gemini');
-  assert.strictEqual(health.ok, true);
+  // This asserted ok === true. The old check was
+  // `exists(launcher) || credentials...`, and the launcher is a file this repo
+  // ships, so the first term was ALWAYS true and the credential test was dead code:
+  // the assertion encoded a false claim. vertex-gemini ships as a STUB launcher, so
+  // it is now reported unhealthy (and non-schedulable) unless a real client is
+  // configured through VERTEX_GEMINI_LAUNCHER.
+  assert.strictEqual(VertexGeminiAdapter.stub, true, 'the shipped launcher is a stub');
+  assert.strictEqual(health.ok, false, 'a stub that fabricates results must not report healthy');
+  assert.match(String(health.reason), /stub/, 'and it must say that it is a stub');
   assert.match(health.governance, /AGENTS\.md/);
   assert.ok(typeof health.launcher === 'string' && health.launcher.length > 0);
 });

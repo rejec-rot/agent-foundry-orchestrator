@@ -1,7 +1,6 @@
 // hardening.test.mjs - PHASE 1.1 tests A-F (fake adapters, no API cost)
 // TEST G (agy exact conversation resume) was verified black-box separately.
 import { test, mock } from 'node:test';
-import './helpers/runtime-state-fixture.mjs';
 import './helpers/tasks-dir-fixture.mjs';
 import assert from 'node:assert';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -112,8 +111,12 @@ test('TEST A: reviewer NEEDS_FIX -> author exact resume -> PASS -> COMPLETED', a
 });
 
 test('TEST B: reviewer PASS -> acceptance FAIL -> auto fix -> acceptance PASS -> COMPLETED', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'af-11-b-'));
-  const marker = join(dir, 'fixed.marker');
+  // The marker lives INSIDE the task workspace on purpose. An acceptance command
+  // may only observe its own workspace: when the sandbox is active nothing else
+  // is mounted, so a marker outside `fixture_dir` would be invisible and the fix
+  // loop could never converge. Keeping it in the workspace also keeps this test
+  // honest about what an acceptance command is allowed to depend on.
+  const marker = join(WORK, 'b-fixed.marker');
   const author = makeFake('claude', [
     { sessionRef: 'S1' },                          // rev1: does not create marker
     { sessionRef: 'S1' },                          // fix run
@@ -139,7 +142,7 @@ test('TEST B: reviewer PASS -> acceptance FAIL -> auto fix -> acceptance PASS ->
   const fixCall = author.calls.find((c) => c.kind === 'resume');
   assert.ok(fixCall.prompt.includes('ACCEPTANCE_FAILURE'));
   assert.ok(fixCall.prompt.includes('exit_code: 1'));
-  rmSync(dir, { recursive: true, force: true });
+  // The marker sits inside WORK, which the file-level after() hook removes.
 });
 
 test('TEST C: persistent acceptance failure exhausts max_revisions -> FAILED', async () => {
@@ -234,26 +237,19 @@ test('TEST F: same-platform sessions are independent; session collision is rejec
   assert.strictEqual(new Set(ids).size, ids.length);
 });
 
-test('acceptance_cmd normalization: the legacy shell string is closed', () => {
+test('acceptance_cmd normalization: legacy shell forbidden by default', () => {
   assert.throws(() => normalizeAcceptanceCmd({ command: 'node' }));            // missing args array
   assert.throws(() => normalizeAcceptanceCmd(42));
-  assert.throws(() => normalizeAcceptanceCmd('node --test'), /legacy shell-string/);
+  assert.throws(() => normalizeAcceptanceCmd('node --test'), /forbidden by default/);
   assert.strictEqual(normalizeAcceptanceCmd(null), null);
-
-  // The task file's opt-in flag no longer opens a channel: the legacy string
-  // still has to pass the allowlist, and a shell string is never allowlistable
-  // (it is not a program with an argument prefix). Previously this returned a
-  // legacy spec and ran `bash -lc <string>` without consulting the whitelist.
+  // The opt-in flag unlocks the string FORM only; the allowlist still governs
+  // what may run, and a shell string can never be prefix-allowlisted. This
+  // assertion previously pinned the opposite - that a trusted opt-in alone was
+  // enough to run an arbitrary shell command.
   assert.throws(
     () => normalizeAcceptanceCmd('node --test', { allowLegacy: true }),
-    /acceptance_command_not_allowlisted/,
-    'the legacy channel must be closed even with the explicit opt-in'
-  );
-  assert.throws(
-    () => normalizeAcceptanceCmd('id -un; echo pwned', { allowLegacy: true }),
     /acceptance_command_not_allowlisted/
   );
-
   assert.deepStrictEqual(normalizeAcceptanceCmd({ command: 'node', args: ['--test'] }),
     { command: 'node', args: ['--test'], legacy_shell: false });
 });

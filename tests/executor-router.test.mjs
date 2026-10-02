@@ -11,7 +11,6 @@
 //   6C-8: Executor Isolation (no session ref or run ID leakage between executors)
 
 import { test } from 'node:test';
-import './helpers/runtime-state-fixture.mjs';
 import './helpers/tasks-dir-fixture.mjs';
 import assert from 'node:assert';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -26,6 +25,7 @@ import {
 } from '../lib/executor-router.mjs';
 import './helpers/acceptance-allowlist.mjs';
 import { Scheduler } from '../lib/scheduler.mjs';
+import { ADAPTERS, AUTO_SELECTABLE_ORDER } from '../lib/adapters.mjs';
 import { classifyExecutionError } from '../lib/executor-error-classifier.mjs';
 import { ExecutorRuntimeGuard } from '../lib/executor-runtime-guard.mjs';
 import { readTaskFile, saveTaskAtomic } from '../lib/store.mjs';
@@ -121,8 +121,16 @@ test('6C-1: Capability Filter (requires_mcp excludes blocked executors, permits 
   assert.strictEqual(codexMcp.primary, 'codex', 'codex satisfies requires_mcp on 0.153.4');
 
   // 5. Enterprise compliance constraint
-  const entRoute = resolveExecutorRoute({ compliance: 'enterprise' });
-  assert.strictEqual(entRoute.primary, 'vertex-gemini', 'enterprise compliance selects vertex-gemini');
+  // adapters is passed because the scheduler (the production caller) passes it, and
+  // adapter-level flags - schedulable / stub - are only consulted through that map.
+  const entRoute = resolveExecutorRoute({ compliance: 'enterprise' }, { adapters: ADAPTERS });
+  // enterprise compliance can only be satisfied by a cloud-enterprise executor, and
+  // in this repository the only one is vertex-gemini - whose shipped launcher is a
+  // STUB that fabricates a result and a fixed `decision: 'PASS'`. A fabricated PASS
+  // is indistinguishable from a real review, so the stub is non-schedulable and the
+  // router correctly finds NO candidate. Routing to it would have been worse than
+  // returning nothing. Point VERTEX_GEMINI_LAUNCHER at a real client to restore this.
+  assert.strictEqual(entRoute.primary, null, 'the only enterprise executor present is a stub, so nothing is eligible');
   assert.ok(!entRoute.fallbacks.includes('claude'), 'claude is not cloud-enterprise');
 });
 
@@ -570,6 +578,23 @@ test('6C-7: No Fallback on ACCOUNT_POLICY (fail closed, zero fallback)', async (
   assert.strictEqual(fallbackEvents.length, 0, 'Zero fallback events permitted');
 
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ------------------------------------------------------------------ 6C-9
+test('6C-9: the auto-selection order only names registered, non-stub executors', () => {
+  // AUTO_SELECTABLE_ORDER is deliberately a different symbol from
+  // DEFAULT_PRIORITY_ORDER (see lib/adapters.mjs): the router's order names
+  // non-schedulable executors, this one must name only executors that can run.
+  // A rename or removal must therefore be caught here rather than silently
+  // skipped at scheduling time.
+  assert.ok(AUTO_SELECTABLE_ORDER.length > 0, 'there must be at least one auto-selectable executor');
+  for (const id of AUTO_SELECTABLE_ORDER) {
+    assert.ok(ADAPTERS[id], `auto-selection names an executor with no adapter: ${id}`);
+  }
+  assert.ok(
+    !AUTO_SELECTABLE_ORDER.includes('vertex-gemini'),
+    'the fabricated-result stub must never be auto-selected'
+  );
 });
 
 // ------------------------------------------------------------------ 6C-8

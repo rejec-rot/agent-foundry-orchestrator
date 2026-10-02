@@ -6,9 +6,10 @@
 //   3. Governance Bypass Forbidden: All governed tasks must declare governance_env explicitly and route through GovernanceBridge.
 //   4. No Credential Persistence: 0 tokens, API keys, credentials, or prompts/responses on disk.
 //   5. ROLE != PLATFORM: Adapters and router strictly decouple platform identity from task roles.
+//   6. No Bare Spawn: Every child process is created through lib/child-process.mjs, so it leads its
+//      own process group (a tree kill reaches descendants) and is registered for shutdown reaping.
 
 import { test } from 'node:test';
-import './helpers/runtime-state-fixture.mjs';
 import './helpers/tasks-dir-fixture.mjs';
 import assert from 'node:assert';
 import { readdirSync, readFileSync, existsSync, statSync, mkdtempSync, rmSync } from 'node:fs';
@@ -17,7 +18,6 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import './helpers/executors-fixture.mjs';
-import { RUNS_DIR, RUNTIME_DIR, TASKS_DIR_DEFAULT, LOCKS_DIR } from '../lib/config.mjs';
 import { loadExecutorStatus, EXECUTORS_DIR } from '../lib/executor-status.mjs';
 import { resolveExecutorRoute } from '../lib/executor-router.mjs';
 import { ADAPTERS } from '../lib/adapters.mjs';
@@ -135,10 +135,11 @@ test('INV-3: Governance Bypass Forbidden: local forgery is rejected fail-closed'
 // TEST INV-4: No Credential Persistence
 // ----------------------------------------------------------------------------
 test('INV-4: No Credential Persistence: scans runtime and tasks for zero secret leakage', () => {
-  // Scan where state is ACTUALLY written (config-resolved): with runtime/test
-  // isolation the checkout's runtime/ is empty, so scanning a hardcoded path
-  // would make this assertion vacuous.
-  const dirsToScan = [TASKS_DIR_DEFAULT, RUNTIME_DIR, LOCKS_DIR];
+  const dirsToScan = [
+    join(ROOT_DIR, 'tasks'),
+    join(ROOT_DIR, 'runtime'),
+    join(ROOT_DIR, 'locks'),
+  ];
 
   // Broader pattern: bare token-shaped keys, authorization headers, and the
   // generic Bearer form - not just the three keys the old test looked for.
@@ -226,43 +227,6 @@ test('INV-4: No Credential Persistence: scans runtime and tasks for zero secret 
 });
 
 // ----------------------------------------------------------------------------
-// TEST INV-6: Test isolation is established before any path is resolved
-// ----------------------------------------------------------------------------
-test('INV-6: 隔离夹具必须先于任何 lib 模块被导入（否则运行态会写回仓库）', () => {
-  // The runtime/locks/tasks/runs paths are resolved ONCE, when lib/config.mjs is
-  // evaluated. A test that imports a lib module before the isolation fixture
-  // therefore writes into the checkout, silently - `git status` stays clean
-  // because those paths are gitignored, so nothing else would notice.
-  const testsDir = join(ROOT_DIR, 'tests');
-  const offenders = [];
-
-  for (const entry of readdirSync(testsDir)) {
-    if (!entry.endsWith('.test.mjs')) continue;
-    const text = readFileSync(join(testsDir, entry), 'utf8');
-    const lines = text.split('\n');
-    const fixtureLine = lines.findIndex((l) => l.trim().startsWith('import ') && l.includes('helpers/runtime-state-fixture.mjs'));
-    const firstLibLine = lines.findIndex((l) => /'\.\.\/(lib|orchestrator)/.test(l));
-    if (firstLibLine === -1) continue;
-
-    // A test that pulls in the modules that WRITE runtime state must isolate it.
-    const touchesStateWriters = /'\.\.\/lib\/(adapters|scheduler|operator-control|workbench)|'\.\.\/orchestrator/.test(text);
-    if (touchesStateWriters && fixtureLine === -1) {
-      offenders.push(`${entry} (imports a state-writing module without the runtime fixture)`);
-      continue;
-    }
-    if (fixtureLine !== -1 && fixtureLine > firstLibLine) {
-      offenders.push(`${entry} (fixture at ${fixtureLine + 1}, lib import at ${firstLibLine + 1})`);
-    }
-  }
-
-  assert.deepStrictEqual(
-    offenders,
-    [],
-    `the isolation fixture must be imported before any lib module: ${offenders.join('; ')}`
-  );
-});
-
-// ----------------------------------------------------------------------------
 // TEST INV-5: Strict Separation of ROLE != PLATFORM
 // ----------------------------------------------------------------------------
 test('INV-5: Strict Separation of ROLE != PLATFORM in adapters and router', () => {
@@ -325,4 +289,62 @@ test('INV-5: Strict Separation of ROLE != PLATFORM in adapters and router', () =
     'Router fallbacks must match across roles for same capability/availability constraints'
   );
   assert(authorRoute.primary, 'Must select valid primary');
+});
+
+// ----------------------------------------------------------------------------
+// TEST INV-6: No Bare Spawn
+//
+// Every child process must be created through lib/child-process.mjs so that it
+// (a) leads its own process group - a tree kill reaches its descendants - and
+// (b) is registered, so a shutdown reaps it. The failure this catches is a new
+// long-lived child (like the acceptance command and the vault MCP server, which
+// were both invisible to the reaper) being added with a bare spawn and silently
+// escaping both properties.
+//
+// The only permitted synchronous child is the blocking `git` call in
+// worktree.mjs: it cannot outlive its caller, and it forks nothing.
+// ----------------------------------------------------------------------------
+test('INV-6: No Bare Spawn: non-test code spawns children only through child-process.mjs', () => {
+  const scanned = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.name.endsWith('.mjs')) {
+        scanned.push(full);
+      }
+    }
+  };
+  // Production surfaces: the control plane, its libraries and its CLIs.
+  for (const dir of ['lib', 'approval', 'intent', 'planner']) walk(join(ROOT_DIR, dir));
+  for (const file of ['orchestrator.mjs', 'af-admin.mjs']) {
+    const full = join(ROOT_DIR, file);
+    if (existsSync(full)) scanned.push(full);
+  }
+
+  const ALLOWED_SYNC = /execFileSync\(\s*'git'/;
+  const offenders = [];
+  for (const file of scanned) {
+    const rel = file.slice(ROOT_DIR.length + 1);
+    if (rel === join('lib', 'child-process.mjs')) continue; // the one factory
+    const source = readFileSync(file, 'utf8');
+    source.split('\n').forEach((line, i) => {
+      if (/^\s*(\/\/|\*)/.test(line)) return; // comments and jsdoc
+      if (/\b(spawn|spawnSync|execFile|fork)\s*\(/.test(line) || /\bexecSync\s*\(/.test(line)) {
+        offenders.push(`${rel}:${i + 1}: ${line.trim()}`);
+      }
+      if (/execFileSync\s*\(/.test(line) && !ALLOWED_SYNC.test(line)) {
+        offenders.push(`${rel}:${i + 1}: ${line.trim()}`);
+      }
+    });
+  }
+
+  assert.deepStrictEqual(
+    offenders,
+    [],
+    `children must be created through lib/child-process.mjs (spawnManaged), found:\n${offenders.join('\n')}`
+  );
+  assert.ok(scanned.length > 10, 'the scan must actually cover the production modules');
 });

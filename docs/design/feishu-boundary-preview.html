@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Foundry · 飞书告警模板</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef1f6;color:#1d2939;font:15px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1160px;margin:auto;padding:48px 24px}.eyebrow{font-size:11px;letter-spacing:2px;font-weight:750;color:#667085}h1{font-size:30px;letter-spacing:-1px;margin:8px 0}main>p{color:#667085;margin:0 0 30px}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}.card{background:white;border:1px solid #dce2eb;border-radius:14px;overflow:hidden;box-shadow:0 8px 28px #18223008}.head{padding:20px 22px;border-top:4px solid var(--accent);background:var(--tint)}.head .eyebrow{color:var(--accent)}h2{font-size:19px;margin:6px 0 10px}.badge{display:inline-block;font-size:12px;padding:2px 9px;background:white;border:1px solid var(--accent);border-radius:5px;color:var(--accent)}.body{padding:22px}.lead{margin:0 0 20px;font-weight:600}dl{display:grid;grid-template-columns:70px 1fr;gap:9px;margin:0;font-size:13px}dt{color:#667085}dd{margin:0;overflow-wrap:anywhere}hr{border:0;border-top:1px solid #eaecf0;margin:20px 0}.label{font-size:11px;color:#667085;letter-spacing:1px;font-weight:700}.reason{font-size:13px;overflow-wrap:anywhere;margin:8px 0 16px}.action{background:#f7f9fc;border-radius:8px;padding:12px;font-size:13px}.foot{font-size:11px;color:#667085;margin-top:20px}code{font:12px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}.warn{--accent:#99620b;--tint:#fff8e7}.danger{--accent:#bb283b;--tint:#fff0f1}.success{--accent:#13785a;--tint:#eaf8f1}.note{margin-top:28px!important;font-size:12px}@media(max-width:900px){.grid{grid-template-columns:1fr}.card{max-width:520px;width:100%;margin:auto}main{padding:28px 16px}}
+</style>
+<main>
+<div class="eyebrow">AGENT FOUNDRY / OPERATIONS</div>
+<h1>让告警说明问题，而不制造噪声。</h1>
+<p>专属边界通知 · 三态设计稿 · 以下均为示例数据，不代表当前运行状态</p>
+<section class="grid" aria-label="三种告警状态">
+<article class="card warn">
+<header class="head"><div class="eyebrow">AGENT FOUNDRY · 边界监控</div><h2>边界保护已保留</h2><span class="badge">需要核查 · 首次保留</span></header>
+<div class="body"><p class="lead">未执行解锁，等待核查作用域异常。</p><dl><dt>仓库</dt><dd>agent-foundry-next</dd><dt>任务</dt><dd><code>TASK-EXAMPLE-001</code></dd><dt>连续保留</dt><dd>1 次</dd><dt>边界状态</dt><dd><code>PROTECTION_RETAINED_PENDING_RECOVERY</code></dd></dl><hr><div class="label">判定依据</div><p class="reason">作用域结构异常，无法确认安全释放条件。<br><code>RETAIN / scope-anomaly / broken-scope</code></p><div class="label">受保护资产</div><p class="reason">Canonical<br><code>/example/agent-foundry-next</code><br>CAS<br><code>/example/trusted-cas</code></p><div class="action"><strong>下一步</strong><br>检查写者与 scope 证据；仅在恢复条件满足后，使用带理由、留审计的受控恢复。</div><div class="foot">2026-09-21 14:32:08 +08:00 · 示例<br>告警 AF-EXAMPLE-001 · v1</div></div>
+</article>
+<article class="card danger">
+<header class="head"><div class="eyebrow">AGENT FOUNDRY · 边界监控</div><h2>持续保留，告警已升级</h2><span class="badge">优先处理 · 连续第 3 次</span></header>
+<div class="body"><p class="lead">异常尚未解除，请安排人工排查。</p><dl><dt>仓库</dt><dd>agent-foundry-next</dd><dt>任务</dt><dd><code>TASK-EXAMPLE-003</code></dd><dt>连续保留</dt><dd>3 次 · 达升级阈值</dd><dt>边界状态</dt><dd><code>PROTECTION_RETAINED_PENDING_RECOVERY</code></dd></dl><hr><div class="label">判定依据</div><p class="reason">有界重扫已耗尽，未获得可解锁的干净扫描。<br><code>RETAIN / rescan-budget-exhausted</code><br>本次扫描 4 次</p><div class="label">受保护资产</div><p class="reason">Canonical<br><code>/example/agent-foundry-next</code><br>CAS<br><code>/example/trusted-cas</code></p><div class="action"><strong>下一步</strong><br>核查持续失败原因和审计记录。不要用强制解锁绕过未知状态，也不要将告警关闭等同于边界恢复。</div><div class="foot">2026-09-21 14:48:08 +08:00 · 示例<br>告警 AF-EXAMPLE-003 · v1</div></div>
+</article>
+<article class="card success">
+<header class="head"><div class="eyebrow">AGENT FOUNDRY · 边界监控</div><h2>边界已恢复</h2><span class="badge">恢复已验证</span></header>
+<div class="body"><p class="lead">受控恢复已完成，对应告警已关闭。</p><dl><dt>仓库</dt><dd>agent-foundry-next</dd><dt>任务</dt><dd><code>TASK-EXAMPLE-001</code></dd><dt>边界状态</dt><dd><code>DISENGAGED</code></dd><dt>恢复依据</dt><dd>示例审计记录已确认</dd></dl><hr><div class="label">结果说明</div><p class="reason">边界恢复不等同于任务成功、代码已提升或系统通过生产验收。</p><div class="label">受保护资产</div><p class="reason">Canonical<br><code>/example/agent-foundry-next</code><br>CAS<br><code>/example/trusted-cas</code></p><div class="action"><strong>下一步</strong><br>核对任务最终状态及恢复审计。本模板不提供直接解锁、重试或关闭告警的操作按钮。</div><div class="foot">2026-09-21 15:02:08 +08:00 · 示例<br>告警 AF-EXAMPLE-001 · v1<br>恢复通知默认关闭，仅显式开启后发送</div></div>
+</article>
+</section>
+<p class="note">这是独立 HTML 视觉稿，无脚本、无外部资源、无网络请求。群内使用 interactive 卡片实现相近层级，字体、圆角、间距由飞书客户端决定，不能保证像素一致。RESTORE_INCOMPLETE 应使用红色“恢复未完成”，不得显示“保护完整保留”或“已恢复”。</p>
+</main>
+</html>

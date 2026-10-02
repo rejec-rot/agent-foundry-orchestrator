@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Foundry · 飞书边界卡片（四态，由真实 dry-run 输出生成）</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef1f6;color:#1d2939;font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1200px;margin:auto;padding:40px 20px}.page-eyebrow{font-size:11px;letter-spacing:2px;font-weight:750;color:#667085;margin:0}
+h1{font-size:27px;letter-spacing:-1px;margin:8px 0}.sub{color:#667085;margin:0 0 26px;font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
+.card{background:#fff;border:1px solid #dce2eb;border-radius:14px;overflow:hidden}
+.card header{padding:18px 20px;border-top:4px solid var(--accent);background:var(--tint)}
+.card .eyebrow{font-size:11px;letter-spacing:1.5px;font-weight:750;color:var(--accent)}
+.card h2{font-size:18px;margin:6px 0 0}.card .body{padding:18px 20px}
+.card p{margin:0 0 12px;font-size:13.5px;white-space:pre-line;overflow-wrap:anywhere}
+.card hr{border:0;border-top:1px solid #eaecf0;margin:14px 0}
+.card footer{padding:10px 20px;border-top:1px solid #eef1f6;font-size:11px;color:#667085}
+.note{margin-top:26px;font-size:12px;color:#667085}
+</style>
+<main>
+<p class="page-eyebrow">AGENT FOUNDRY / OPERATIONS</p>
+<h1>飞书边界卡片 · 四态（Card JSON 2.0）</h1>
+<p class="sub">本页由 <code>verification/feishu-card-states.mjs</code> 在 dry-run 下生成：未发送任何消息。客户端渲染与浏览器不完全一致。</p>
+<section class="grid">
+<article class="card" style="--accent:#a8620a;--tint:#fff7e8">
+  <header><span class="eyebrow">黄色 · 保护保留</span><h2>Agent Foundry · 边界保护已保留</h2></header>
+  <div class="body"><p>需要核查 · 首次保留
+未执行解锁，等待核查作用域异常。</p>
+<p>仓库：/srv/fixture-retained
+任务：TASK-CARD-ACCEPT-1
+连续保留：1 次
+边界状态：PROTECTION_RETAINED_PENDING_RECOVERY</p>
+<hr>
+<p>判定依据
+【验收测试·非真实故障】卡片通道验收 1/4：保护保留态
+RETAIN / scope-anomaly · 本次扫描 1 次
+异常类别：broken-scope</p>
+<p>Canonical：/srv/fixture-retained
+CAS：/srv/trusted-cas-retained</p>
+<hr>
+<p>检查写者与 scope 证据；仅在恢复条件满足后，使用带理由、留审计的受控恢复。</p>
+<p>告警标识：AF-ACCEPT-0001
+通知事件：boundary_retained · 级别：warning
+时间：2026-09-21T11:19:40.287Z
+卡片 v2</p></div>
+  <footer>schema 2.0 · orange · 1247 bytes · 8 elements</footer>
+</article>
+<article class="card" style="--accent:#bb283b;--tint:#fff0f1">
+  <header><span class="eyebrow">红色 · 持续保留，告警升级</span><h2>Agent Foundry · 持续保留，告警已升级</h2></header>
+  <div class="body"><p>优先处理 · 持续保留未解除
+异常尚未解除，请安排人工排查。</p>
+<p>仓库：/srv/fixture-escalated
+任务：TASK-CARD-ACCEPT-2
+连续保留：3 次
+边界状态：PROTECTION_RETAINED_PENDING_RECOVERY</p>
+<hr>
+<p>判定依据
+【验收测试·非真实故障】卡片通道验收 2/4：告警升级态
+RETAIN / rescan-budget-exhausted · 本次扫描 4 次</p>
+<p>Canonical：/srv/fixture-escalated
+CAS：/srv/trusted-cas-escalated</p>
+<hr>
+<p>核查持续失败原因和审计记录。不要用强制解锁绕过未知状态，也不要将告警关闭等同于边界恢复。</p>
+<p>告警标识：AF-ACCEPT-0002
+通知事件：boundary_retained · 级别：escalated
+时间：2026-09-21T11:19:40.289Z
+卡片 v2</p></div>
+  <footer>schema 2.0 · red · 1271 bytes · 8 elements</footer>
+</article>
+<article class="card" style="--accent:#bb283b;--tint:#fff0f1">
+  <header><span class="eyebrow">红色 · 恢复未完成</span><h2>Agent Foundry · 恢复未完成，保护完整性不可确认</h2></header>
+  <div class="body"><p>恢复未完成 · 保护完整性不可确认
+释放流程未能验证成功，不得假定已解锁。</p>
+<p>仓库：/srv/fixture-restore-incomplete
+任务：TASK-CARD-ACCEPT-3
+连续保留：1 次
+边界状态：RESTORE_INCOMPLETE</p>
+<hr>
+<p>判定依据
+【验收测试·非真实故障】卡片通道验收 3/4：恢复未完成态（release could not be verified: ownership mismatch）
+n/a</p>
+<p>Canonical：/srv/fixture-restore-incomplete
+CAS：/srv/trusted-cas-restore</p>
+<hr>
+<p>不要假定已解锁：核对释放审计与元数据差异，确认保护是否仍然完整，必要时重新施加保护并人工排查。</p>
+<p>告警标识：AF-ACCEPT-0003
+通知事件：boundary_retained · 级别：warning
+时间：2026-09-21T11:19:40.289Z
+卡片 v2</p></div>
+  <footer>schema 2.0 · red · 1319 bytes · 8 elements</footer>
+</article>
+<article class="card" style="--accent:#13785a;--tint:#eaf8f1">
+  <header><span class="eyebrow">绿色 · 已验证恢复</span><h2>Agent Foundry · 边界已恢复</h2></header>
+  <div class="body"><p>恢复已验证 · 告警已关闭
+受控恢复已完成，保护边界已按快照还原。</p>
+<p>仓库：/srv/fixture-recovered
+任务：TASK-CARD-ACCEPT-4
+连续保留：0 次
+边界状态：DISENGAGED</p>
+<hr>
+<p>判定依据
+【验收测试·非真实故障】卡片通道验收 4/4：已验证恢复态
+n/a</p>
+<p>Canonical：/srv/fixture-recovered
+CAS：/srv/trusted-cas-recovered</p>
+<hr>
+<p>无需操作。请保留本条作为审计记录。</p>
+<p>告警标识：AF-ACCEPT-0004
+通知事件：boundary_released · 级别：warning
+时间：2026-09-21T11:19:40.290Z
+卡片 v2</p></div>
+  <footer>schema 2.0 · green · 1110 bytes · 8 elements</footer>
+</article>
+</section>
+<p class="note">布局：状态标题 → 仓库与任务 → 异常依据 → 资产路径 → 处理建议 → 审计标识。全部动态字段为 plain_text，卡片不含任何可改变边界状态的操作组件。</p>
+</main>
+</html>

@@ -16,8 +16,8 @@ CLINE_BIN="${CLINE_BIN:-$(command -v cline 2>/dev/null || true)}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # No author-machine fallback: an unresolvable governance root must fail closed
 # below, not silently point at a path that only exists on someone else's host.
-GOV_DIR="${AF_GLOBAL_DIR:-$(cd "$SCRIPT_DIR/../../agent-foundry-global" 2>/dev/null && pwd || true)}"
-CANONICAL="${AF_CANONICAL_AGENTS_MD:-${GOV_DIR:+$GOV_DIR/AGENTS.md}}"
+GOV_DIR="${AF_GLOBAL_DIR-$(cd "$SCRIPT_DIR/../../agent-foundry-global" 2>/dev/null && pwd || true)}"
+CANONICAL="${AF_CANONICAL_AGENTS_MD-${GOV_DIR:+$GOV_DIR/AGENTS.md}}"
 VAULT_ROOT_VALUE="${VAULT_ROOT:-$(cd "$SCRIPT_DIR/../../agent-foundry-vault" 2>/dev/null && pwd || true)}"
 
 if [ ! -x "$CLINE_BIN" ]; then

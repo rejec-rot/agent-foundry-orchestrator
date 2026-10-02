@@ -9,6 +9,7 @@
 
 import { existsSync, realpathSync } from 'node:fs';
 import { resolve, dirname, basename, join, isAbsolute, relative } from 'node:path';
+import { TARGET_ASSET_TYPES, IMPACT_SCOPES } from './action-contract.mjs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -44,21 +45,11 @@ function relativeToBase(absolutePath) {
   return rel;
 }
 
-export const TARGET_ASSET_TYPES = Object.freeze({
-  GOVERNANCE: 'GOVERNANCE',
-  SYSTEM_CONFIG: 'SYSTEM_CONFIG',
-  VAULT: 'VAULT',
-  KNOWLEDGE: 'KNOWLEDGE',
-  DOCUMENT: 'DOCUMENT',
-  CODE: 'CODE',
-  TEMP_CACHE: 'TEMP_CACHE',
-});
-
-export const IMPACT_SCOPES = Object.freeze({
-  LOCAL: 'LOCAL',
-  PROJECT: 'PROJECT',
-  SYSTEM: 'SYSTEM',
-});
+// Declared by contracts/action-types.json and read from there (see
+// intent/action-contract.mjs). Hand-written copies here let the contract drift
+// from its enforcement while the architecture doc pointed at the file as the
+// single source of truth. Re-exported so existing importers keep the same names.
+export { TARGET_ASSET_TYPES, IMPACT_SCOPES };
 
 /**
  * Resolve input path to its canonical physical target, defending against symlink traversal.

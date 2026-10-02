@@ -11,13 +11,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SANDBOX = mkdtempSync(join(tmpdir(), 'af-test-cli-'));
+const SANDBOX = mkdtempSync(join(tmpdir(), 'af-cli-'));
 process.on('exit', () => { try { rmSync(SANDBOX, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 function cli(script, args) {
@@ -28,11 +28,9 @@ function cli(script, args) {
     env: {
       ...process.env,
       AF_TASKS_DIR: join(SANDBOX, 'tasks'),
-      AF_EXECUTORS_DIR: join(ROOT, 'fixtures', 'agent-foundry-global', 'executors'),
-      // The whole runtime group, so a CLI child cannot write into the checkout.
-      AF_RUNTIME_DIR: SANDBOX,
       AF_LOCKS_DIR: join(SANDBOX, 'locks'),
-      AF_RUNS_DIR: join(SANDBOX, 'runs'),
+      AF_RUNTIME_DIR: join(SANDBOX, 'runtime'),
+      AF_EXECUTORS_DIR: join(ROOT, 'fixtures', 'agent-foundry-global', 'executors'),
       AF_SAFETY_STATE_FILE: join(SANDBOX, 'safety-state.json'),
       AF_RUNTIME_EVENTS_LOG: join(SANDBOX, 'events.jsonl'),
     },
@@ -80,4 +78,35 @@ test('CLI-5: af-admin executor status 读取能力真源', () => {
   const r = cli('af-admin.mjs', ['executor', 'status', 'claude']);
   assert.strictEqual(r.code, 0, r.err.slice(0, 300));
   assert.match(r.out, /capability:\nREADY/, 'the fixture registry must project READY');
+});
+
+test('CLI-6: terminal-task recovery, inspect and cancel retain their compatibility behavior', () => {
+  const tasksDir = join(SANDBOX, 'tasks');
+  mkdirSync(tasksDir, { recursive: true });
+  const taskId = 'TASK-CLI-TERMINAL';
+  const file = join(tasksDir, `${taskId}.json`);
+  writeFileSync(file, JSON.stringify({ task_id: taskId, state: 'COMPLETED', state_version: 1, runs: [] }));
+  for (const command of ['recover', 'inspect', 'cancel']) {
+    const result = cli('orchestrator.mjs', [command, '--task-id', taskId]);
+    assert.equal(result.code, command === 'cancel' ? 2 : 0, `${command}: ${result.err}`);
+    assert.doesNotMatch(result.err, NO_STACK_TRACE);
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).state, 'COMPLETED');
+  }
+});
+
+test('CLI-7: a run refused by an existing lock cannot overwrite the live task at definition load', () => {
+  const taskId = 'TASK-CLI-HELD';
+  const tasksDir = join(SANDBOX, 'tasks');
+  const locksDir = join(SANDBOX, 'locks');
+  mkdirSync(tasksDir, { recursive: true }); mkdirSync(locksDir, { recursive: true });
+  const file = join(tasksDir, `${taskId}.json`);
+  const original = { task_id: taskId, state: 'AUTHOR_RUNNING', state_version: 7, marker: 'live owner' };
+  writeFileSync(file, JSON.stringify(original));
+  writeFileSync(join(locksDir, `${taskId}.lock`), JSON.stringify({ orchestrator_instance_id: 'live-owner', owner_token: 'live-token', pid: process.pid, lease_expires_at: new Date(Date.now() + 60_000).toISOString() }));
+  const definition = join(SANDBOX, 'definition.json');
+  writeFileSync(definition, JSON.stringify({ task_id: taskId, goal: 'do work', acceptance: 'pass', fixture_dir: SANDBOX, acceptance_cmd: { command: 'node', args: ['--test'] } }));
+  const result = cli('orchestrator.mjs', ['run', '--task-file', definition]);
+  assert.equal(result.code, 3, result.err);
+  assert.match(result.err, /TASK_ALREADY_RUNNING/);
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), original);
 });

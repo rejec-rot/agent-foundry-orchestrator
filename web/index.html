@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Agent Foundry · V2 工作台</title>
+<meta name="color-scheme" content="dark" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2314110e'/%3E%3Cpath d='M16 6l9 5v10l-9 5-9-5V11z' fill='none' stroke='%23e0a94a' stroke-width='2.2' stroke-linejoin='round'/%3E%3Cpath d='M11 16.5l3.2 3.2L21 13' fill='none' stroke='%238fbfa0' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<a class="skip" href="#detail">跳到任务详情</a>
+
+<header class="rail">
+  <div class="brand">
+    <svg class="mark" width="22" height="22" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+      <path d="M16 5l10 5.5v11L16 27 6 21.5v-11z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" />
+      <path d="M11 16.6l3.4 3.4L21.5 13" fill="none" stroke="var(--sage)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+    <h1>Agent Foundry<span class="sub"> · V2 工作台</span></h1>
+    <a href="/teams.html" class="hint">团队协作</a>
+    <span id="mode-badge" class="mode badge readonly" title="写操作需要服务端 --allow-write 与操作令牌"><svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 11V8a5 5 0 0110 0v3" fill="none" stroke="currentColor" stroke-width="2.4" /><rect x="4.5" y="11" width="15" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="2.4" /></svg>只读</span>
+  </div>
+  <div class="rail-meta">
+    <span id="conn" class="conn" role="status" aria-live="polite"><span class="pip" aria-hidden="true"></span>连接中…</span>
+    <span id="asof" class="asof"></span>
+  </div>
+</header>
+
+<main class="shell">
+  <section class="pane lane" aria-label="任务列表">
+    <div class="pane-head">
+      <span class="eyebrow">任务</span>
+      <span id="task-count" class="count"></span>
+    </div>
+    <div class="side-body" style="padding-bottom: 0">
+      <input id="filter" class="filter" type="search" placeholder="按任务 ID / 状态 / 阶段过滤" aria-label="过滤任务" />
+    </div>
+    <div id="tasks" class="rows" role="list"></div>
+  </section>
+
+  <section class="pane work" aria-label="任务详情">
+    <div class="pane-head">
+      <span class="eyebrow">任务详情</span>
+      <span id="detail-phase" class="count"></span>
+    </div>
+    <div id="detail" class="work-body">
+      <p class="hint">从左侧选择一个任务：这里会显示它的八个受信阶段、证据、以及事件时间线。</p>
+    </div>
+
+    <details class="disclosure collab">
+      <summary>协作 · 消息队列与在跑的 run</summary>
+      <div class="disclosure-body">
+        <div id="collab"><p class="hint">选择任务后显示。</p></div>
+        <div class="form" style="margin-top: 12px">
+          <label class="field">
+            <span>给这个任务留言（下一次 run/resume 才收到，不会打断正在运行的进程）</span>
+            <textarea id="msg-text" rows="2" placeholder="例如：请用更严格的闸门重跑评审"></textarea>
+          </label>
+          <div class="actions">
+            <button type="button" class="btn" id="msg-send" disabled title="需要令牌与服务端 --allow-write">排队消息</button>
+            <span class="hint" id="msg-note"></span>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <details class="disclosure timeline">
+      <summary>事件时间线（投影；任务文件才是事实来源）</summary>
+      <div class="disclosure-body">
+        <div id="timeline"><p class="hint">选择任务后显示。</p></div>
+      </div>
+    </details>
+
+    <div class="disclosure-body actions">
+      <button type="button" class="btn" id="a-start" disabled title="需要令牌与服务端 --allow-write">启动（V2）</button>
+      <button type="button" class="btn danger" id="a-cancel" disabled title="需要令牌与服务端 --allow-write">取消</button>
+      <span class="hint" id="detail-actions-note"></span>
+    </div>
+  </section>
+
+  <aside class="pane side" aria-label="新建任务、操作令牌与环境">
+    <div class="pane-head">
+      <span class="eyebrow">新建任务</span>
+      <span class="count">预检为只读判定</span>
+    </div>
+    <div class="side-body">
+      <form id="submit-form" class="form" autocomplete="off">
+        <label class="field"><span>目标 goal</span><input id="s-goal" type="text" placeholder="要做什么" required /></label>
+        <label class="field"><span>目标路径 target_path</span><input id="s-target" type="text" placeholder="/srv/repo（必须在允许根内）" required /></label>
+        <label class="field"><span>验收命令</span><input id="s-command" type="text" value="node" required /></label>
+        <label class="field"><span>验收参数（空格分隔）</span><input id="s-args" type="text" value="--test tests/gate.test.mjs" /></label>
+        <label class="field"><span>幂等键 idempotency_key</span><input id="s-key" type="text" placeholder="相同键重试不会重复建任务" required /></label>
+        <div class="actions">
+          <button type="submit" class="btn primary" id="s-preview">预检（只读）</button>
+          <button type="button" class="btn" id="s-record" disabled title="需要服务端以 --allow-write 启动">记录（不启动）</button>
+          <button type="button" class="btn" id="s-create" disabled title="需要令牌与服务端 --allow-write">创建任务</button>
+        </div>
+      </form>
+      <pre id="submit-result" class="evidence" role="status" aria-live="polite" tabindex="0" hidden></pre>
+
+      <details class="disclosure flush">
+        <summary>操作令牌<span class="count">写操作需要</span></summary>
+        <div class="disclosure-body">
+          <div class="form">
+            <label class="field">
+              <span>令牌（只留在本页内存与 sessionStorage，绝不写入磁盘）</span>
+              <input id="token-input" type="password" placeholder="粘贴 AF_WEB_TOKEN_FILE 的内容" autocomplete="off" />
+            </label>
+            <div class="actions">
+              <button type="button" class="btn" id="token-save">保存令牌</button>
+              <button type="button" class="btn" id="token-clear">清除</button>
+            </div>
+            <p class="hint" id="token-note">无令牌时所有写操作都会失败；服务端拒绝未鉴权的请求。</p>
+          </div>
+        </div>
+      </details>
+
+      <details class="disclosure flush">
+        <summary>环境<span class="count">只读</span></summary>
+        <div class="disclosure-body">
+          <dl id="environment" class="kv"></dl>
+        </div>
+      </details>
+
+      <details class="disclosure flush">
+        <summary>执行器<span class="count">只读</span></summary>
+        <div class="disclosure-body">
+          <dl id="executors" class="kv"></dl>
+        </div>
+      </details>
+    </div>
+  </aside>
+</main>
+
+<footer class="foot">
+  <span id="mode-line">本页默认只读：写操作需要服务端 --allow-write 与操作令牌。</span>
+  <span id="capabilities" class="caps"></span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

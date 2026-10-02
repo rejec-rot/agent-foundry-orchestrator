@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V2 流程管线 · PERSONA 风格原型（模拟数据）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=JetBrains+Mono:wght@400;700&family=Noto+Sans+SC:wght@400;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- 背景装饰：P5 式斜纹带 + 巨大描边水印（纯装饰，无数据绑定仅限原型） -->
+<div class="decor decor-stripe-tl" aria-hidden="true"></div>
+<div class="decor decor-stripe-br" aria-hidden="true"></div>
+<div class="decor-watermark" aria-hidden="true">V2</div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">V2</span>
+    <h1>AGENT FOUNDRY <em>PIPELINE</em></h1>
+    <span class="badge badge-proto" title="本页面为设计原型，全部数据为模拟">原型 · 模拟数据</span>
+  </div>
+  <div class="topbar-controls">
+    <label class="task-picker">
+      <span class="mono-label">TASK</span>
+      <select id="taskSelect" aria-label="选择任务"></select>
+    </label>
+    <span id="modeBadge" class="badge badge-readonly">只读</span>
+    <button id="modeToggle" class="ctrl-btn" title="原型演示：切换只读/写模式（真实系统由服务端 --allow-write + 令牌控制）">切到写模式</button>
+    <div class="view-toggle" role="tablist" aria-label="视图切换">
+      <button id="viewPipeline" class="ctrl-btn active" role="tab" aria-selected="true">管线</button>
+      <button id="viewList" class="ctrl-btn" role="tab" aria-selected="false">列表</button>
+    </div>
+    <div class="clock mono-label" title="数据快照时间（as_of）">
+      <span class="clock-dot" aria-hidden="true"></span>
+      as_of <time id="asOf">--:--:--</time>
+    </div>
+    <span id="unverifiableBadge" class="badge badge-uv hidden" title="存在不可核验的数据来源">不可核验 <b id="uvCount">0</b></span>
+  </div>
+</header>
+
+<main>
+  <!-- 管线视图 -->
+  <section id="pipelineView" aria-label="任务流程管线">
+    <div class="pipeline-stage-row" id="pipelineRow"><!-- JS 渲染节点与连线 --></div>
+    <p class="pipeline-caption mono-label">
+      节点形态：灰=未到达 · 红星芒=进行中 · 黑底=CLEARED · 红叉=FAILED · 黄黑警示带=等待人工 · 虚线=不可核验
+      ｜ TAB 按流程顺序遍历节点，ENTER 打开详情
+    </p>
+  </section>
+
+  <!-- 列表视图（与管线信息逐项等价，可访问性硬要求） -->
+  <section id="listView" class="hidden" aria-label="任务列表视图">
+    <table class="task-table" id="taskTable">
+      <thead>
+        <tr>
+          <th>任务 ID</th><th>状态</th><th>state_version</th><th>作者 / 评审</th>
+          <th>当前阶段</th><th>边界/告警</th><th>需人工</th><th>最近活动</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- 右侧抽屉 -->
+  <aside id="drawer" class="drawer" aria-label="节点详情" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <div class="mono-label drawer-kicker" id="drawerKicker">NODE</div>
+        <h2 id="drawerTitle">—</h2>
+      </div>
+      <button id="drawerClose" class="ctrl-btn" aria-label="关闭详情">✕</button>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+  </aside>
+
+  <!-- 指令条（写模式 + 选中可注入目标时升起） -->
+  <div id="injectBar" class="inject-bar" aria-hidden="true">
+    <div class="inject-target">
+      <span class="mono-label">注入目标</span>
+      <strong id="injectTarget">—</strong>
+    </div>
+    <input id="injectInput" type="text" placeholder="下达指令，例如：把导出范围收窄到 recovery-* 记录"
+           aria-label="指令内容">
+    <button id="injectSend" class="ctrl-btn accent">注入指令</button>
+    <span class="mono-label inject-note">经 operator-control · 不打断运行中进程 · 排队/已接收/已落实</span>
+  </div>
+</main>
+
+<!-- 原型演示控制条：不属于设计方案，仅用于演示“图随进程实时更新” -->
+<footer class="demo-console" aria-label="原型演示控制">
+  <span class="mono-label demo-tag">原型演示控制（非设计一部分）</span>
+  <button class="ctrl-btn" data-demo="approve">模拟：CLI 签名批准闸门</button>
+  <button class="ctrl-btn" data-demo="accept">模拟：验收通过</button>
+  <button class="ctrl-btn" data-demo="promote">模拟：提升完成</button>
+  <button class="ctrl-btn" data-demo="fail">模拟：评审失败</button>
+  <button class="ctrl-btn" data-demo="reset">⟲ 重置数据</button>
+</footer>
+
+<footer class="pagefoot">
+  本界面不持有审批密钥；恢复 / 批准 / 提升仅经 CLI 签名执行。
+  生命周期真源是任务文件（af-v2-task-v1）；本页面一切状态均为其投影（原型中为模拟数据）。
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

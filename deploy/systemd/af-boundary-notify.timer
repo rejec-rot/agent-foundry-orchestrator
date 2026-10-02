@@ -1,0 +1,18 @@
+; Agent Foundry - schedule the boundary notification retry flush.
+;
+; TEMPLATE ONLY: not installed, not enabled, not started. See deploy/README.md.
+; The notification side keeps its own retry/backoff in its own pending queue; this timer only
+; decides how often a flush pass runs.
+
+[Unit]
+Description=Run the boundary notification retry flush every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Persistent=true
+Unit=af-boundary-notify.service
+
+[Install]
+WantedBy=timers.target

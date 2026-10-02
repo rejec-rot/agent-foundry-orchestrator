@@ -22,6 +22,8 @@ function tmpDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
+const RUN_REAL_EXECUTOR_INTEGRATION = process.env.AF_RUN_REAL_EXECUTOR_INTEGRATION === '1';
+
 // ------------------------------------------------------------------ GP-1
 test('GP-1: 逐 executor 深合并策略，antigravity 的 1h 冷却不被覆盖', () => {
   const dir = tmpDir('af-gp1-');
@@ -117,7 +119,12 @@ test('GP-3: 被护栏拦截的发射不得伪造成 ACCOUNT_POLICY', async () =>
 });
 
 // ------------------------------------------------------------------ GP-4
-test('GP-4: recovery_probe 目的能穿过熔断（codex 发射确实带上了 purpose）', async () => {
+test('GP-4: recovery_probe 目的能穿过熔断（codex 发射确实带上了 purpose）', {
+  skip: RUN_REAL_EXECUTOR_INTEGRATION
+    ? false
+    : 'disabled by default; set AF_RUN_REAL_EXECUTOR_INTEGRATION=1 to launch a real executor',
+  timeout: 30_000,
+}, async () => {
   const { runtimeGuard } = await import('../lib/executor-runtime-guard.mjs');
   const { ADAPTERS } = await import('../lib/adapters.mjs');
   const dir = tmpDir('af-gp4-');
@@ -150,7 +157,8 @@ test('GP-4: recovery_probe 目的能穿过熔断（codex 发射确实带上了 p
       assigned_role: 'author',
       prompt: 'x',
       cwd: dir,
-      timeout_ms: 5000,
+      timeout_ms: 10_000,
+      protect_active_process: false,
       purpose: 'recovery_probe',
     });
     assert.doesNotMatch(

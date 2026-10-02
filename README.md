@@ -1,223 +1,288 @@
-# Agent Foundry Orchestrator
+# Agent Foundry Next
 
-> **企业级多智能体协同调度与控制核心 (Multi-Agent Task Orchestrator & Control Plane)**  
-> 当前版本：`Production Release v1.2 (Full Capabilities)` ｜ 自动化测试状态：**195 / 195 PASS (100%)（干净克隆验证）**
+[![regression](https://github.com/rejec-rot/agent-foundry-orchestrator/actions/workflows/regression.yml/badge.svg?branch=main)](https://github.com/rejec-rot/agent-foundry-orchestrator/actions/workflows/regression.yml?query=branch%3Amain)
 
----
+面向共享目标的多 agents 协作平台：主作者组织分工与整合，多个 worker 独立执行、交换消息，用户能调整指定工作项。**Trusted Import V2** 负责成果的独立评审、授权、验收与正式代码提升。
 
-## 📖 项目简介 (Overview)
+当前版本：`2.0.0-dev`。方案二的首期协作核心已实现，入口是 **`/teams.html`** 和 **`af-admin team`**。历史单作者 V2 链路完成过本地 Docker 部署验收及 Codex＋Cline 冒烟；新团队链路的真实模型账号联调仍需单独验收。
 
-**Agent Foundry Orchestrator** 是专为多大语言模型（LLM）与智能体执行器（Executor）打造的企业级**控制平面调度系统（Control Plane）**。
+项目源自 `opperl1114/agent-foundry-orchestrator` 的 `434114e`（v1.2.0），是独立升级线。许可仍为 `UNLICENSED`，公开发布条件见 [NOTICE.md](NOTICE.md) 和 [ADR-0003](docs/adr/0003-upstream-license-unresolved.md)。
 
-在传统的单 Agent 开发中，AI 常常面临**幻觉无法自纠、缺乏独立审查、进程崩溃后状态丢失、高危操作缺乏人类意图门禁、多步骤开发冲突相互覆盖、API 封号导致死锁**等工程痛点。
+## 新人先看：一个目标怎样完成
 
-Agent Foundry Orchestrator 构建了一套**高度自主、具备意图门禁防越权、多任务 DAG 拆解、并行 Git Worktree 隔离、以及自动博弈自愈**的生产级控制系统，让多个主流模型在工业级流水线中安全协作。
+你提供目标、项目路径和验收要求。主作者把目标拆成有依赖关系的工作项；workers 执行分工、交换信息并提交成果；主作者整合后，交付服务完成独立评审、授权和验收。
 
----
+下面的 Mermaid 流程图可在 GitHub README 中直接查看。主线按从上到下阅读，虚线表示用户介入与成员通信。不支持 Mermaid 的阅读器可打开[协作流程 SVG](docs/diagrams/team-workflow.svg)。
 
-## 🌟 核心能力矩阵 (Key Capabilities)
-
-### 1. 🧭 自主规划与 DAG 分批调度 (Autonomous Planner & DAG Scheduler)
-* **Goal 自动拆解**：基于 `planner/` 模块与 Codex Planner，将宏观目标结构化拆解为有序的子任务计划（`task-plan.schema.json`）。
-* **DAG 拓扑分批**：自动识别步骤间的依赖关系与并行批次（Batches），无依赖的步骤自动进入并行工作流，有依赖的步骤严格串行交付。
-
-### 2. 🛡️ 人类意图门禁与动作合约 (Human Intent Gate & Action Contract)
-* **高危行为拦截**：集成 `intent/` 与 `approval/` 门禁系统。当任务涉及**系统架构变更、核心配置修改、高敏资产写入或大范围代码删除**时，自动触发 `WAITING_HUMAN` 阻断，必须获得人类明确批准方可执行。
-* **严格动作合约**：所有智能体行为必须满足 `contracts/action-contract.schema.json` 白名单约束，禁止未经声明的外部副作用。
-
-### 3. 🌲 并行 Git Worktree 隔离沙箱 (Parallel Worktree Isolation)
-* **代码修改零冲突**：并行批次中的多个步骤通过 `lib/worktree.mjs` 在独立的 Git Worktree 临时分支中并发执行，完全隔离主工作区。
-* **合并与冲突闭锁**：各分支完成后自动 Merge 回主分支；一旦检测到合并冲突（Merge Conflict），系统立即触发 Fail-Closed 并记录冲突上下文，绝不暴力强推。
-
-### 4. 🔄 双模型独立博弈与自愈闭环 (Self-Healing Loop)
-* **创作者与独立审查者**：代码由 **Author** 产出，由物理隔离的 **Reviewer** 进行多维度 Review。
-* **精确会话恢复 (Exact Resume)**：Reviewer 提出 `NEEDS_FIX` 时，系统自动精准接续原 Author 会话上下文修复，全程零人工传话。
-* **确定性验收测试**：验收命令必须命中静态白名单 `config/acceptance-allowlist.json`，并与任务文件完整性哈希绑定（被改写即 fail-closed）；AI 输出绝对不能随意作为 Shell 执行。旧式 Shell 字符串通道**已彻底关闭**（其开关已不再能打开任何通道）。
-* **缺省验收命令的语义**：任务未提供 `acceptance_cmd` 时**没有确定性门禁**——验收阶段直接通过，此时唯一的门是独立 reviewer 的 PASS。这是一个显式可见的状态（任务的 `acceptance_status: "not_configured"`，并写入运行时审计事件 `acceptance_not_configured`），而不是需要靠"`acceptance_runs` 为空"去推断的隐含行为。
-
-### 5. ⚡ 企业级断路器与受控恢复 (Runtime Guard & Gated Recovery)
-* **三维状态解耦**：严格分离 **Capability（机制能力）**、**Availability（账号可用性）** 与 **Runtime Safety（并发与熔断）**。
-* **403 强闭锁保护**：遭遇 HTTP 403、TOS 违规或封号错误时，断路器自动闭锁为 `OPEN_MANUAL_RESET`，严禁盲目重试。
-* **沙箱隔离探活**：通过 `af-admin` 执行隔离沙箱轻量探活（Probe），生成证据后经操作员审核（Admit）方可解除熔断。
-
-### 6. 🔀 多执行器纯函数路由 (Multi-Executor Router)
-* **全平台兼容**：原生适配 **Vertex Gemini**（企业级适配器）、**Claude**、**Codex**、**Cline** 与 **Antigravity**。
-* **瞬时故障回退**：仅在瞬时网络错误（Transient Fault）或配额限流（Rate Limit）时安全 Fallback。
-
-### 7. 🌍 真正的全平台零依赖可移植性 (Cross-Platform Portability)
-* **零硬编码主机路径**：全工程通过 `lib/config.mjs` 实现环境自适应，支持环境变量（`AF_GLOBAL_DIR`, `AF_VAULT_MCP_SERVER`）与当前机器 `$HOME` 自动推导，可在任何 Linux / WSL / Mac 机器上直接克隆运行。
-* **纯净出厂状态**：已清理所有历史测试任务与本地日志，默认出厂状态干净整洁。
-
----
-
-## 🏛️ 核心架构图 (Architecture Overview)
-
-```
-                       [ 目标输入 (Goal / Task Capsule) ]
-                                      │
-                                      ▼
-                      ┌──────────────────────────────┐
-                      │    任务规划层 (Planner Layer) │
-                      │  - 目标拆解为 DAG 步骤序列    │
-                      │  - 生成符合 Schema 的 Plan   │
-                      └──────────────┬───────────────┘
-                                     │
-                                     ▼
-                      ┌──────────────────────────────┐
-                      │ 人类意图门禁 (Intent Gate)    │
-                      │  - 评估高危动作与资产敏感度   │
-                      │  - 拦截高风险写入 -> 人工审批 │
-                      └──────────────┬───────────────┘
-                                     │ (Approved / Auto-passed)
-                                     ▼
-                      ┌──────────────────────────────┐
-                      │ 调度控制平面 (Scheduler Core) │
-                      │  - 并行分批: Git Worktree 隔离│
-                      │  - Author -> Reviewer 博弈闭环│
-                      │  - 确定性白名单验收命令执行   │
-                      └──────────────┬───────────────┘
-                                     │
-                 ┌───────────────────┴───────────────────┐
-                 ▼                                       ▼
-    ┌──────────────────────────┐            ┌──────────────────────────┐
-    │ 运行时守卫 (Runtime Guard)│            │ 知识库网桥 (Gov Bridge)   │
-    │  - 并发槽位限制 & 熔断器 │            │  - 仅在治理任务中按需连接 │
-    │  - 探活与受控准入 (Probe)│            │  - L2 自动发布 / L3 门禁 │
-    └──────────────────────────┘            └──────────────────────────┘
+```mermaid
+flowchart TD
+    USER["用户提交目标、项目与验收要求"] --> CONTROL["团队控制器登记目标并绑定成员"]
+    CONTROL --> LEAD["主作者拆解工作项、分工与依赖"]
+    LEAD --> WORK["Workers 按依赖执行<br/>额度允许时，独立任务并行"]
+    WORK -. "下一轮执行领取" .-> MESSAGE["成员请求与回复"]
+    MESSAGE -. "交换信息" .-> WORK
+    USER -. "定向调整或改派" .-> ADJUST["更新工作项版本<br/>停止旧尝试，使受影响下游失效"]
+    ADJUST --> WORK
+    WORK --> ARTIFACT["提交不可变成果<br/>拒绝过期尝试的结果"]
+    ARTIFACT --> INTEGRATE["主作者整合团队成果"]
+    INTEGRATE --> SEAL["确认所有写者停止<br/>捕获并密封候选代码"]
+    SEAL --> REVIEW{"独立评审通过？"}
+    REVIEW -- "需返工且有预算" --> FIX["主作者选择相关工作项返工"]
+    FIX --> WORK
+    REVIEW -- "通过" --> AUTH["授权检查<br/>必要时等待人工批准"]
+    AUTH --> VERIFY["执行受信验收命令<br/>绑定候选与验收证据"]
+    VERIFY --> PASS{"验收通过？"}
+    PASS -- "通过" --> PROMOTE["最终校验并原子晋升正式版本"]
+    PROMOTE --> DONE["记录完成状态与交付证据"]
+    PASS -- "不通过" --> BLOCK["阻止交付<br/>查看失败证据后处理"]
+    REVIEW -- "无法继续" --> BLOCK
 ```
 
----
+这张图描述正常协作与交付路径。授权未通过、整合发生冲突、执行预算耗尽或旧执行范围无法确认时，系统会停留在相应待处理状态；不会绕过检查直接交付。
 
-## 🚀 快速开始 (Quick Start)
+## 谁负责什么
 
-### 1. 环境准备
-* 运行环境：Node.js >= v20 (推荐 v24)
-* 操作系统：Linux / macOS / Windows WSL2
+| 角色 | 职责 |
+|---|---|
+| 用户 | 定义目标与验收要求，查看进展，调整工作方向、改派、暂停或取消，处理人工审批 |
+| 主作者 | 规划工作图与依赖，协调成员，整合成果，根据评审反馈选择局部返工 |
+| Workers | 完成各自工作项，向成员提问或回复，提交可追踪的成果 |
+| 团队控制器 | 管理调度、消息、版本、运行记录与恢复；这是后台服务，不是模型成员 |
+| 独立评审者 | 审查密封候选；其执行器与所有团队写入执行器分别绑定 |
+| Trusted Import V2 | 承接代码交付，检查授权、执行验收并晋升正式版本 |
 
-### 2. 环境变量配置（可选）
-系统支持自动推导本地路径，也可以通过环境变量指定外部全局配置：
+默认团队是一名主作者加三个 worker，worker 数量可配置为 **1–8 个**。成员身份与执行器、模型账号、CLI 会话分别记录；成员数量不等于不同账号的数量，也不保证所有成员同时执行。
+
+## 中途改需求会怎样
+
+例如，主作者把登录功能分成接口、独立的页面框架和集成测试。这里假定页面框架不依赖接口实现，集成测试依赖二者。你调整接口工作项后，接口和受影响的测试重新执行，页面框架成果保留。
+
+```mermaid
+flowchart LR
+    USER["用户调整接口要求"] --> API["接口工作项<br/>新版本重新执行"]
+    API --> TEST["集成测试<br/>依赖受影响，重新执行"]
+    UI["独立页面框架<br/>保留已接受成果"] --> TEST
+    OLD["接口旧尝试的迟到结果"] -. "版本校验拒绝" .-> REJECT["不能覆盖新方向"]
+    classDef rerun fill:#fff3cd,stroke:#946200,color:#332600;
+    classDef retained fill:#e6f4ea,stroke:#26713d,color:#153e22;
+    classDef rejected fill:#fce8e6,stroke:#a83228,color:#591b16;
+    class API,TEST rerun;
+    class UI retained;
+    class OLD,REJECT rejected;
+```
+
+也可直接打开[局部返工 SVG](docs/diagrams/team-rework.svg)。是否保留成果由工作图的实际依赖决定。页面和命令行通过 `queued`（已排队）、`received`（已接收）、`applied`（已落实）区分操作回执；成员消息的领取和落实以受控执行记录为依据。消息在下一轮执行时领取，目前不支持运行中的即时注入。
+
+## 从哪里开始
+
+1. 阅读上面的流程和[当前能力与边界](#当前能力与边界)，了解协作与交付分别负责什么。
+2. 按[环境与配置](#环境与配置)准备 Node.js、Git、执行器认证与隔离；配置项目注册表和受信验收 profile。
+3. 按[团队入口](#团队入口)创建并启动目标，在 `/teams.html` 查看分工、依赖、消息、成果和交付状态。
+4. 开发者从 `lib/team/`、`server/read-api.mjs` 和 `tests/team-*.test.mjs` 开始；部署与恢复参考[运维手册](OPERATOR_RUNBOOK.md)。
+
+## 当前能力与边界
+
+| 能力 | 当前状态 |
+|---|---|
+| 团队协作 | 常驻控制器、主作者与 1–8 个注册 worker、工作依赖、独立尝试与不可变产物 |
+| 成员通信与人工调整 | 版本化消息、成员回复、工作项改派、定向失效、queued/received/applied 回执 |
+| 团队恢复 | 租约与提交序号、指令去重、已确认 scope 的中断恢复；未知写者阻止重跑与交付 |
+| V2 主入口 | 显式设置 `trusted_import.enabled: true` 后启用 |
+| 独立评审 | 显式指定独立 reviewer，评审密封候选快照 |
+| 捕获与授权 | 文件系统捕获、内容寻址存储（CAS）、快照、差异及累计授权闭包 |
+| 验收与提升 | 白名单命令、PASS 证据绑定、最终重新校验、Git 原子提升 |
+| 并发与恢复 | 旧基线重基、同路径冲突拒绝、提升后崩溃恢复与祖先关系校验 |
+| 写者回收 | Docker 或 delegated cgroup；进程组退出本身不证明所有写者已停止 |
+| 持久化回收 | 未确认 scope 清空时保留句柄；dry-run 不执行 scope 回收 |
+
+Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图、通信和调整由协作控制器管理。独立评审反馈能返回主作者选择局部返工，签名审批通过正常入口恢复。旧历史任务保留原流程；新的团队任务由兼容入口转交协作控制器，旧 scheduler 不能再直接派发。
+
+## 团队入口
+
+先按既有部署要求配置项目注册表、验收 profile 和执行器隔离。创建使用与 V2 相同的提交 JSON：`goal`、`target_path`、`acceptance`、`idempotency_key`；执行器由平台绑定。
+
+将下面的示例保存为 `team-goal.json`，并替换项目路径、目标与验收命令。验收命令必须与项目已登记的受信 profile 一致；`idempotency_key` 用于识别同一提交的重试。
+
+```json
+{
+  "goal": "为已登记的项目完成登录功能，并通过验收测试",
+  "target_path": "/path/to/registered-project",
+  "acceptance": {"command": "node", "args": ["--test", "tests/auth.test.mjs"]},
+  "idempotency_key": "login-feature-001"
+}
+```
+
 ```bash
-# 可选：指定外部 agent-foundry-global 规范路径
-export AF_GLOBAL_DIR="/path/to/agent-foundry-global"
-
-# 可选：指定外部 vault-mcp 治理服务路径
-export AF_VAULT_MCP_SERVER="/path/to/vault-mcp/server.mjs"
+node af-admin.mjs team create --spec team-goal.json --root /path/to/registered-project --workers 3
+node af-admin.mjs team list
+node af-admin.mjs team start --team TEAM-your-task-id
+node af-admin.mjs team show --team TEAM-your-task-id
+node af-admin.mjs team adjust --team TEAM-your-task-id --work-item your-work-item --expected-revision 1 --message "新的工作方向"
 ```
 
-### 3. 执行任务
-使用出厂自带的任务模板快速发起任务：
+首次操作会启动持有全局团队租约的本地控制器；也可用 `node af-admin.mjs team serve` 在前台运行。前台服务收到 SIGINT/SIGTERM 时停止派发并等待受控执行范围退出。运行目录与任务目录通过 `AF_RUNTIME_DIR`、`AF_TASKS_DIR`、`AF_LOCKS_DIR` 或对应 CLI 参数配置，所有入口应使用同一组目录。自动启动的进程 PID 和 owner token 在 `locks/team-controller.lock`，日志在 `runtime/team-controller.log`。
+
+Web 使用现有令牌鉴权启动：`node af-admin.mjs web serve --allow-write --root /path/to/registered-project`，打开 `/teams.html`。页面支持创建、启动、查看分工、成员消息、定向调整、暂停和继续交付。消息在下一轮执行中领取；不会显示未经控制器确认的“已落实”。额度允许时独立工作项并行执行，单项调整保留无关产物；已完成目标再次调整会采用最新 canonical 基线进入新目标版本。
+
+首期使用原子文件和不可变顺序日志，未引入数据库或模型框架。跨目标成员共享与模型运行中实时消息注入尚未实现。设计、部署假设和验收证据分别见[方案二](docs/design/MULTI-AGENT-PLAN-B-COLLABORATION-CORE.md)、[ADR 0011](docs/adr/0011-team-collaboration-controller.md) 和[实施记录](docs/reviews/2026-10-01-team-core-implementation.md)。
+
+## Trusted Import 流程
+
+```text
+受信任务定义 + canonical 基线
+  → 投影到 candidate
+  → author 执行
+  → 终止并验证 writer scope
+  → 捕获文件、密封快照、计算差异
+  → 必要时重基（冲突则拒绝）
+  → 独立 reviewer 评审
+  → 累计授权闭包
+  → 隔离验收与证据绑定
+  → 最终重新校验
+  → 原子更新 refs/afr/canonical
+  → 物化、验证、记录完成状态
+```
+
+`canonical` 是正式接受的代码版本。执行器修改 candidate，不直接写 canonical Git 对象或 Trusted CAS。行为规则不替代运行时隔离。
+
+任务记录是生命周期依据；提升前持久化事务意图。更新 Git ref 后崩溃，恢复流程验证原提交；canonical 被后续任务推进时，可通过祖先关系识别原事务已成功。
+
+## 已验证结果
+
+以下是阶段性记录，不是自动更新的实时测试计数；当前结果以实际运行输出为准。
+
+| 范围 | 记录结果 | 说明 |
+|---|---|---|
+| 协作核心与全量回归（2026-10-01） | 802 项：799 通过、3 跳过、0 失败、0 取消 | 模型输出使用受控适配器；文件投影、CAS、锁、验收和 Git 晋升使用实际实现；见[实施记录](docs/reviews/2026-10-01-team-core-implementation.md) |
+| 团队页面（2026-10-01） | 桌面与手机浏览器检查通过 | 覆盖创建、鉴权、消息回执、定向调整、无关成果保留、旧尝试拒绝及刷新恢复；使用受控模型适配器 |
+| V2、回收与终止句柄回归（`8c91800`） | 68/68 通过 | 包括 dry-run、取消、并发与崩溃恢复 |
+| Docker 部署验收（`358f99c`） | 2/2 通过 | 本地确定性执行器，`node:24-alpine`，网络为 `none` |
+| 默认回归（`358f99c` 阶段） | 362 项：359 通过、3 跳过、0 失败、0 取消 | 跳过两个部署用例及真实 Codex GP-4 |
+| 真实 Codex＋Cline 冒烟（2026-09-20） | `COMPLETED / PROMOTED` | reviewer PASS，acceptance PASS（1/1） |
+
+真实冒烟配置：
+
+- author：Codex `gpt-6-astra`。
+- reviewer：Cline `cline-free/deepseek-v4.1-flash`。
+- Docker 镜像：`node:24-slim`。
+- canonical 新增 `src/smoke-message.txt`，内容为 `V2 real executor smoke passed`。
+- 双方 writer scope 确认清空，记录的 `af-sbx-*` 残留为 0。
+
+该次真实冒烟使用 **host 网络**访问宿主代理，不是断网运行，也不能据此声称网络隔离。证据编号为 `TASK-REAL-V2-CLINE-SMOKE-a9054943`；原始记录保存在部署主机的 `real-smoke-evidence/`，不随仓库分发。
+
+## 环境与配置
+
+需要 Node.js >= 20 和 Git；运行真实模型还需要对应执行器 CLI 和有效认证。已验证的 Docker 镜像使用 Node.js 24。
+
+默认提交预检还检查宿主机的 bubblewrap（`bwrap`）可用性，Linux 部署需要安装该工具。启用用户命名空间限制的 Ubuntu 还需要为 `bwrap` 配置应用级许可，参见 [Ubuntu 官方说明](https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces)。
+
+Linux 隔离回归使用 `bubblewrap`、`xdg-dbus-proxy`、`dbus-daemon`、`dbus-tests` 和 `libglib2.0-bin`。[GitHub 回归配置](.github/workflows/regression.yml)会安装这些工具并仅为 `bwrap` 配置命名空间许可。任务创建使用受控健康检查，模型输出使用受控适配器，D-Bus 过滤使用私有测试会话，无需模型账号或桌面会话。
+
+真实 V2 需要 Docker writer scope 或可用的 Linux delegated cgroup v2；缺少强写者范围时拒绝启动。cgroup 负责进程范围与回收，不单独提供文件系统或凭据隔离，部署仍需保护 canonical、CAS 和控制面状态。
+
+治理文件可显式配置：
+
 ```bash
-# 基于模板创建新任务
+export AF_GLOBAL_DIR="/absolute/path/to/agent-foundry-global"
+export AF_CANONICAL_AGENTS_MD="$AF_GLOBAL_DIR/AGENTS.md"
+```
+
+文件必须存在且可读。容器内还需提供可见路径或只读挂载；不要共享整个宿主用户目录、桌面会话或所有执行器凭据。
+
+Docker 配置示意：
+
+```bash
+export AF_SANDBOX=require
+export AF_SANDBOX_IMAGE=node:24-slim
+export AF_SANDBOX_NETWORK=none
+export AF_SANDBOX_EXECUTORS=on
+export AF_SANDBOX_EXECUTOR_IMAGE=node:24-slim
+export AF_SANDBOX_EXECUTOR_NETWORK=none
+```
+
+上述断网设置适合本地确定性程序；远程模型需另行配置必要服务访问。`node:24-slim` 本身不包含 Codex、Cline 或账号配置。可通过 `AF_SANDBOX_EXECUTOR_MOUNTS` 显式只读挂载 CLI 及必要配置；认证、可写临时 HOME 和网络策略需分别验证。
+
+Docker 内可写 Codex author 使用外部隔离模式，避免嵌套 sandbox 启动失败；这依赖外层 executor Docker 边界成功建立，不是宿主无隔离运行的配置建议。
+
+## 执行任务
+
+普通任务可从已有模板开始：
+
+```bash
 cp tasks/task-template.json tasks/my-task.json
-
-# 启动调度器执行
+# 填写目标、工作目录、执行器和验收命令，配置运行环境后再执行：
 node orchestrator.mjs run --task-file tasks/my-task.json
 ```
 
-### 4. 运维管理 CLI (`af-admin`)
+普通模板不自动启用 V2。V2 还需配置 `trusted_import.enabled`、独立的 candidate/CAS/物化目录、写入策略、范围和验收绑定信息。参考 [Docker 部署测试](tests/deployment-v2-acceptance.test.mjs) 与 [入口集成测试](tests/trusted-import-orchestrator.test.mjs) 的任务构造。测试示例摘要不能直接当作真实生产资产摘要。
+
+状态与恢复：
+
 ```bash
-# 1. 查看所有执行器状态（能力、可用性、断路器）
-node af-admin.mjs executor status
-
-# 2. 查看熔断器列表与冷却状态
-node af-admin.mjs circuit list
-
-# 3. 熔断隔离探活与人工准入
-node af-admin.mjs executor recovery probe vertex-gemini
-node af-admin.mjs executor recovery admit vertex-gemini --evidence <probe_id> --reason "Billing fixed"
-
-# 4. 清理历史任务 (支持 --confirm 执行真正清理)
-node af-admin.mjs tasks prune
-```
-
-### 5. 崩溃自动接续与恢复 (Crash Recovery)
-```bash
-# 只读扫描系统中所有待恢复任务
+node orchestrator.mjs status --task-id TASK-001
+node orchestrator.mjs inspect --task-id TASK-001
 node orchestrator.mjs recover --scan
-
-# 精准恢复指定任务断点
-node orchestrator.mjs recover --task-id <task_id>
+node orchestrator.mjs recover --task-id TASK-001
+node af-admin.mjs executor status
+node af-admin.mjs circuit list
 ```
 
----
+恢复和探针可能启动执行器；事先明确账号、调用次数、时限、网络和费用策略。历史 403 或模拟测试状态不代表当前账号状态。
 
-## 📂 项目完整结构 (Repository Structure)
+## 测试
 
-```
-agent-foundry-orchestrator/
-├── orchestrator.mjs                   # 主调度器 CLI、DAG 分批调度与生命周期入口
-├── af-admin.mjs                       # 运维管理 CLI
-├── bin/                               # 启动器封装
-│   ├── af-admin                       # 全局运维命令
-│   ├── cline-af                       # 跨平台 Cline CLI 包装器
-│   └── vertex-gemini-af               # 企业级 Vertex Gemini 包装器
-├── approval/                          # 人类意图门禁 (Human Intent Gate)
-│   ├── intent-gate.mjs                # 意图门禁求值引擎
-│   └── intent-policy.mjs              # 风险等级与审批策略
-├── intent/                            # 动作校验与资产分类
-│   ├── action-validator.mjs           # 动作负载校验器
-│   └── asset-classifier.mjs           # 资产敏感度分类器
-├── contracts/                         # 动作合约 (Action Contract)
-│   ├── action-contract.schema.json    # JSON Schema 动作合约
-│   └── action-types.json              # 动作类型合约（运行期真源：intent/action-validator.mjs 读取）
-├── planner/                           # 任务规划层 (Planner Layer)
-│   ├── planner.mjs                    # 规划器引擎与 DAG 分批逻辑
-│   └── schema/task-plan.schema.json   # 任务规划 Schema 规范
-├── config/                            # 策略配置
-│   ├── executor-safety-profiles.json  # 各执行器并发与熔断配置
-│   └── operator-executors.json        # 运维动态启停开关 (出厂默认纯净全开)
-├── lib/                               # 核心架构模块
-│   ├── acceptance.mjs                 # 确定性验收测试执行引擎
-│   ├── adapters.mjs                   # 统一执行器适配器 (Claude, Vertex, Codex, Cline, Antigravity)
-│   ├── codex-planner.mjs              # Codex 驱动的任务规划适配
-│   ├── config.mjs                     # 跨平台统一环境与路径发现层
-│   ├── executor-error-classifier.mjs  # 错误分类器 (Transient / RateLimit / AccountPolicy)
-│   ├── executor-ops.mjs               # 运维工具与受控恢复核心
-│   ├── executor-router.mjs            # 纯函数确定性多执行器路由器
-│   ├── executor-runtime-guard.mjs     # 运行时守卫 (断路器状态机、并发槽位、日志清洗)
-│   ├── executor-status.mjs            # 执行器能力与可用性状态投影器
-│   ├── governance.mjs                 # 知识库治理网桥 (GovernanceBridge)
-│   ├── operator-control.mjs           # 运行时拦截器与用户消息热注入
-│   ├── recovery.mjs                   # 宕机断点恢复分析与执行引擎
-│   ├── reviews.mjs                    # 独立 Reviewer 结果解析与绑定
-│   ├── scheduler.mjs                  # 任务状态机驱动核心
-│   ├── store.mjs                      # POSIX 原子文件持久化存储
-│   ├── tasklock.mjs                   # 基于文件系统的排他互斥锁与死锁回收
-│   ├── vault-client.mjs               # MCP Vault 治理客户端
-│   ├── workbench.mjs                  # 开发者工作台控制与体验注入
-│   └── worktree.mjs                   # Git Worktree 并发分支创建与安全合并
-├── tasks/                             # 任务持久化目录 (出厂纯净: task-template.json + .gitkeep)
-├── runtime/                           # 运行时状态与安全策略 (出厂纯净: 零日志)
-├── locks/                             # 进程互斥排他锁目录
-└── tests/                             # 全量自动化测试套件 (195 个用例全部通过)
-```
+默认回归：
 
----
-
-## 🧪 自动化测试套件 (Test Suite)
-
-运行全量测试套件：
 ```bash
-node --test
+npm test
 ```
 
-**测试矩阵全绿通过 (195 / 195 PASS, 100%) （干净克隆 `git clone . && node --test`）**：
-* 🌲 **Git Worktree 并发与合并冲突**：多分支隔离并行写入、冲突检测安全 Fail-Closed；
-* 🧭 **Planner 规划层契约**：DAG 分批有效性、规划器与执行器职责隔离边界；
-* 🛡️ **Human Intent Gate 意图门禁**：高危写操作拦截、删除阻断、人工通过接续；
-* 🔄 **Author-Reviewer 双模型博弈**：结构化 Review 循环、精确会话接续 (Exact Resume)；
-* ⚡ **运行时安全与断路器**：403 强闭锁、限流退避、沙箱隔离探活 (Probe) 与准入 (Admit)；
-* 🛑 **优雅停机与进程防孤儿**：SIGTERM 信号回收、活跃子进程终止、零孤儿句柄；
-* 🏛️ **架构不变性**：单注册表真源检验、单调度器检验、防凭据落盘检测、`ROLE != PLATFORM` 检验。
+默认关闭真实 Codex GP-4 与 Docker V2 部署验收。其他测试仍可能使用本地 Docker 或 CLI 版本探测，默认回归不等于纯内存单元测试。
 
----
+单独运行 Docker 部署验收（本地确定性执行器，不调用模型服务）：
 
-## 📚 详细规范文档索引 (Documentation Index)
+```bash
+AF_RUN_DEPLOYMENT_ACCEPTANCE=1 node --test tests/deployment-v2-acceptance.test.mjs
+```
 
-* 🏛️ [架构终态设计蓝图 (`FINAL_ARCHITECTURE.md`)](file:///mnt/c/Users/relaret/agent-foundry-orchestrator/FINAL_ARCHITECTURE.md)
-* 🛡️ [执行器安全与熔断模型 (`EXECUTOR_SAFETY_MODEL.md`)](file:///mnt/c/Users/relaret/agent-foundry-orchestrator/EXECUTOR_SAFETY_MODEL.md)
-* 📖 [生产运维标准操作手册 (`OPERATOR_RUNBOOK.md`)](file:///mnt/c/Users/relaret/agent-foundry-orchestrator/OPERATOR_RUNBOOK.md)
-* 🚨 [生产灾难恢复操作手册 (`DISASTER_RECOVERY.md`)](file:///mnt/c/Users/relaret/agent-foundry-orchestrator/DISASTER_RECOVERY.md)
-* 📋 [生产冻结发布清单 (`RELEASE_MANIFEST.md`)](file:///mnt/c/Users/relaret/agent-foundry-orchestrator/RELEASE_MANIFEST.md)
-* 🔒 [基线变更控制协议 (`CHANGE_CONTROL.md`)](file:///mnt/c/Users/relaret/agent-foundry-orchestrator/CHANGE_CONTROL.md)
-* 🔍 [持久化与安全审计报告 (`PERSISTENCE_CHECK.md` / `SECURITY_AUDIT.md`)](file:///mnt/c/Users/relaret/agent-foundry-orchestrator/SECURITY_AUDIT.md)
+仅在明确授权真实账号调用后开启 GP-4：
+
+```bash
+AF_RUN_REAL_EXECUTOR_INTEGRATION=1 node --test tests/runtime-guard-policy.test.mjs
+```
+
+GP-4 是运行时护栏探针，不等于完整 V2 冒烟。报告应分别列出通过、失败、跳过和取消，不合并重叠测试集计数。
+
+## 已知限制
+
+- 团队协作首期的模型执行通过受控适配器验证；真实模型账号的完整团队任务与新控制器的生产部署尚未验收。
+- 跨目标成员共享、模型运行中的实时消息注入和团队日志压缩尚未实现。
+- 真实端到端已验证的是上述 Codex＋Cline 组合；CLI 安装或 health 通过不代表其他执行器已完成真实任务验证。
+- AGY 容器认证与服务可用性仍待解决：已有诊断发现容器无法匹配登录 profile，宿主已认证请求遇到区域拒绝，不能据此认定当前账号封禁。区域拒绝被识别为不可重试的环境故障。
+- 镜像、CLI、账号认证、网络和服务端模型可用性都是部署条件；一次冒烟不覆盖所有环境。
+- V2 单任务支持范围与旧版多步骤、治理任务能力需分别评估。
+- 公开发布仍需解决 [NOTICE.md](NOTICE.md) 记录的许可状态。
+
+## 代码与文档导航
+
+| 路径 | 用途 |
+|---|---|
+| `af-team.mjs`、`af-admin.mjs team` | 团队创建、查询、控制与控制器入口 |
+| `lib/team/` | 目标与成员模型、工作依赖、通信、调度、成果整合及交付衔接 |
+| `web/teams.html`、`server/read-api.mjs` | 团队页面与 HTTP 入口 |
+| `tests/team-*.test.mjs`、`qa/team-browser.mjs` | 团队回归与真实浏览器检查；模型输出使用受控适配器 |
+| `prototypes/` | 前端视觉与交互原型，使用模拟数据，与正式团队页面分别维护 |
+| [协作核心决策](docs/adr/0011-team-collaboration-controller.md) | 控制器、持久化、恢复与执行边界 |
+| `orchestrator.mjs` | 任务入口、执行与恢复 |
+| `lib/trusted-import/` | 捕获、快照、授权、证据、提升与 V2 适配 |
+| `lib/adapters.mjs`、`bin/` | 执行器协议与启动器 |
+| `lib/sandbox.mjs`、`lib/child-process.mjs` | Docker、writer scope 与进程管理 |
+| `lib/orphan-reaper.mjs` | 孤儿进程、容器与持久化 scope 回收 |
+| `config/acceptance-allowlist.json` | 受信验收命令白名单 |
+| [V2 交付基线](docs/design/TRUSTED-IMPORT-V2-DELIVERY.md) | 部署阶段记录；测试数字和执行器状态是该阶段快照 |
+| [Trusted Import 规范](docs/WRITE-SCOPE-ENFORCEMENT.md) | 冻结设计要求，不代替实现验收 |
+| [改造路线](docs/ROADMAP.md)、[决策记录](docs/adr/) | 历史改造与取舍 |
+| [保留资产](docs/PRESERVE.md)、[模块映射](docs/MODULE-MAP.md) | 设计资产与组件评估 |
+| [运维手册](OPERATOR_RUNBOOK.md)、[灾难恢复](DISASTER_RECOVERY.md) | 运维操作参考 |
+
+旧版发布材料描述的是上游或历史阶段，不能替代当前实现与验证结果。

@@ -15,7 +15,9 @@
 import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { saveTaskAtomic } from '../lib/store.mjs';
+import { saveTaskWithVersion } from '../lib/store.mjs';
+import { acceptanceBinding } from '../lib/acceptance.mjs';
+import { acquireTaskLock, releaseTaskLock } from '../lib/tasklock.mjs';
 import {
 
   INTENT_STATUSES,
@@ -60,6 +62,71 @@ export function validateIntentArgs(args = {}) {
 }
 
 /**
+ * Persist a task capsule through the single lifecycle writer.
+ *
+ * Intent decisions ARE lifecycle writes (WAITING_HUMAN -> APPROVED/CANCELLED),
+ * so they must advance the monotonic state_version that the scheduler's
+ * stale-recovery-plan guard compares against; writing the file directly left
+ * that guard blind to an operator approval. The acceptance trust anchor is
+ * bound here too, exactly as Scheduler.enqueue and loadTaskFile do, so a task
+ * that passes through the human gate is never left unbound.
+ *
+ * @param {string} dir - tasks directory.
+ * @param {object} task - task capsule to persist.
+ */
+function persistTaskCapsule(dir, task) {
+  if (task && !task.acceptance_binding) {
+    task.acceptance_binding = acceptanceBinding(task);
+  }
+  saveTaskWithVersion(dir, task);
+}
+
+/**
+ * The lock directory used for task writes, matching the scheduler's.
+ * @param {string|null} locksDir - explicit override.
+ * @returns {string} lock directory.
+ */
+function resolveLocksDir(locksDir) {
+  return locksDir || process.env.AF_LOCKS_DIR || join(ROOT, 'locks');
+}
+
+/**
+ * Run a task-state mutation while holding the SAME lock the scheduler holds.
+ *
+ * The scheduler acquires the task lock when it dispatches and keeps it until the
+ * run settles (lib/scheduler.mjs). This gate used to write lifecycle state
+ * without that lock, so an operator approval and a scheduler save could
+ * interleave on the same task file: both read, both write, and the last writer
+ * silently discarded the other's change - a lost update. Holding the shared lock
+ * makes the read-modify-write exclusive, and a conflict surfaces to the operator
+ * as TASK_LOCKED instead of being overwritten.
+ *
+ * @param {object} options - options.
+ * @param {string} options.dir - tasks directory.
+ * @param {string} options.taskId - task id.
+ * @param {string|null} options.locksDir - lock directory override.
+ * @param {Function} fn - the mutation to perform while holding the lock.
+ * @returns {any} whatever `fn` returns.
+ */
+function withTaskWriteLock({ dir, taskId, locksDir }, fn) {
+  const lockDir = resolveLocksDir(locksDir);
+  let lockInfo;
+  try {
+    lockInfo = acquireTaskLock(lockDir, taskId, { orchestratorInstanceId: `af-intent-${process.pid}` });
+  } catch (err) {
+    const wrapped = new Error(`TASK_LOCKED: task ${taskId} is being worked on by another owner (${String(err?.message ?? err)})`);
+    wrapped.code = 'TASK_LOCKED';
+    wrapped.cause = err;
+    throw wrapped;
+  }
+  try {
+    return fn();
+  } finally {
+    releaseTaskLock(lockDir, taskId, lockInfo.lock);
+  }
+}
+
+/**
  * Load a task file from disk.
  */
 function loadTaskFile(taskId, tasksDir = TASKS_DIR) {
@@ -99,7 +166,7 @@ function mapActionToReason(effectiveAction) {
  * @param {object} options - Options (tasksDir)
  * @returns {object} Alignment result
  */
-export function alignTaskIntent(taskCapsule, taskPlan = null, { tasksDir = null } = {}) {
+export function alignTaskIntent(taskCapsule, taskPlan = null, { tasksDir = null, locksDir = null } = {}) {
   if (!taskCapsule || typeof taskCapsule !== 'object') {
     throw new Error('[invalid_capsule] Task Capsule must be an object');
   }
@@ -140,9 +207,12 @@ export function alignTaskIntent(taskCapsule, taskPlan = null, { tasksDir = null 
     if (taskCapsule.task_id) {
       try {
         mkdirSync(dir, { recursive: true });
-        saveTaskAtomic(join(dir, `${taskCapsule.task_id}.json`), taskCapsule);
-      } catch {
-        // Tolerant if in-memory test
+        withTaskWriteLock({ dir, taskId: taskCapsule.task_id, locksDir }, () => persistTaskCapsule(dir, taskCapsule));
+      } catch (err) {
+        // Tolerant of an in-memory test without a writable tasks dir, but a lock
+        // conflict must never be swallowed: that would report a successful
+        // alignment whose write never happened.
+        if (err?.code === 'TASK_LOCKED') throw err;
       }
     }
 
@@ -187,6 +257,7 @@ export function approveIntent(taskId, {
   reason = '确认执行该方案',
   approvedBy = 'user',
   tasksDir = null,
+  locksDir = null,
 } = {}) {
   if (!taskId || typeof taskId !== 'string') {
     throw new Error('[invalid_argument] "task_id" is required and must be a string');
@@ -195,6 +266,17 @@ export function approveIntent(taskId, {
   validateIntentArgs({ reason, approvedBy });
 
   const dir = tasksDir || TASKS_DIR;
+  return withTaskWriteLock({ dir, taskId, locksDir }, () => approveLocked(taskId, dir, { reason, approvedBy }));
+}
+
+/**
+ * The body of approveIntent, executed while holding the task lock.
+ * @param {string} taskId - task id.
+ * @param {string} dir - tasks directory.
+ * @param {object} options - reason and approver.
+ * @returns {object} approval result.
+ */
+function approveLocked(taskId, dir, { reason, approvedBy }) {
   const task = loadTaskFile(taskId, dir);
 
   if (TERMINAL_STATES.has(task.state)) {
@@ -220,7 +302,7 @@ export function approveIntent(taskId, {
     approval_reason: reason,
   };
 
-  saveTaskAtomic(join(dir, `${taskId}.json`), task);
+  persistTaskCapsule(dir, task);
 
   return {
     task_id: taskId,
@@ -242,6 +324,7 @@ export function rejectIntent(taskId, {
   reason = '方向不符合要求',
   rejectedBy = 'user',
   tasksDir = null,
+  locksDir = null,
 } = {}) {
   if (!taskId || typeof taskId !== 'string') {
     throw new Error('[invalid_argument] "task_id" is required and must be a string');
@@ -250,6 +333,17 @@ export function rejectIntent(taskId, {
   validateIntentArgs({ reason, rejectedBy });
 
   const dir = tasksDir || TASKS_DIR;
+  return withTaskWriteLock({ dir, taskId, locksDir }, () => rejectLocked(taskId, dir, { reason, rejectedBy }));
+}
+
+/**
+ * The body of rejectIntent, executed while holding the task lock.
+ * @param {string} taskId - task id.
+ * @param {string} dir - tasks directory.
+ * @param {object} options - reason and rejecter.
+ * @returns {object} rejection result.
+ */
+function rejectLocked(taskId, dir, { reason, rejectedBy }) {
   const task = loadTaskFile(taskId, dir);
 
   if (TERMINAL_STATES.has(task.state)) {
@@ -271,7 +365,7 @@ export function rejectIntent(taskId, {
     rejection_reason: reason,
   };
 
-  saveTaskAtomic(join(dir, `${taskId}.json`), task);
+  persistTaskCapsule(dir, task);
 
   return {
     task_id: taskId,

@@ -9,19 +9,11 @@
 // that pulls in orchestrator.mjs or lib/scheduler.mjs. An explicitly configured
 // value always wins.
 
-import {
-  rmSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-export const TEST_TASKS_DIR = mkdtempSync(join(tmpdir(), 'af-test-tasks-'));
-
-// A sandbox that outlives the process is its own kind of residue: these are
-// created once per test FILE per run, so without this they accumulate in /tmp.
-process.on('exit', () => {
-  try { rmSync(TEST_TASKS_DIR, { recursive: true, force: true }); } catch { /* best effort */ }
-});
-
+export const TEST_TASKS_DIR = mkdtempSync(join(tmpdir(), 'af-tasks-'));
 
 if (!process.env.AF_TASKS_DIR) {
   process.env.AF_TASKS_DIR = TEST_TASKS_DIR;

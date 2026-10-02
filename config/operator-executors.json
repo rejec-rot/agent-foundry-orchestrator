@@ -1,4 +1,4 @@
 {
-  "disabled": [],
-  "reason": ""
+  "disabled": ["codex"],
+  "reason": "codex has no quota left (operator instruction, 2026-09-24)"
 }

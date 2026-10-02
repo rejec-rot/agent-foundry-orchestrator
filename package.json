@@ -1,8 +1,9 @@
 {
-  "name": "agent-foundry-orchestrator",
-  "version": "1.2.0",
+  "name": "agent-foundry-next",
+  "version": "2.0.0-dev",
   "private": true,
-  "description": "Control Plane for multi-executor task workflows (zero runtime dependencies).",
+  "license": "UNLICENSED",
+  "description": "Control Plane for multi-executor task workflows. Successor line: upstream agent-foundry-orchestrator v1.2.0 @ 434114e + second-pass security fixes, being refactored onto mature components (see docs/ROADMAP.md).",
   "type": "module",
   "scripts": {
     "test": "node --test",
