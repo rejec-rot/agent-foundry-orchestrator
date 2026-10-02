@@ -37,14 +37,17 @@ const major = Number(process.versions.node.split('.')[0]);
 check('node major version satisfies the engines requirement (>=20)', major >= 20, process.versions.node);
 
 // ---------------------------------------------------------------- 2. the workbench itself
-const webFiles = ['web/index.html', 'web/app.js', 'web/styles.css'];
+const webFiles = ['web/index.html', 'web/entry.js', 'web/workbench.html', 'web/app.js', 'web/styles.css',
+  'web/teams.html', 'web/teams.js', 'web/teams.css', 'web/foundry-mark.svg', 'web/fonts/BarlowCondensed-ExtraBold.ttf'];
 for (const rel of webFiles) check(`the workbench asset exists: ${rel}`, existsSync(join(ROOT, rel)));
-const html = readFileSync(join(ROOT, 'web', 'index.html'), 'utf8');
+const html = readFileSync(join(ROOT, 'web', 'workbench.html'), 'utf8');
 // Only REAL fetch targets count: a `data:` favicon legitimately embeds the SVG XML namespace
 // (`xmlns='http://www.w3.org/2000/svg'`), which is a name, not a network reference.
 const externalRefs = [
   ...[...html.matchAll(/(?:src|href)\s*=\s*"([^"]+)"/g)].map((m) => m[1]),
+  ...[...readFileSync(join(ROOT, 'web', 'teams.html'), 'utf8').matchAll(/(?:src|href)\s*=\s*"([^"]+)"/g)].map((m) => m[1]),
   ...[...readFileSync(join(ROOT, 'web', 'styles.css'), 'utf8').matchAll(/url\(\s*['"]?([^'")]+)/g)].map((m) => m[1]),
+  ...[...readFileSync(join(ROOT, 'web', 'teams.css'), 'utf8').matchAll(/url\(\s*['"]?([^'")]+)/g)].map((m) => m[1]),
   ...[...readFileSync(join(ROOT, 'web', 'app.js'), 'utf8').matchAll(/(?:fetch|import)\(\s*['"`](https?:\/\/[^'"`]+)/g)].map((m) => m[1]),
 ].filter((v) => /^https?:\/\//i.test(v) && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(v));
 check('the page never fetches an external origin (works offline)', externalRefs.length === 0, externalRefs.join(', ') || 'no remote src/href/url()/fetch');
@@ -55,6 +58,11 @@ check('every control the page shows has an id the script binds', (() => {
   check('  (ids present in the markup)', missing.length === 0, missing.join(', ') || 'all present');
   return missing.length === 0;
 })());
+const teamHtml = readFileSync(join(ROOT, 'web', 'teams.html'), 'utf8');
+const teamScript = readFileSync(join(ROOT, 'web', 'teams.js'), 'utf8');
+const teamIds = [...new Set([...teamScript.matchAll(/\$\('([a-z0-9-]+)'\)/g)].map(m => m[1]))];
+const missingTeamIds = teamIds.filter(id => !teamHtml.includes(`id="${id}"`));
+check('team controls are present in the collaboration markup', missingTeamIds.length === 0, missingTeamIds.join(', ') || 'all present');
 
 // ---------------------------------------------------------------- 3. write-path hygiene
 const apiSource = readFileSync(join(ROOT, 'server', 'read-api.mjs'), 'utf8');

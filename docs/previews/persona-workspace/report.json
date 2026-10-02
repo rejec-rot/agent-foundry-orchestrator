@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "browser": "Chromium",
+  "model_adapters": "controlled test adapters",
+  "checks": [
+    "default collaboration entry",
+    "historical task bookmark compatibility",
+    "authenticated pointer actions",
+    "four registered members",
+    "dependency graph",
+    "member message receipt",
+    "message escaping",
+    "scoped adjustment",
+    "unchanged peer artifact",
+    "old result discarded",
+    "reload persistence",
+    "aligned desktop plan and activity",
+    "mobile navigation and focus restoration",
+    "registered-profile creation dialog",
+    "inline error feedback preserves user draft",
+    "keyboard activity tabs",
+    "self-hosted display font",
+    "360–1920px responsive layouts",
+    "reduced motion"
+  ],
+  "desktop": "team-desktop.png",
+  "mobile": "team-mobile.png",
+  "verified_at": "2026-10-02T03:40:31.381Z"
+}

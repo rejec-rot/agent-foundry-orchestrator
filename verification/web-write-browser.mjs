@@ -122,7 +122,7 @@ try {
   await cdp.send('Runtime.enable');
   await cdp.send('Log.enable');
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 980, deviceScaleFactor: 1, mobile: false });
-  await cdp.send('Page.navigate', { url: api.url });
+  await cdp.send('Page.navigate', { url: api.url + '/workbench.html' });
   await sleep(2500);
 
   const evaluate = async (expression) => {

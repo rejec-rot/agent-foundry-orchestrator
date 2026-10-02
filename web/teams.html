@@ -1,45 +1,122 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Foundry · 团队协作</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/teams.css"></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#e81932">
+  <meta name="description" content="一个目标，多个头脑。Agent Foundry 的多 Agent 协作工作空间。">
+  <title>Agent Foundry · 协作空间</title>
+  <link rel="icon" href="/foundry-mark.svg" type="image/svg+xml">
+  <link rel="preload" href="/fonts/BarlowCondensed-ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="/teams.css">
+</head>
 <body>
-<header class="rail"><div class="brand"><h1>Agent Foundry<span class="sub"> · 团队协作</span></h1><a href="/">交付工作台</a></div><span id="connection" role="status">连接中…</span></header>
-<main class="team-shell">
-  <aside class="pane"><div class="pane-head"><span class="eyebrow">目标与团队</span><button class="btn" id="refresh" type="button">刷新</button></div><div id="teams" class="rows" aria-label="团队列表"></div>
-    <details class="disclosure" open><summary>创建协作目标</summary><form id="create-form" class="form disclosure-body">
-      <label class="field"><span>目标</span><textarea id="goal" required rows="3" placeholder="描述团队需要完成的成果"></textarea></label>
-      <label class="field"><span>项目目录</span><input id="target" required placeholder="已注册的项目路径"></label>
-      <label class="field"><span>验收命令</span><input id="command" value="node" required></label>
-      <label class="field"><span>验收参数（JSON 数组）</span><input id="args" value='["--test","tests/gate.test.mjs"]' required></label>
-      <label class="field"><span>提交标识</span><input id="key" required placeholder="相同标识重试返回同一个团队"></label>
-      <label class="field"><span>worker 数量</span><input id="workers" type="number" min="1" max="8" value="3" required></label>
-      <button class="btn primary" id="create" data-write type="submit" disabled>创建团队</button>
-    </form></details>
-    <details class="disclosure"><summary>操作令牌</summary><div class="disclosure-body form"><label class="field"><span>令牌</span><input id="token" type="password" autocomplete="off"></label><button class="btn" id="save-token" type="button">保存到本次会话</button></div></details>
-  </aside>
-  <section class="pane team-main" aria-label="协作进展"><div class="pane-head"><span class="eyebrow">团队目标</span><span id="team-state" class="count"></span></div>
-    <div class="work-body"><h2 id="team-goal">选择一个团队</h2><p id="team-meta" class="hint"></p>
-      <div class="actions"><button class="btn primary" id="start" data-write disabled>启动 / 恢复团队</button><button class="btn" id="pause" data-write disabled>暂停</button><button class="btn danger" id="cancel" data-write disabled>取消</button><button class="btn" id="deliver" data-write disabled>继续交付</button></div>
-      <h3>成员</h3><div id="members" class="member-grid"></div>
-      <h3>工作项与依赖</h3><div id="work-items" class="work-graph"><p class="hint">主作者规划后会显示真实分工。</p></div>
-      <h3>交付</h3><p id="delivery" class="hint">尚未整合候选。</p>
-      <details class="disclosure"><summary>运行记录与产物</summary><div id="runs" class="disclosure-body"></div><div id="artifacts" class="disclosure-body"></div></details>
-      <h3>成员通信</h3><div id="messages" class="team-history"></div>
-      <h3>操作回执</h3><div id="receipts" class="team-history"></div>
-    </div>
-  </section>
-  <aside class="pane"><div class="pane-head"><span class="eyebrow">调整与沟通</span></div><div class="disclosure-body form">
-    <label class="field"><span>成员</span><select id="member-target"><option value="lead">主作者</option></select></label>
-    <label class="field"><span>给成员的消息</span><textarea id="message" rows="3" placeholder="询问进展、补充约束或请求接口"></textarea></label>
-    <button class="btn" id="send-message" data-write disabled>发送消息</button>
-    <hr><p id="selected-work" class="hint">点击工作项后，可以修改该项的方向。</p>
-    <label class="field"><span>新的工作方向</span><textarea id="direction" rows="5" placeholder="保留什么、调整什么、成果需要怎样变化"></textarea></label>
-    <label class="field"><span>负责这项工作的成员</span><select id="worker-target"></select></label>
-    <button class="btn primary" id="adjust" data-write disabled>调整这个工作项</button><button class="btn" id="retry" data-write disabled>重试这个工作项</button>
-    <p class="hint">调整会停止该项的旧尝试，并更新受影响的依赖；其他成员继续工作。已完成的目标再次调整时，会开始新的目标版本。</p>
-    <hr><label class="field"><span>修改整体目标</span><textarea id="new-goal" rows="3"></textarea></label><button class="btn" id="replan" data-write disabled>交给主作者重新规划</button>
-    <p id="notice" class="team-notice" role="status" aria-live="polite"></p>
-  </div></aside>
-</main>
-<footer class="foot">消息会在成员的下一轮工作中领取。交付需要人工审批时，可在交付工作台查看待审批内容。</footer>
-<script type="module" src="/teams.js"></script>
-</body></html>
+  <a class="skip" href="#workspace">跳到协作空间</a>
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 19 19 5M5 5h14v14"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="i-message" viewBox="0 0 24 24"><path d="M4 5h16v12H9l-5 4zM8 9h8M8 13h5"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="8" r="4"/><path d="m11 11 9 9M15 15l3-3M18 18l3-3"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-2 8M20 4v6h-6"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5zM14 3v6h5M9 13h6M9 17h6"/></symbol>
+  </svg>
+  <div class="app-shell">
+    <button class="nav-backdrop" id="nav-backdrop" type="button" aria-label="关闭导航" hidden></button>
+    <aside class="sidebar" id="sidebar" aria-label="工作空间导航">
+      <a class="brand" href="/teams.html" aria-label="Agent Foundry 协作空间"><img src="/foundry-mark.svg" width="48" height="48" alt=""><span>AGENT<br>FOUNDRY<span class="brand-caption">THE COLLABORATION ENGINE</span></span></a>
+      <p class="nav-caption">WORKSPACE / 工作空间</p>
+      <nav class="main-nav">
+        <a class="nav-item active" href="/teams.html" aria-current="page"><svg class="icon"><use href="#i-grid"/></svg><span>团队协作</span><small>01</small></a>
+        <a class="nav-item" href="/workbench.html"><svg class="icon"><use href="#i-file"/></svg><span>交付工作台</span><small>02</small></a>
+        <button class="nav-item" type="button" data-open="token-dialog"><svg class="icon"><use href="#i-key"/></svg><span>操作权限</span><small>03</small></button>
+      </nav>
+      <div class="team-list-heading"><span class="nav-caption">YOUR TEAMS</span><span id="team-count">00</span><button class="icon-button" type="button" data-open="create-dialog" aria-label="新建协作目标"><svg class="icon"><use href="#i-plus"/></svg></button></div>
+      <div id="teams" class="team-list" aria-label="团队列表"><p class="sidebar-empty">正在读取你的团队…</p></div>
+      <div class="sidebar-footer"><span class="edition">AF / V2.0</span><p>一个目标。<br>下一步，由团队完成。</p><span class="sidebar-star" aria-hidden="true">✦</span></div>
+    </aside>
+    <main class="workspace" id="workspace" tabindex="-1">
+      <header class="topbar">
+        <div class="topbar-location"><button class="icon-button mobile-menu" id="menu-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg class="icon"><use href="#i-menu"/></svg></button><span class="breadcrumb">WORKSPACE <span>/</span> <strong>COLLABORATION</strong></span></div>
+        <div class="topbar-actions"><span id="connection" class="connection" role="status"><i></i><span>连接中</span></span><button class="access-button" type="button" data-open="token-dialog"><svg class="icon"><use href="#i-key"/></svg><span id="access-label">连接令牌</span></button></div>
+      </header>
+      <div class="workspace-content">
+        <section class="hero" aria-labelledby="page-heading">
+          <div class="hero-copy"><p class="eyebrow"><span class="red-dot"></span> YOUR NEXT MOVE STARTS HERE</p><h1 id="page-heading">ONE GOAL.<br><span>MANY MINDS.</span></h1><p class="hero-description">把一个想法，交给一整个团队。<br>分工、协作、交付。每一步都在你的掌握中。</p><button class="btn btn-ink hero-cta" type="button" data-open="create-dialog">新建协作目标 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+          <div class="hero-art" aria-hidden="true">
+            <span class="art-caption">INDIVIDUAL MINDS. SHARED AMBITION.</span>
+            <svg class="foundry-art" viewBox="0 0 450 340" fill="none">
+              <path d="m236 33 13 91 78-49-46 81 110 7-101 39 71 71-93-31-6 80-45-75-72 56 38-85-99-4 92-40-68-59 96 17z" fill="#f7f4ec"/>
+              <g transform="rotate(12 230 162)"><path d="M116 66h228v202H116z" fill="#111" stroke="#111" stroke-width="7"/><path d="M128 80h204v175H128z" stroke="#f7f4ec" stroke-width="2"/></g>
+              <g class="front-card" transform="rotate(-9 218 170)"><path d="M90 81h244v183H90z" fill="#f7f4ec" stroke="#111" stroke-width="7"/><path d="m124 121 28-20 38 27 36-27 45 26 31-26-7 102-42 32-44-18-35 21-39-38z" fill="#111"/><path d="m143 157 47 13-35 17zM232 170l50-13-15 30z" fill="#f7f4ec"/><path d="m197 183 12 16 14-17-12 30z" fill="#e81932"/><path d="m137 106-6-21 17 9M276 110l13-22 1 20" stroke="#111" stroke-width="6"/><path d="M102 93h14M102 99h9M309 246h14M314 240h9" stroke="#111" stroke-width="2"/></g>
+              <g transform="rotate(-12 96 271)"><path d="M56 239h85v59H56z" fill="#111" stroke="#f7f4ec" stroke-width="3"/><path d="m77 272 12-17 18 24H75zM100 255l19 24h-12" stroke="#f7f4ec" stroke-width="4"/></g>
+              <g transform="rotate(8 348 263)"><path d="M310 232h81v61h-81z" fill="#f7f4ec" stroke="#111" stroke-width="4"/><path d="m329 256 11-10-5 22M355 268l8-22 10 11M341 278h13" stroke="#111" stroke-width="4"/></g>
+              <path d="m79 62 8-15 5 14 17 3-15 7-4 15-6-14-14-5zM350 94l5-14 6 13 15 4-14 5-5 15-6-14-13-4z" fill="#111"/><path d="m42 152 16 4M376 178l20-7M363 316l16 6" stroke="#f7f4ec" stroke-width="5"/>
+            </svg><span class="art-label">BETTER. TOGETHER. <b>↗</b></span>
+          </div>
+        </section>
+        <section class="mission-section" aria-labelledby="team-goal">
+          <div class="mission-heading"><div class="mission-title"><p class="eyebrow">01 / THE MISSION <span id="team-version"></span></p><h2 id="team-goal">你的下一次协作，从这里开始。</h2><p id="team-meta" class="hint">新建一个目标，或从左侧选择你的团队。</p></div><span id="team-state" class="state-badge" hidden></span></div>
+          <div class="mission-toolbar"><div class="actions"><button class="btn btn-red" id="start" data-write type="button" disabled><svg class="icon"><use href="#i-play"/></svg><span>启动团队</span></button><button class="btn btn-quiet" id="pause" data-write type="button" disabled><svg class="icon"><use href="#i-pause"/></svg>暂停</button><button class="btn btn-quiet danger" id="cancel" data-write type="button" disabled>结束协作</button></div><div class="toolbar-secondary"><button class="text-button" type="button" data-open="records-dialog">运行记录 <svg class="icon"><use href="#i-arrow"/></svg></button><button class="icon-button" id="refresh" type="button" aria-label="刷新团队状态"><svg class="icon"><use href="#i-refresh"/></svg></button></div></div>
+          <div class="members-heading"><h3>你的团队<span>THE CREW</span></h3><span class="hint">点击成员，直接对话 <svg class="icon"><use href="#i-arrow"/></svg></span></div>
+          <div id="members" class="member-grid"><div class="empty-members"><span class="empty-star" aria-hidden="true">✦</span><p>主作者负责组织，workers 负责行动。<br>创建目标后，团队会在这里集合。</p></div></div>
+          <div class="board-columns">
+            <section class="work-area" aria-labelledby="work-heading">
+              <div class="panel-heading"><h3 id="work-heading">行动计划<span>THE PLAN</span></h3><div class="progress-label"><span id="progress-label">等待规划</span><span class="progress-track" role="progressbar" aria-label="工作项完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-fill"></span></span></div></div>
+              <div id="work-items" class="work-graph"><div class="empty-board"><span aria-hidden="true">↗</span><h4>给想法一个行动计划。</h4><p>启动团队后，主作者会规划分工和依赖。<br>你可以在任何时候调整具体的工作方向。</p><button class="text-button" type="button" data-open="create-dialog">发起你的第一个目标 <svg class="icon"><use href="#i-arrow"/></svg></button></div></div>
+              <div class="delivery-strip"><div class="delivery-icon"><svg class="icon"><use href="#i-check"/></svg></div><div><p class="eyebrow">THE HANDOFF / 成果交付</p><p id="delivery">整合成果后，继续独立评审与验收。</p></div><button class="icon-button" id="deliver" data-write type="button" disabled aria-label="继续交付"><svg class="icon"><use href="#i-arrow"/></svg></button></div>
+            </section>
+            <section class="activity-pane" aria-labelledby="activity-heading">
+              <div class="panel-heading"><h3 id="activity-heading">团队动态<span>THE SIGNAL</span></h3><button class="icon-button" type="button" data-open="message-dialog" aria-label="给团队成员发送消息"><svg class="icon"><use href="#i-plus"/></svg></button></div>
+              <div class="activity-tabs" role="tablist" aria-label="团队动态类型"><button id="messages-tab" role="tab" type="button" aria-selected="true" aria-controls="messages" data-tab="messages">成员消息 <span id="message-count">0</span></button><button id="receipts-tab" role="tab" type="button" aria-selected="false" aria-controls="receipts" tabindex="-1" data-tab="receipts">操作回执 <span id="receipt-count">0</span></button></div>
+              <div id="messages" class="team-history" role="tabpanel" aria-labelledby="messages-tab" tabindex="0"><div class="empty-activity"><svg class="icon"><use href="#i-message"/></svg><p>好点子，值得一次对话。</p><span>成员消息会显示在这里。</span></div></div>
+              <div id="receipts" class="team-history" role="tabpanel" aria-labelledby="receipts-tab" tabindex="0" hidden></div>
+              <p class="activity-footnote">消息在成员下一轮工作时领取。</p>
+            </section>
+          </div>
+          <div class="mission-bottom"><span id="access-hint">连接操作令牌后，即可启动和调整团队。</span><button class="text-button" type="button" data-open="replan-dialog">调整整体目标 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+        </section>
+        <footer class="workspace-footer"><span>AGENT FOUNDRY <b>© 2026</b></span><span>BUILT FOR THE NEXT MOVE. <span aria-hidden="true">✦</span></span></footer>
+      </div>
+    </main>
+  </div>
+  <dialog class="dialog" id="create-dialog" aria-labelledby="create-heading">
+    <div class="dialog-heading"><div><p class="eyebrow">A NEW BEGINNING</p><h2 id="create-heading">你的下一个目标。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭创建目标窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <form id="create-form" class="form">
+      <label class="field"><span>你希望团队完成什么？</span><textarea id="goal" required rows="3" maxlength="12000" placeholder="例如：为产品设计并实现一个简洁的首页。" autofocus></textarea></label>
+      <label class="field"><span>在哪个项目中工作？</span><input id="target" required placeholder="填写已注册的项目目录" autocomplete="off"><small>使用已配置交付与验收要求的项目。</small></label>
+      <label class="field workers-field"><span>Worker 数量 <output id="workers-output" for="workers">3</output></span><input id="workers" type="range" min="1" max="8" value="3" step="1"><small>加上 1 位主作者，组成你的协作团队。</small></label>
+      <details class="advanced"><summary>验收与提交设置</summary><div class="advanced-fields"><label class="field"><span>验收命令</span><input id="command" value="node" required></label><label class="field"><span>验收参数（JSON 数组）</span><input id="args" value='["--test","tests/gate.test.mjs"]' required></label><label class="field"><span>提交标识</span><input id="key" required><small>重试保留同一标识，避免重复创建。</small></label></div></details>
+      <p class="form-hint" id="create-auth-hint">需要操作令牌才能创建团队。</p>
+      <div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>稍后再说</button><button class="btn btn-red" id="create" data-write type="submit" disabled>召集团队 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+    </form>
+  </dialog>
+  <dialog class="dialog dialog-small" id="token-dialog" aria-labelledby="token-heading">
+    <div class="dialog-heading"><div><p class="eyebrow">YOUR ACCESS</p><h2 id="token-heading">连接操作权限。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭操作权限窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <form id="token-form" class="form"><p class="dialog-description">使用服务端配置的操作令牌，启动团队、发送消息和调整工作方向。</p><label class="field"><span>操作令牌</span><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="输入你的操作令牌" autofocus></label><p class="form-hint">仅保存在当前浏览器会话，关闭会话后失效。</p><div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>取消</button><button class="btn btn-red" id="save-token" type="submit">连接 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
+  </dialog>
+  <dialog class="dialog" id="message-dialog" aria-labelledby="message-heading">
+    <div class="dialog-heading"><div><p class="eyebrow">KEEP THE CONVERSATION GOING</p><h2 id="message-heading">给团队一个信号。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭消息窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <form id="message-form" class="form"><label class="field"><span>与谁对话？</span><select id="member-target"><option value="lead">主作者</option></select></label><label class="field"><span>你的消息</span><textarea id="message" rows="4" maxlength="4000" required placeholder="询问进展、补充约束，或沟通一个想法。"></textarea></label><p class="form-hint">成员会在下一轮工作时领取。落实情况可在操作回执中查看。</p><div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>取消</button><button class="btn btn-red" id="send-message" data-write type="submit" disabled>发送消息 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
+  </dialog>
+  <dialog class="dialog" id="work-dialog" aria-labelledby="work-heading-dialog">
+    <div class="dialog-heading"><div><p class="eyebrow">CHANGE THE DIRECTION</p><h2 id="work-heading-dialog">调整下一步。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭工作项调整窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <form id="work-form" class="form"><p id="selected-work" class="selected-work">先选择一个工作项。</p><label class="field"><span>新的工作方向</span><textarea id="direction" rows="5" maxlength="12000" required placeholder="保留什么、调整什么，成果需要怎样变化？"></textarea></label><label class="field"><span>交给谁完成？</span><select id="worker-target"></select></label><p class="form-hint">仅停止当前项的旧尝试，并更新受影响的依赖。其他成员的成果继续保留。</p><div class="dialog-actions"><button class="btn btn-quiet" id="retry" data-write type="button" disabled>重试工作项</button><button class="btn btn-red" id="adjust" data-write type="submit" disabled>更新方向 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
+  </dialog>
+  <dialog class="dialog" id="replan-dialog" aria-labelledby="replan-heading">
+    <div class="dialog-heading"><div><p class="eyebrow">THE BIGGER PICTURE</p><h2 id="replan-heading">重新定义目标。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭整体目标窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <form id="replan-form" class="form"><label class="field"><span>新的整体目标</span><textarea id="new-goal" rows="5" maxlength="12000" required></textarea></label><p class="form-hint">主作者会根据新的目标重新规划分工。只想修改某一步时，直接调整对应的工作项即可。</p><div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>取消</button><button class="btn btn-red" id="replan" data-write type="submit" disabled>交给主作者 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
+  </dialog>
+  <dialog class="dialog records-dialog" id="records-dialog" aria-labelledby="records-heading">
+    <div class="dialog-heading"><div><p class="eyebrow">BEHIND THE SCENES</p><h2 id="records-heading">每一步，都有记录。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭运行记录窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <div class="records-columns"><section><h3>运行记录</h3><div id="runs" class="records-list"><p class="hint">团队启动后，会在这里记录每次执行。</p></div></section><section><h3>团队产物</h3><div id="artifacts" class="records-list"><p class="hint">成员提交的成果会保留在这里。</p></div></section></div>
+  </dialog>
+  <div id="notice" class="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="/teams.js"></script>
+</body>
+</html>

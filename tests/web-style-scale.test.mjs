@@ -74,7 +74,7 @@ test('SCALE-4: grid breaks stay rare - three, and each is named', () => {
 });
 
 test('SCALE-5: no external asset and no library - the page stays offline and fast', () => {
-  const html = readFileSync(join(ROOT, 'web', 'index.html'), 'utf8');
+  const html = readFileSync(join(ROOT, 'web', 'workbench.html'), 'utf8');
   const remote = [...html.matchAll(/(?:src|href)\s*=\s*"([^"]+)"/g)].map((m) => m[1]).filter((v) => /^https?:\/\//i.test(v));
   assert.deepEqual(remote, [], 'no remote asset may be referenced');
   assert.doesNotMatch(CSS, /@import|url\(\s*['"]?https?:/i, 'the stylesheet must not pull anything in');
