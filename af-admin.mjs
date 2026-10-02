@@ -105,7 +105,7 @@ function printUsage() {
   af-admin v2 cancel --task <id> --reason "<why>" --confirm                 (durable request; honoured at a trusted boundary)
   af-admin v2 create --spec <file.json> --root <dir> [--profile <id>] [--json]   (V2 submission; needs a control-plane\n                      project registry: config/projects.json or AF_PROJECTS_FILE)
   af-admin v2 start --task <id> [--allow-failed-reentry] [--json]        (single execution owner; resumes, never re-authors)
-  af-admin team create --spec <file.json> --root <dir> [--workers 3]
+  af-admin team create --spec <file.json> --root <dir> [--workers 3] [--planning] [--planner-executor <id>] [--planner-model <model>] [--dispatch-mode human|planner]
   af-admin team serve|list
   af-admin team show|start|pause|resume|cancel|deliver --team <id>
   af-admin team message --team <id> --agent <id> --message "<text>"

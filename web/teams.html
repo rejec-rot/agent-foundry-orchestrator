@@ -10,6 +10,7 @@
   <link rel="preload" href="/fonts/Anton-Regular.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="/teams.css">
   <link rel="stylesheet" href="/foundry-theme.css">
+  <link rel="stylesheet" href="/planner-workspace.css">
 </head>
 <body>
   <a class="skip" href="#workspace">跳到协作空间</a>
@@ -48,7 +49,7 @@
       </header>
       <div class="workspace-content">
         <section class="hero" aria-labelledby="page-heading">
-          <div class="hero-copy"><p class="eyebrow"><span class="red-dot"></span> YOUR NEXT MOVE STARTS HERE</p><h1 id="page-heading">ONE GOAL.<br><span>MANY MINDS.</span></h1><p class="hero-description">把一个想法，交给一整个团队。<br>分工、协作、交付。每一步都在你的掌握中。</p><button class="btn btn-ink hero-cta" type="button" data-open="create-dialog"><span class="cta-copy"><small aria-hidden="true">MAKE YOUR NEXT MOVE</small><strong>新建协作目标</strong></span><span class="cta-arrow" aria-hidden="true"><svg class="icon"><use href="#i-arrow"/></svg></span></button></div>
+          <div class="hero-copy"><p class="eyebrow"><span class="red-dot"></span> THE PHANTOM COLLABORATION ROOM</p><h1 id="page-heading">PLAN IT.<br><span>PULL IT OFF.</span></h1><p class="hero-description">和 Planner 商讨，然后让团队行动。</p><button class="btn btn-ink hero-cta" type="button" data-open="create-dialog"><span class="cta-copy"><small aria-hidden="true">MAKE YOUR NEXT MOVE</small><strong>新建协作目标</strong></span><span class="cta-arrow" aria-hidden="true"><svg class="icon"><use href="#i-arrow"/></svg></span></button></div>
           <div class="hero-art" aria-hidden="true">
             <span class="art-caption">INDIVIDUAL MINDS. SHARED AMBITION.</span>
             <svg class="foundry-art" viewBox="0 0 450 340" fill="none">
@@ -64,22 +65,32 @@
         <section class="mission-section" aria-labelledby="team-goal">
           <div class="mission-heading"><div class="mission-title"><p class="eyebrow">01 / THE MISSION <span id="team-version"></span></p><h2 id="team-goal">你的下一次协作，从这里开始。</h2><p id="team-meta" class="hint">新建一个目标，或从左侧选择你的团队。</p></div><span id="team-state" class="state-badge" hidden></span></div>
           <div class="mission-toolbar"><div class="actions"><button class="btn btn-red" id="start" data-write type="button" disabled><svg class="icon"><use href="#i-play"/></svg><span>启动团队</span></button><button class="btn btn-quiet" id="pause" data-write type="button" disabled><svg class="icon"><use href="#i-pause"/></svg>暂停</button><button class="btn btn-quiet danger" id="cancel" data-write type="button" disabled>结束协作</button></div><div class="toolbar-secondary"><button class="text-button" type="button" data-open="records-dialog">运行记录 <svg class="icon"><use href="#i-arrow"/></svg></button><button class="icon-button" id="refresh" type="button" aria-label="刷新团队状态"><svg class="icon"><use href="#i-refresh"/></svg></button></div></div>
+          <ol class="operation-route" aria-label="协作流程"><li data-phase="discuss"><b>01</b><span>商讨目标<small>TALK IT THROUGH</small></span></li><li data-phase="plan"><b>02</b><span>确认计划<small>MAKE A PLAN</small></span></li><li data-phase="work"><b>03</b><span>派遣 Workers<small>TAKE ACTION</small></span></li><li data-phase="review"><b>04</b><span>同模型复检<small>CHECK THE WORK</small></span></li></ol>
           <div class="members-heading"><h3>你的团队<span>THE CREW</span></h3><span class="hint">点击成员，直接对话 <svg class="icon"><use href="#i-arrow"/></svg></span></div>
-          <div id="members" class="member-grid"><div class="empty-members"><span class="empty-star" aria-hidden="true">✦</span><p>主作者负责组织，workers 负责行动。<br>创建目标后，团队会在这里集合。</p></div></div>
+          <div id="members" class="member-grid"><div class="empty-members"><span class="empty-star" aria-hidden="true">✦</span><p>Planner 商讨计划 · Workers 分工行动。<br>Reviewer 使用 Planner 的模型进行复检。</p></div></div>
           <div class="board-columns">
+            <section class="planner-console" aria-labelledby="planner-heading">
+              <div class="planner-header"><span class="planner-emblem" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="m7 15 19 8 6-7 7 7 18-8-5 28-16 9-5-9-6 9-14-9z" fill="currentColor"/><path d="m14 28 13 4-9 7zM37 32l13-4-4 11z" fill="#141414"/></svg></span><div><p class="eyebrow">YOUR STRATEGIST</p><h3 id="planner-heading">Planner <span>先聊清楚，再行动。</span></h3><p id="planner-model" class="planner-model">选择模型，建立你的行动小队。</p></div><span class="planner-seal" aria-hidden="true">✦</span></div>
+              <div id="planner-conversation" class="planner-conversation" role="log" aria-label="与 Planner 的对话" aria-live="polite"><div class="chat-empty"><span class="calling-card" aria-hidden="true">LET'S<br><b>MAKE A MOVE.</b><i>✦</i></span><h4>好计划，从一次对话开始。</h4><p>讨论目标、边界和验收要求。<br>满意后，再决定让谁开工。</p></div></div>
+              <div class="chat-suggestions" aria-label="对话建议"><button type="button" data-prompt="先帮我分析这个目标的边界和约束。">分析目标 <span>↗</span></button><button type="button" data-prompt="你建议分给几个 Worker？解释分工和模型选择的理由。">推荐编组 <span>↗</span></button><button type="button" data-prompt="请帮我明确每一步的输出和验收要求。">明确验收 <span>↗</span></button></div>
+              <form id="planner-chat-form" class="planner-composer"><label class="sr-only" for="planner-input">发送给 Planner 的消息</label><textarea id="planner-input" rows="2" maxlength="4000" required placeholder="告诉 Planner，你想怎样完成这个目标…"></textarea><button id="planner-send" class="chat-send" type="submit" data-write disabled aria-label="发送给 Planner"><svg class="icon"><use href="#i-arrow"/></svg></button></form>
+              <div class="planner-footer"><span id="dispatch-mode-label">由你确认，团队才开工。</span><button id="propose-plan" class="btn btn-ink" type="button" data-write disabled>生成行动计划 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+            </section>
             <section class="work-area" aria-labelledby="work-heading">
               <div class="panel-heading"><h3 id="work-heading">行动计划<span>THE PLAN</span></h3><div class="progress-label"><span id="progress-label">等待规划</span><span class="progress-track" role="progressbar" aria-label="工作项完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-fill"></span></span></div></div>
-              <div id="work-items" class="work-graph"><div class="empty-board"><span aria-hidden="true">↗</span><h4>给想法一个行动计划。</h4><p>启动团队后，主作者会规划分工和依赖。<br>你可以在任何时候调整具体的工作方向。</p><button class="text-button" type="button" data-open="create-dialog">发起你的第一个目标 <svg class="icon"><use href="#i-arrow"/></svg></button></div></div>
+              <div id="plan-approval" class="plan-approval" hidden><div><span class="eyebrow">THE PLAN IS YOURS</span><strong>Planner 已提交行动提案。</strong><p>确认 Worker 数量、模型与分工后开工。</p></div><button id="configure-dispatch" class="btn btn-red" type="button" data-open="dispatch-dialog" data-write disabled>确认编组 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+              <div id="rework-status" class="rework-status" hidden></div>
+              <div id="work-items" class="work-graph"><div class="empty-board"><span aria-hidden="true">↗</span><h4>给想法一个行动计划。</h4><p>先与 Planner 商讨目标，再生成行动计划。<br>Worker 数量、模型和分工都由你掌握。</p><button class="text-button" type="button" data-open="create-dialog">发起你的第一个目标 <svg class="icon"><use href="#i-arrow"/></svg></button></div></div>
               <div class="delivery-strip"><div class="delivery-icon"><svg class="icon"><use href="#i-check"/></svg></div><div><p class="eyebrow">THE HANDOFF / 成果交付</p><p id="delivery">整合成果后，继续独立评审与验收。</p></div><button class="icon-button" id="deliver" data-write type="button" disabled aria-label="继续交付"><svg class="icon"><use href="#i-arrow"/></svg></button></div>
             </section>
-            <section class="activity-pane" aria-labelledby="activity-heading">
+          </div>
+          <section class="activity-pane signal-shelf" aria-labelledby="activity-heading">
               <div class="panel-heading"><h3 id="activity-heading">团队动态<span>THE SIGNAL</span></h3><button class="icon-button" type="button" data-open="message-dialog" aria-label="给团队成员发送消息"><svg class="icon"><use href="#i-plus"/></svg></button></div>
               <div class="activity-tabs" role="tablist" aria-label="团队动态类型"><button id="messages-tab" role="tab" type="button" aria-selected="true" aria-controls="messages" data-tab="messages">成员消息 <span id="message-count">0</span></button><button id="receipts-tab" role="tab" type="button" aria-selected="false" aria-controls="receipts" tabindex="-1" data-tab="receipts">操作回执 <span id="receipt-count">0</span></button></div>
               <div id="messages" class="team-history" role="tabpanel" aria-labelledby="messages-tab" tabindex="0"><div class="empty-activity"><svg class="icon"><use href="#i-message"/></svg><p>好点子，值得一次对话。</p><span>成员消息会显示在这里。</span></div></div>
               <div id="receipts" class="team-history" role="tabpanel" aria-labelledby="receipts-tab" tabindex="0" hidden></div>
-              <p class="activity-footnote">消息在成员下一轮工作时领取。</p>
-            </section>
-          </div>
+              <p class="activity-footnote">所有对话、改向和派工都会留下回执。</p>
+          </section>
           <div class="mission-bottom"><span id="access-hint">连接操作令牌后，即可启动和调整团队。</span><button class="text-button" type="button" data-open="replan-dialog">调整整体目标 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
         </section>
         <footer class="workspace-footer"><span>AGENT FOUNDRY <b>© 2026</b></span><span>BUILT FOR THE NEXT MOVE. <span aria-hidden="true">✦</span></span></footer>
@@ -91,11 +102,17 @@
     <form id="create-form" class="form">
       <label class="field"><span>你希望团队完成什么？</span><textarea id="goal" required rows="3" maxlength="12000" placeholder="例如：为产品设计并实现一个简洁的首页。" autofocus></textarea></label>
       <label class="field"><span>在哪个项目中工作？</span><input id="target" required placeholder="填写已注册的项目目录" autocomplete="off"><small>使用已配置交付与验收要求的项目。</small></label>
-      <label class="field workers-field"><span>Worker 数量 <output id="workers-output" for="workers">3</output></span><input id="workers" type="range" min="1" max="8" value="3" step="1"><small>加上 1 位主作者，组成你的协作团队。</small></label>
+      <fieldset class="agent-settings"><legend>Planner · 同模型 Reviewer</legend><div class="profile-fields"><label class="field"><span>执行器</span><select id="planner-executor" required><option value="">读取可用执行器…</option></select></label><label class="field"><span>模型</span><input id="planner-model-input" maxlength="160" placeholder="使用 CLI 默认模型"><small id="model-selection-hint">留空使用执行器配置的默认模型。</small></label></div><p>复检建立独立会话，使用相同模型。</p></fieldset>
+      <label class="field"><span>谁来决定编组和开工？</span><select id="dispatch-mode"><option value="human">我来确认 · 先看计划，再派工</option><option value="planner">Planner 决定 · 推荐编组后自动开工</option></select></label>
+      <label class="field workers-field"><span>Worker 数量 <output id="workers-output" for="workers">3</output></span><input id="workers" type="range" min="1" max="8" value="3" step="1"><small>先提供参考人数，计划形成后可以确认或调整编组。</small></label>
       <details class="advanced"><summary>验收与提交设置</summary><div class="advanced-fields"><label class="field"><span>验收命令</span><input id="command" value="node" required></label><label class="field"><span>验收参数（JSON 数组）</span><input id="args" value='["--test","tests/gate.test.mjs"]' required></label><label class="field"><span>提交标识</span><input id="key" required><small>重试保留同一标识，避免重复创建。</small></label></div></details>
       <p class="form-hint" id="create-auth-hint">需要操作令牌才能创建团队。</p>
       <div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>稍后再说</button><button class="btn btn-red" id="create" data-write type="submit" disabled>召集团队 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
     </form>
+  </dialog>
+  <dialog class="dialog dispatch-dialog" id="dispatch-dialog" aria-labelledby="dispatch-heading">
+    <div class="dialog-heading"><div><p class="eyebrow">ASSEMBLE YOUR CREW</p><h2 id="dispatch-heading">这一次，让谁行动？</h2></div><button class="icon-button" type="button" data-close aria-label="关闭编组窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <form id="dispatch-form" class="form"><p id="dispatch-plan-version" class="form-hint"></p><label class="field workers-field"><span>Worker 数量 <output id="dispatch-workers-output" for="dispatch-workers">3</output></span><input id="dispatch-workers" type="range" min="1" max="8" value="3" step="1"><small>每位 Worker 可以使用相同或不同的执行器与模型。</small></label><div id="worker-profiles" class="worker-profiles"></div><div class="assignment-heading">确认任务分配 <span>THE ASSIGNMENTS</span></div><div id="work-assignments" class="work-assignments"></div><p class="form-hint">Planner / Reviewer 的模型保持一致。开工后，修改单个任务会先交回 Planner。</p><div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>继续商讨</button><button id="approve-plan" class="btn btn-red" type="submit" data-write disabled>确认并开工 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
   </dialog>
   <dialog class="dialog dialog-small" id="token-dialog" aria-labelledby="token-heading">
     <div class="dialog-heading"><div><p class="eyebrow">YOUR ACCESS</p><h2 id="token-heading">连接操作权限。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭操作权限窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
@@ -103,15 +120,15 @@
   </dialog>
   <dialog class="dialog" id="message-dialog" aria-labelledby="message-heading">
     <div class="dialog-heading"><div><p class="eyebrow">KEEP THE CONVERSATION GOING</p><h2 id="message-heading">给团队一个信号。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭消息窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
-    <form id="message-form" class="form"><label class="field"><span>与谁对话？</span><select id="member-target"><option value="lead">主作者</option></select></label><label class="field"><span>你的消息</span><textarea id="message" rows="4" maxlength="4000" required placeholder="询问进展、补充约束，或沟通一个想法。"></textarea></label><p class="form-hint">成员会在下一轮工作时领取。落实情况可在操作回执中查看。</p><div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>取消</button><button class="btn btn-red" id="send-message" data-write type="submit" disabled>发送消息 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
+    <form id="message-form" class="form"><label class="field"><span>与谁对话？</span><select id="member-target"><option value="lead">Planner</option></select></label><label class="field"><span>你的消息</span><textarea id="message" rows="4" maxlength="4000" required placeholder="询问进展、补充约束，或沟通一个想法。"></textarea></label><p class="form-hint">Planner 会回复对话；Worker 的消息会在下一轮工作时领取。</p><div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>取消</button><button class="btn btn-red" id="send-message" data-write type="submit" disabled>发送消息 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
   </dialog>
   <dialog class="dialog" id="work-dialog" aria-labelledby="work-heading-dialog">
     <div class="dialog-heading"><div><p class="eyebrow">CHANGE THE DIRECTION</p><h2 id="work-heading-dialog">调整下一步。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭工作项调整窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
-    <form id="work-form" class="form"><p id="selected-work" class="selected-work">先选择一个工作项。</p><label class="field"><span>新的工作方向</span><textarea id="direction" rows="5" maxlength="12000" required placeholder="保留什么、调整什么，成果需要怎样变化？"></textarea></label><label class="field"><span>交给谁完成？</span><select id="worker-target"></select></label><p class="form-hint">仅停止当前项的旧尝试，并更新受影响的依赖。其他成员的成果继续保留。</p><div class="dialog-actions"><button class="btn btn-quiet" id="retry" data-write type="button" disabled>重试工作项</button><button class="btn btn-red" id="adjust" data-write type="submit" disabled>更新方向 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
+    <form id="work-form" class="form"><p id="selected-work" class="selected-work">先选择一个工作项。</p><label class="field"><span>新的工作方向</span><textarea id="direction" rows="5" maxlength="12000" required placeholder="保留什么、调整什么，成果需要怎样变化？"></textarea></label><label class="field"><span>交给谁完成？</span><select id="worker-target"></select></label><p class="form-hint" id="work-change-hint">先停止当前项及依赖它的旧尝试 → 通知 Planner → Planner 改写任务 → 重新派工。其他成员的已接受成果继续保留。</p><div class="dialog-actions"><button class="btn btn-quiet" id="retry" data-write type="button" disabled>重试工作项</button><button class="btn btn-red" id="adjust" data-write type="submit" disabled>暂停并交给 Planner <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
   </dialog>
   <dialog class="dialog" id="replan-dialog" aria-labelledby="replan-heading">
     <div class="dialog-heading"><div><p class="eyebrow">THE BIGGER PICTURE</p><h2 id="replan-heading">重新定义目标。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭整体目标窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
-    <form id="replan-form" class="form"><label class="field"><span>新的整体目标</span><textarea id="new-goal" rows="5" maxlength="12000" required></textarea></label><p class="form-hint">主作者会根据新的目标重新规划分工。只想修改某一步时，直接调整对应的工作项即可。</p><div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>取消</button><button class="btn btn-red" id="replan" data-write type="submit" disabled>交给主作者 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
+    <form id="replan-form" class="form"><label class="field"><span>新的整体目标</span><textarea id="new-goal" rows="5" maxlength="12000" required></textarea></label><p class="form-hint">Planner 会根据新的目标重新提出计划。只想修改某一步时，直接调整对应的工作项即可。</p><div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>取消</button><button class="btn btn-red" id="replan" data-write type="submit" disabled>交给 Planner <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
   </dialog>
   <dialog class="dialog records-dialog" id="records-dialog" aria-labelledby="records-heading">
     <div class="dialog-heading"><div><p class="eyebrow">BEHIND THE SCENES</p><h2 id="records-heading">每一步，都有记录。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭运行记录窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>

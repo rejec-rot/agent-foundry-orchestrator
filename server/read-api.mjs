@@ -39,6 +39,7 @@ import { collaborationView, queueMessage } from '../lib/collaboration.mjs';
 import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 import { disabledExecutors } from '../lib/operator-control.mjs';
 import { createCollaborationTeam, commandTeam } from '../lib/team/service.mjs';
+import { supportsModel, supportsPlanner } from '../lib/team/planner.mjs';
 import { listTeams, teamView } from '../lib/team/store.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -229,7 +230,7 @@ export function createReadApi({
           const registryFile=env.AF_PROJECTS_FILE??join(process.cwd(),'config','projects.json');
           const loaded=loadProjectRegistry({file:registryFile});
           if(!loaded.ok){sendJson(res,422,shape({ok:false,reason:loaded.reason}));return;}
-          const result=createCollaborationTeam({spec:payload.spec,workerCount:payload.worker_count??3,allowedRoots,
+          const result=createCollaborationTeam({spec:payload.spec,workerCount:payload.worker_count??3,planning:payload.planning??null,allowedRoots,
             tasksDir:roots.tasks,runtimeDir:roots.runtime,locksDir:locksDir??roots.locks,env,
             submissionsDir:env.AF_SUBMISSION_DIR??join(roots.runtime,'submissions'),
             projectRegistry:loaded.registry,registryFile,registryDigest:loaded.digest,
@@ -382,6 +383,8 @@ export function createReadApi({
           id: entry.executor_id,
           availability: operatorDisabled.has(entry.executor_id) ? 'DISABLED_BY_OPERATOR' : entry.availability_status,
           capability: entry.capability_status,
+          supports_model: supportsModel(entry.executor_id),
+          supports_planner: supportsPlanner(entry.executor_id),
           reason: operatorDisabled.has(entry.executor_id)
             ? 'disabled by the operator (config/operator-executors.json); the platform will refuse to bind or run it'
             : (entry.reason ?? null),

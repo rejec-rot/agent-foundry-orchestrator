@@ -8,10 +8,12 @@
 
 默认地址 `/` 进入 `/teams.html`。深色侧栏承载团队切换，纸白工作区承载真实状态。海报标题、斜切红色底块、网点、原创几何面具与 AF 标记构成视觉重点。业务卡片使用稳定网格，避免装饰影响阅读。
 
-主流程是“创建目标 → 启动团队 → 查看成员与计划 → 调整工作项 → 继续交付”。新建、权限、成员消息、定向调整、整体目标与运行记录使用原生 dialog，默认界面只显示当前目标、成员、计划与动态。
+主流程是“选择 Planner 模型 → 聊天商讨 → 生成行动计划 → 确认 Worker 数量、模型与分工 → 开工 → 同模型独立会话复检”。创建时也可选择由 Planner 推荐编组后自动开工。左侧常驻真实 Planner 对话，右侧是提案、派工确认与工作项；动态和回执收在下方。已选择团队时缩小顶部海报，手机成员采用横向滚动。漫画对话气泡、斜切面具徽章、calling card、四步行动条与返工条加强 P5 视觉，也标记真实阶段。
 
-- 点击成员，选择真实接收者并发送消息。
-- 点击工作项，修改方向或改派；提交绑定打开编辑器时的版本，防止静默覆盖后续修改。
+- 点击 Planner 聚焦常驻对话框；点击 Worker，选择真实接收者并发送消息。
+- 点击执行中的工作项，暂停旧尝试与受影响的依赖并提交反馈；Planner 改写后才重新派工。提交绑定打开编辑器时的版本，防止静默覆盖后续修改。
+- 计划提案默认停在 `PLAN_READY`；编组窗口允许 1–8 位 Worker、相同或不同的执行器/模型以及逐项分配。确认绑定计划版本和目标版本。
+- Reviewer 与 Planner 的模型配置一致，但建立独立会话；拒绝缺失身份或与任一 Planner/Worker 会话冲突的复检。
 - 主按钮根据真实阶段显示启动、恢复、协作中或继续交付。
 - 成员消息与操作回执支持键盘切换。
 - 输入错误显示在当前弹窗，保留已填写的草稿。
@@ -37,9 +39,9 @@
 
 下面的截图来自真实 Chromium、HTTP 服务与协作控制器，模型输出使用受控测试适配器。
 
-![桌面协作空间](../previews/persona-workspace/team-desktop.png)
+![Planner 桌面协作空间](../previews/persona-workspace/planner-desktop.png)
 
-[查看手机长图](../previews/persona-workspace/team-mobile.png)
+[查看手机长图](../previews/persona-workspace/planner-mobile.png) · [手机编组窗口](../previews/persona-workspace/planner-dispatch-mobile.png) · [暂停并通知 Planner](../previews/persona-workspace/planner-rework-desktop.png)
 
 ![交付工作台](../previews/persona-workspace/workbench-desktop.png)
 
@@ -50,19 +52,21 @@
 运行：
 
 ```bash
+node qa/planner-browser.mjs --output-dir /tmp/af-planner-browser
 node qa/team-browser.mjs --output-dir /tmp/af-persona-browser
 node verification/web-console-smoke.mjs
 node verification/web-write-browser.mjs
 node verification/deploy-preflight.mjs
-node --test tests/team-api.test.mjs tests/web-api-readonly.test.mjs tests/web-api-write-auth.test.mjs tests/web-style-scale.test.mjs
+node --test tests/team-planner.test.mjs tests/team-api.test.mjs tests/web-api-readonly.test.mjs tests/web-api-write-auth.test.mjs tests/web-style-scale.test.mjs
 ```
 
 - 协作页 Chromium 验证 21 项行为：默认入口、历史任务书签、鉴权操作、成员和依赖、消息回执与转义、定向调整、无关产物保留、旧结果拒绝、刷新恢复、桌面网格、手机导航与焦点、新建弹窗、错误草稿保留、键盘标签、本地字体、中文标题与正文排版、斜切按钮、响应式与减少动画。
-- 视口覆盖 360、390、768、1024、1440、1920px，无横向溢出。
-- 相关 API 与工作台回归：24/24 通过。
+- Planner 页 Chromium 验证 19 项行为，覆盖真实聊天、消息转义、确认前不派工、计划后修改人数、不同执行器与模型、逐项分配、暂停、Planner 改写、下游挂起、旧结果拒绝、无关成果保留、重载与手机编组窗口。
+- 新流程覆盖 320–1920px，无页面横向溢出；成员列表在手机端可单独横向滚动。
+- Planner 后端检查覆盖手动与自动派工、复检新会话、版本冲突、计划与改向的重启恢复，以及无关定义保护。既有团队链路继续回归。
 - 交付页浏览器检查：只读 30/30、写操作 22/22 通过，覆盖本地字体、同款按钮、真实 CTA 点击、提交标识、只读预检、设置错误展开、任务创建/启动/取消、消息队列、令牌与响应式布局；320–1440px 的较长状态信息保留在卡片内。
-- 部署静态预检：44/44 通过，覆盖两页资源、字体许可与控制项。该预检检查部署输入，不等同于系统服务安装或真实模型验收。
-- 原始浏览器结果：[协作页](../previews/persona-workspace/report.json)、[交付页](../previews/persona-workspace/workbench-report.json)。
+- 部署静态预检：45/45 通过，覆盖两页资源、字体许可与控制项。该预检检查部署输入，不等同于系统服务安装或真实模型验收。
+- 原始浏览器结果：[Planner 页](../previews/persona-workspace/planner-report.json)、[既有协作链路](../previews/persona-workspace/report.json)、[交付页](../previews/persona-workspace/workbench-report.json)。
 
 ## 资源
 

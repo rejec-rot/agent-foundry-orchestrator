@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "browser": "Chromium",
+  "model_adapters": "controlled fixtures; real HTTP and controller",
+  "checks": [
+    "persistent Planner chat",
+    "escaped chat messages",
+    "manual proposal gate",
+    "no dispatch before approval",
+    "same Planner/Reviewer model display",
+    "worker count changed after planning",
+    "distinct executor profiles",
+    "per-worker models reach capsules",
+    "explicit work assignment",
+    "scoped pause before Planner revision",
+    "dependent work held",
+    "old result discarded",
+    "Planner direction receipt",
+    "unaffected artifact preserved",
+    "conversation survives reload",
+    "320–1920px responsive layouts",
+    "mobile dispatch dialog",
+    "keyboard focus",
+    "reduced motion"
+  ],
+  "verified_at": "2026-10-02T08:07:08.738Z"
+}

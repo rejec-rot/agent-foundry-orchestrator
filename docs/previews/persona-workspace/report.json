@@ -14,7 +14,7 @@
     "unchanged peer artifact",
     "old result discarded",
     "reload persistence",
-    "aligned desktop plan and activity",
+    "aligned desktop Planner and plan",
     "mobile navigation and focus restoration",
     "registered-profile creation dialog",
     "inline error feedback preserves user draft",
@@ -27,5 +27,5 @@
   ],
   "desktop": "team-desktop.png",
   "mobile": "team-mobile.png",
-  "verified_at": "2026-10-02T04:54:44.153Z"
+  "verified_at": "2026-10-02T08:05:47.917Z"
 }

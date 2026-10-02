@@ -13,21 +13,7 @@ import {TeamController} from '../lib/team/controller.mjs';
 import {startReadApi} from '../server/read-api.mjs';
 import {PROJECT_REGISTRY_SCHEMA} from '../lib/projects.mjs';
 
-class DevTools {
-  constructor(ws){this.ws=ws;this.sequence=0;this.pending=new Map();this.errors=[];
-    ws.addEventListener('message',event=>{const message=JSON.parse(event.data);const pending=this.pending.get(message.id);
-      if(pending){this.pending.delete(message.id);clearTimeout(pending.timer);message.error?pending.reject(new Error(message.error.message)):pending.resolve(message.result);}
-      if(message.method==='Runtime.exceptionThrown')this.errors.push(message.params.exceptionDetails.exception?.description??message.params.exceptionDetails.text);
-    });
-  }
-  static async connect(url){const ws=new WebSocket(url);await new Promise((resolve,reject)=>{ws.addEventListener('open',resolve,{once:true});ws.addEventListener('error',reject,{once:true});});return new DevTools(ws);}
-  send(method,params={}){const id=++this.sequence;return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error(`DevTools timeout: ${method}`));},15000);this.pending.set(id,{resolve,reject,timer});this.ws.send(JSON.stringify({id,method,params}));});}
-  async evaluate(expression){const result=await this.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(result.exceptionDetails)throw new Error(result.exceptionDetails.exception?.description??result.exceptionDetails.text);return result.result.value;}
-  async waitFor(expression,timeout=12000){const end=Date.now()+timeout;while(Date.now()<end){if(await this.evaluate(expression))return;await delay(100);}throw new Error(`browser state timeout: ${expression}`);}
-  async screenshot(path){const {cssContentSize}=await this.send('Page.getLayoutMetrics');const result=await this.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:cssContentSize.width,height:cssContentSize.height,scale:1}});writeFileSync(path,Buffer.from(result.data,'base64'));}
-  async click(selector){const point=await this.evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw new Error('missing click target');e.scrollIntoView({block:'center',behavior:'instant'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);for(const type of ['mousePressed','mouseReleased'])await this.send('Input.dispatchMouseEvent',{type,...point,button:'left',clickCount:1});}
-  close(){this.ws.close();}
-}
+import { DevTools } from './browser-client.mjs';
 
 const args=process.argv.slice(2),index=args.indexOf('--output-dir');
 const outputDir=resolve(index<0?join(tmpdir(),'af-team-browser'):args[index+1]);mkdirSync(outputDir,{recursive:true});
@@ -67,7 +53,7 @@ try {
   assert.equal(await browser.evaluate('document.fonts.check(\'800 20px "Foundry Display"\')'),true,'local display font loads');
   assert.equal(await browser.evaluate('document.fonts.check(\'400 24px "Foundry Poster CN"\', "协作目标") && document.fonts.check(\'400 14px "Foundry Sans"\')'),true,'Chinese headings and body fonts load locally');
   assert.equal(await browser.evaluate("getComputedStyle(document.querySelector('.hero-cta'),'::before').clipPath!=='none' && Boolean(document.querySelector('.hero-cta .cta-arrow'))"),true,'the primary action has a cut silhouette and separate arrow plate');
-  assert.equal(await browser.evaluate("document.getElementById('start').disabled"),true);
+  assert.equal(await browser.evaluate("document.getElementById('start')?.disabled"),true);
   await browser.click('.topbar [data-open=token-dialog]');
   assert.equal(await browser.evaluate("document.activeElement.id==='token'"),true);
   await browser.evaluate("document.getElementById('token').value='browser-test-token'");await browser.click('#save-token');await browser.click('#start');
@@ -77,17 +63,17 @@ try {
   await browser.click('[data-member=worker-2]');
   assert.equal(await browser.evaluate("document.getElementById('message-dialog').open&&document.activeElement.id==='message'"),true);
   await browser.evaluate("document.getElementById('message').value='<img src=x onerror=\"window.hacked=1\"> explain your API'");await browser.click('#send-message');
-  await browser.waitFor("document.getElementById('messages').textContent.includes('explain your API')&&document.getElementById('receipts').textContent.includes('已落实')");
+  await browser.waitFor("document.getElementById('messages')?.textContent.includes('explain your API')&&document.getElementById('receipts')?.textContent.includes('已落实')");
   assert.equal(await browser.evaluate("Boolean(window.hacked||document.querySelector('#messages img'))"),false);
   await browser.click('[data-work=a]');
   assert.equal(await browser.evaluate("document.getElementById('work-dialog').open&&document.activeElement.id==='direction'"),true);
   await browser.evaluate("document.getElementById('direction').value='按新接口整合工作台，保留独立的视觉设计成果。'");await browser.click('#adjust');
-  await browser.waitFor("document.getElementById('team-state').textContent==='候选待交付'&&document.getElementById('receipts').textContent.includes('调整工作项 · 已落实')");
+  await browser.waitFor("document.getElementById('team-state')?.textContent==='候选待交付'&&document.getElementById('receipts')?.textContent.includes('调整工作项 · 已落实')");
   const adjusted=controller.read(fx.team.team_id);assert.equal(adjusted.work_items.find(i=>i.work_item_id==='a').revision,2);
   assert.equal(adjusted.work_items.find(i=>i.work_item_id==='b').artifact_id,bArtifact);
   assert.ok(adjusted.runs.some(r=>r.work_item_id==='a'&&r.status==='DISCARDED'));
   assert.equal(await browser.evaluate('document.documentElement.scrollWidth<=innerWidth+2'),true);
-  assert.equal(await browser.evaluate("(()=>{const side=document.querySelector('.sidebar').getBoundingClientRect(),work=document.querySelector('.workspace').getBoundingClientRect(),plan=document.querySelector('.work-area').getBoundingClientRect(),activity=document.querySelector('.activity-pane').getBoundingClientRect();return side.right<=work.left+1&&plan.right<activity.left&&Math.abs(plan.top-activity.top)<2;})()"),true,'desktop keeps the plan and activity aligned beside a fixed navigation');
+  assert.equal(await browser.evaluate("(()=>{const side=document.querySelector('.sidebar').getBoundingClientRect(),work=document.querySelector('.workspace').getBoundingClientRect(),plan=document.querySelector('.work-area').getBoundingClientRect(),planner=document.querySelector('.planner-console').getBoundingClientRect();return side.right<=work.left+1&&planner.right<plan.left&&Math.abs(plan.top-planner.top)<3;})()"),true,'desktop keeps Planner chat and the plan aligned beside a fixed navigation');
   await browser.evaluate("document.getElementById('messages-tab').focus()");await browser.send('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowRight',code:'ArrowRight'});
   assert.equal(await browser.evaluate("document.getElementById('receipts-tab').getAttribute('aria-selected')==='true'&&!document.getElementById('receipts').hidden&&document.activeElement.id==='receipts-tab'"),true,'keyboard switches activity tabs');
   await browser.waitFor("document.getElementById('notice').hidden",9000);
@@ -96,7 +82,7 @@ try {
   await delay(300);
   await browser.evaluate("scrollTo({top:0,behavior:'instant'})");
   await browser.screenshot(join(outputDir,'team-desktop.png'));
-  await browser.send('Page.reload');await browser.waitFor("document.getElementById('team-state').textContent==='候选待交付'");
+  await browser.send('Page.reload');await browser.waitFor("document.getElementById('team-state')?.textContent==='候选待交付'");
   await browser.send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
   assert.equal(await browser.evaluate('document.documentElement.scrollWidth<=innerWidth+2'),true);
   await browser.click('#menu-toggle');
@@ -112,11 +98,12 @@ try {
   await browser.click('.hero-cta');
   assert.equal(await browser.evaluate("document.getElementById('create-dialog').open&&document.activeElement.id==='goal'"),true);
   await browser.evaluate(`document.getElementById('goal').value='browser-created team';document.getElementById('target').value=${JSON.stringify(fx.repo)};document.getElementById('key').value='browser-create';document.getElementById('args').value='not-json';document.getElementById('create-form').requestSubmit()`);
-  await browser.waitFor("document.querySelector('#create-dialog .dialog-feedback')?.textContent.includes('JSON')&&!document.getElementById('create').disabled");
+  await browser.waitFor("document.querySelector('#create-dialog .dialog-feedback')?.textContent.includes('JSON')&&!document.getElementById('create')?.disabled");
   assert.equal(await browser.evaluate("document.getElementById('create-dialog').open&&document.getElementById('goal').value==='browser-created team'"),true,'invalid input keeps the dialog and user draft');
   await browser.evaluate('document.getElementById("args").value=JSON.stringify(["--test","tests/gate.test.mjs"])');
+  await browser.evaluate("document.getElementById('planner-executor').value='codex';document.getElementById('planner-executor').dispatchEvent(new Event('change',{bubbles:true}))");
   await browser.click('#create');
-  await browser.waitFor("document.getElementById('team-goal').textContent==='browser-created team'");
+  await browser.waitFor("document.getElementById('team-goal')?.textContent==='browser-created team'");
   assert.equal(await browser.evaluate("document.getElementById('create-dialog').open"),false,'successful creation closes the dialog');
   assert.equal(await browser.evaluate("document.querySelectorAll('[data-member]').length"),4);
   for(const width of [360,768,1024,1920]){await browser.send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:width<720});assert.equal(await browser.evaluate('document.documentElement.scrollWidth<=innerWidth+2'),true,`no overflow at ${width}px`);}
@@ -127,7 +114,7 @@ try {
   await browser.waitFor("document.querySelectorAll('#tasks .row').length>=2");
   assert.equal(await browser.evaluate('location.hash'),'#'+fx.task.task_id,'historical task bookmarks retain their task identity');
   assert.deepEqual(browser.errors,[]);assert.deepEqual(tickErrors,[]);
-  report={ok:true,browser:'Chromium',model_adapters:'controlled test adapters',checks:['default collaboration entry','historical task bookmark compatibility','authenticated pointer actions','four registered members','dependency graph','member message receipt','message escaping','scoped adjustment','unchanged peer artifact','old result discarded','reload persistence','aligned desktop plan and activity','mobile navigation and focus restoration','registered-profile creation dialog','inline error feedback preserves user draft','keyboard activity tabs','self-hosted display font','local Chinese heading and body typography','cut action and arrow plate','360–1920px responsive layouts','reduced motion'],desktop:'team-desktop.png',mobile:'team-mobile.png',verified_at:new Date().toISOString()};
+  report={ok:true,browser:'Chromium',model_adapters:'controlled test adapters',checks:['default collaboration entry','historical task bookmark compatibility','authenticated pointer actions','four registered members','dependency graph','member message receipt','message escaping','scoped adjustment','unchanged peer artifact','old result discarded','reload persistence','aligned desktop Planner and plan','mobile navigation and focus restoration','registered-profile creation dialog','inline error feedback preserves user draft','keyboard activity tabs','self-hosted display font','local Chinese heading and body typography','cut action and arrow plate','360–1920px responsive layouts','reduced motion'],desktop:'team-desktop.png',mobile:'team-mobile.png',verified_at:new Date().toISOString()};
 } finally {
   clearInterval(timer);browser?.close();
   if(chrome.exitCode===null&&chrome.signalCode===null)await new Promise(resolve=>{

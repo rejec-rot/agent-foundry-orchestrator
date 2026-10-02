@@ -2,7 +2,7 @@
 
 [![regression](https://github.com/rejec-rot/agent-foundry-orchestrator/actions/workflows/regression.yml/badge.svg?branch=main)](https://github.com/rejec-rot/agent-foundry-orchestrator/actions/workflows/regression.yml?query=branch%3Amain)
 
-面向共享目标的多 agents 协作平台：主作者组织分工与整合，多个 worker 独立执行、交换消息，用户能调整指定工作项。**Trusted Import V2** 负责成果的独立评审、授权、验收与正式代码提升。
+面向共享目标的多 agents 协作平台：先和 **Planner 聊天形成计划**，由操作员或 Planner 决定 **1–8 位 Worker 的数量、模型和分工**；Planner 所选模型同时用于 **Reviewer 的独立复检会话**。执行中调整单项工作，会先暂停受影响的尝试，经 Planner 改写后重新派工。**Trusted Import V2** 负责成果的独立评审、授权、验收与正式代码提升。
 
 当前版本：`2.0.0-dev`。方案二的首期协作核心已实现，入口是 **`/teams.html`** 和 **`af-admin team`**。历史单作者 V2 链路完成过本地 Docker 部署验收及 Codex＋Cline 冒烟；新团队链路的真实模型账号联调仍需单独验收。
 
@@ -10,32 +10,37 @@
 
 ## 新人先看：一个目标怎样完成
 
-你提供目标、项目路径和验收要求。主作者把目标拆成有依赖关系的工作项；workers 执行分工、交换信息并提交成果；主作者整合后，交付服务完成独立评审、授权和验收。
+你提供目标、项目路径和验收要求，并选择 Planner 的执行器与模型。先与 Planner 商讨边界和验收，再生成行动提案。默认由你确认 Worker 的数量、相同或不同的模型以及每项任务的分配；也可以在创建时选择由 Planner 推荐编组后自动开工。Planner 整合成果后，同模型 Reviewer 通过独立会话复检，交付服务继续授权、验收和正式提升。
 
 下面的 Mermaid 流程图可在 GitHub README 中直接查看。主线按从上到下阅读，虚线表示用户介入与成员通信。不支持 Mermaid 的阅读器可打开[协作流程 SVG](docs/diagrams/team-workflow.svg)。
 
 ```mermaid
 flowchart TD
-    USER["用户提交目标、项目与验收要求"] --> CONTROL["团队控制器登记目标并绑定成员"]
-    CONTROL --> LEAD["主作者拆解工作项、分工与依赖"]
-    LEAD --> WORK["Workers 按依赖执行<br/>额度允许时，独立任务并行"]
-    WORK -. "下一轮执行领取" .-> MESSAGE["成员请求与回复"]
-    MESSAGE -. "交换信息" .-> WORK
-    USER -. "定向调整或改派" .-> ADJUST["更新工作项版本<br/>停止旧尝试，使受影响下游失效"]
-    ADJUST --> WORK
-    WORK --> ARTIFACT["提交不可变成果<br/>拒绝过期尝试的结果"]
-    ARTIFACT --> INTEGRATE["主作者整合团队成果"]
-    INTEGRATE --> SEAL["确认所有写者停止<br/>捕获并密封候选代码"]
-    SEAL --> REVIEW{"独立评审通过？"}
-    REVIEW -- "需返工且有预算" --> FIX["主作者选择相关工作项返工"]
+    USER["操作员提交目标、项目与验收要求"] --> MODEL["选择 Planner 模型<br/>Reviewer 使用相同模型，独立会话"]
+    MODEL --> CHAT["与 Planner 聊天<br/>商讨目标、约束与验收"]
+    CHAT --> PLAN["Planner 提交行动计划<br/>推荐 Worker 数量、模型与分工"]
+    PLAN --> MODE{"谁来决定开工？"}
+    MODE -- "操作员" --> CONFIRM["确认编组和每项任务分配<br/>未确认时不派工"]
+    MODE -- "Planner" --> AUTO["验证推荐编组后自动派工"]
+    CONFIRM --> WORK["Workers 按依赖执行<br/>可使用相同或不同模型"]
+    AUTO --> WORK
+    USER -. "执行中细化单项任务" .-> HOLD["暂停旧尝试与受影响的依赖<br/>通知 Planner"]
+    HOLD --> CHANGE["Planner 改写任务方向<br/>重新下达给对应 Worker"]
+    CHANGE --> WORK
+    WORK --> ART["接受当前版本的不可变成果<br/>保留无关成果，拒绝迟到旧结果"]
+    ART --> INTEGRATE["Planner 整合成果<br/>确认执行范围停止并密封候选"]
+    INTEGRATE --> REVIEW{"同模型 Reviewer<br/>独立会话复检通过？"}
+    REVIEW -- "需返工且有预算" --> FIX["Planner 选择相关工作项返工"]
     FIX --> WORK
-    REVIEW -- "通过" --> AUTH["授权检查<br/>必要时等待人工批准"]
-    AUTH --> VERIFY["执行受信验收命令<br/>绑定候选与验收证据"]
-    VERIFY --> PASS{"验收通过？"}
-    PASS -- "通过" --> PROMOTE["最终校验并原子晋升正式版本"]
-    PROMOTE --> DONE["记录完成状态与交付证据"]
-    PASS -- "不通过" --> BLOCK["阻止交付<br/>查看失败证据后处理"]
+    REVIEW -- "通过" --> GATE["授权检查与必要的人工批准<br/>执行受信验收命令"]
+    GATE --> PASS{"验收通过？"}
+    PASS -- "通过" --> DONE["最终校验，晋升正式版本<br/>记录交付证据"]
+    PASS -- "不通过" --> BLOCK["停留在待处理状态"]
     REVIEW -- "无法继续" --> BLOCK
+    classDef planner fill:#141414,stroke:#e81932,color:#f7f4ec;
+    classDef action fill:#f7f4ec,stroke:#141414,color:#141414;
+    class MODEL,CHAT,PLAN,CHANGE,INTEGRATE,FIX planner;
+    class CONFIRM,AUTO,WORK,ART,GATE,DONE action;
 ```
 
 这张图描述正常协作与交付路径。授权未通过、整合发生冲突、执行预算耗尽或旧执行范围无法确认时，系统会停留在相应待处理状态；不会绕过检查直接交付。
@@ -45,21 +50,23 @@ flowchart TD
 | 角色 | 职责 |
 |---|---|
 | 用户 | 定义目标与验收要求，查看进展，调整工作方向、改派、暂停或取消，处理人工审批 |
-| 主作者 | 规划工作图与依赖，协调成员，整合成果，根据评审反馈选择局部返工 |
+| Planner | 与操作员商讨，规划工作图与编组，接收改向请求，协调成员与整合成果，根据复检反馈选择局部返工 |
 | Workers | 完成各自工作项，向成员提问或回复，提交可追踪的成果 |
 | 团队控制器 | 管理调度、消息、版本、运行记录与恢复；这是后台服务，不是模型成员 |
-| 独立评审者 | 审查密封候选；其执行器与所有团队写入执行器分别绑定 |
+| Reviewer | 使用 Planner 所选的执行器与模型，建立独立会话审查密封候选；复检会话不得复用 Planner 或 Worker 的会话 |
 | Trusted Import V2 | 承接代码交付，检查授权、执行验收并晋升正式版本 |
 
-默认团队是一名主作者加三个 worker，worker 数量可配置为 **1–8 个**。成员身份与执行器、模型账号、CLI 会话分别记录；成员数量不等于不同账号的数量，也不保证所有成员同时执行。
+创建时默认参考编组三位 Worker；计划形成后可以调整为 **1–8 位 Worker**。Planner 与 Reviewer 使用同一模型配置，承担不同角色。成员身份与执行器、模型账号、CLI 会话分别记录；成员数量不等于不同账号的数量，也不保证所有成员同时执行。
 
 ## 中途改需求会怎样
 
-例如，主作者把登录功能分成接口、独立的页面框架和集成测试。这里假定页面框架不依赖接口实现，集成测试依赖二者。你调整接口工作项后，接口和受影响的测试重新执行，页面框架成果保留。
+例如，Planner 把登录功能分成接口、独立的页面框架和集成测试。这里假定页面框架不依赖接口实现，集成测试依赖二者。你提交接口改向后，先停止旧接口尝试并挂起受影响的测试，再通知 Planner。Planner 改写任务后重新派工，页面框架成果保留。
 
 ```mermaid
 flowchart LR
-    USER["用户调整接口要求"] --> API["接口工作项<br/>新版本重新执行"]
+    USER["用户调整接口要求"] --> HOLD["暂停接口旧尝试<br/>挂起受影响的集成测试"]
+    HOLD --> PLANNER["通知 Planner<br/>改写任务后重新下达"]
+    PLANNER --> API["接口工作项<br/>新版本重新执行"]
     API --> TEST["集成测试<br/>依赖受影响，重新执行"]
     UI["独立页面框架<br/>保留已接受成果"] --> TEST
     OLD["接口旧尝试的迟到结果"] -. "版本校验拒绝" .-> REJECT["不能覆盖新方向"]
@@ -84,7 +91,7 @@ flowchart LR
 
 | 能力 | 当前状态 |
 |---|---|
-| 团队协作 | 常驻控制器、主作者与 1–8 个注册 worker、工作依赖、独立尝试与不可变产物 |
+| 团队协作 | 常驻控制器、Planner 对话、计划确认与 1–8 个注册 Worker、工作依赖、独立尝试与不可变产物 |
 | 成员通信与人工调整 | 版本化消息、成员回复、工作项改派、定向失效、queued/received/applied 回执 |
 | 团队恢复 | 租约与提交序号、指令去重、已确认 scope 的中断恢复；未知写者阻止重跑与交付 |
 | V2 主入口 | 显式设置 `trusted_import.enabled: true` 后启用 |
@@ -95,13 +102,13 @@ flowchart LR
 | 写者回收 | Docker 或 delegated cgroup；进程组退出本身不证明所有写者已停止 |
 | 持久化回收 | 未确认 scope 清空时保留句柄；dry-run 不执行 scope 回收 |
 
-Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图、通信和调整由协作控制器管理。独立评审反馈能返回主作者选择局部返工，签名审批通过正常入口恢复。旧历史任务保留原流程；新的团队任务由兼容入口转交协作控制器，旧 scheduler 不能再直接派发。
+Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图、通信和调整由协作控制器管理。独立评审反馈能返回 Planner 选择局部返工，签名审批通过正常入口恢复。旧历史任务保留原流程；新的团队任务由兼容入口转交协作控制器，旧 scheduler 不能再直接派发。
 
 ## 团队入口
 
-浏览器默认进入 Persona 5 视觉风格协作空间：红黑白、斜切海报排版、原创面具图形与简洁工作卡片。协作空间与交付工作台共用本地加载的 Anton、Space Grotesk 和得意黑，以及带错位底板、箭头区和按压反馈的按钮。创建目标、成员对话、定向调整和运行记录使用独立弹窗，工作区集中显示真实的团队状态。
+浏览器默认进入 Persona 5 视觉风格协作空间：红黑白、斜切海报排版、原创面具、漫画对话气泡、行动卡片和四步流程条。协作空间与交付工作台共用本地加载的 Anton、Space Grotesk 和得意黑，以及带错位底板、箭头区和按压反馈的按钮。Planner 对话常驻左侧，计划与派工确认集中在右侧；创建目标、Worker 编组、定向调整和运行记录使用弹窗。手机端成员横向滚动，减少顶部占用。
 
-[桌面预览](docs/previews/persona-workspace/team-desktop.png) · [手机预览](docs/previews/persona-workspace/team-mobile.png) · [界面与验证说明](docs/design/PERSONA-COLLABORATION-WORKSPACE.md)
+[Planner 桌面预览](docs/previews/persona-workspace/planner-desktop.png) · [Planner 手机预览](docs/previews/persona-workspace/planner-mobile.png) · [手机编组窗口](docs/previews/persona-workspace/planner-dispatch-mobile.png) · [界面与验证说明](docs/design/PERSONA-COLLABORATION-WORKSPACE.md)
 
 [交付工作台桌面预览](docs/previews/persona-workspace/workbench-desktop.png) · [交付工作台手机预览](docs/previews/persona-workspace/workbench-mobile.png)
 
@@ -114,7 +121,7 @@ node af-admin.mjs web serve --port 8787
 
 交付工作台位于 `/workbench.html`，采用同一套 Persona 视觉语言；旧的 `/#TASK-*` 详情链接会保留任务标识并转到交付工作台。浏览器写操作仍使用下文的 `--allow-write` 与操作令牌配置。
 
-先按既有部署要求配置项目注册表、验收 profile 和执行器隔离。创建使用与 V2 相同的提交 JSON：`goal`、`target_path`、`acceptance`、`idempotency_key`；执行器由平台绑定。
+先按既有部署要求配置项目注册表、验收 profile 和执行器隔离。目标 spec 保留 V2 的 `goal`、`target_path`、`acceptance`、`idempotency_key`。Planner/Worker 的选择属于鉴权后的团队配置，服务端仍检查执行器是否可用；验收 profile 与项目权限仍由受信注册表绑定。可选模型使用执行器支持的模型 ID，留空沿用其 CLI 默认配置。
 
 将下面的示例保存为 `team-goal.json`，并替换项目路径、目标与验收命令。验收命令必须与项目已登记的受信 profile 一致；`idempotency_key` 用于识别同一提交的重试。
 
@@ -128,12 +135,15 @@ node af-admin.mjs web serve --port 8787
 ```
 
 ```bash
-node af-admin.mjs team create --spec team-goal.json --root /path/to/registered-project --workers 3
+node af-admin.mjs team create --spec team-goal.json --root /path/to/registered-project --workers 3 --planning
 node af-admin.mjs team list
-node af-admin.mjs team start --team TEAM-your-task-id
+node af-admin.mjs team message --team TEAM-your-task-id --agent lead --message "先讨论目标边界与验收要求"
+node af-admin.mjs team propose_plan --team TEAM-your-task-id
 node af-admin.mjs team show --team TEAM-your-task-id
 node af-admin.mjs team adjust --team TEAM-your-task-id --work-item your-work-item --expected-revision 1 --message "新的工作方向"
 ```
+
+在页面中点击“确认编组”确认并开工；CLI 可用 `team command --file dispatch.json` 提交 `approve_plan`，字段与 HTTP 协议一致，见 [Planner 协议](docs/adr/0012-planner-workspace.md)。`--planner-executor` 和 `--planner-model` 选择模型；`--dispatch-mode planner` 允许 Planner 推荐后自动开工。不加 `--planning` 的既有 CLI 调用保留原团队启动流程。
 
 首次操作会启动持有全局团队租约的本地控制器；也可用 `node af-admin.mjs team serve` 在前台运行。前台服务收到 SIGINT/SIGTERM 时停止派发并等待受控执行范围退出。运行目录与任务目录通过 `AF_RUNTIME_DIR`、`AF_TASKS_DIR`、`AF_LOCKS_DIR` 或对应 CLI 参数配置，所有入口应使用同一组目录。自动启动的进程 PID 和 owner token 在 `locks/team-controller.lock`，日志在 `runtime/team-controller.log`。
 
@@ -168,6 +178,7 @@ Web 使用现有令牌鉴权启动：`node af-admin.mjs web serve --allow-write 
 
 | 范围 | 记录结果 | 说明 |
 |---|---|---|
+| Planner 工作台（2026-10-02） | 本地全量 812 项：809 通过、3 跳过、0 失败；Planner 浏览器 19 项、既有界面 21 项通过 | 覆盖聊天、计划确认、数量/模型选择、局部暂停与改向、同模型新会话复检、重启恢复；使用受控模型适配器 |
 | 协作核心与全量回归（2026-10-01） | 802 项：799 通过、3 跳过、0 失败、0 取消 | 模型输出使用受控适配器；文件投影、CAS、锁、验收和 Git 晋升使用实际实现；见[实施记录](docs/reviews/2026-10-01-team-core-implementation.md) |
 | 团队页面（2026-10-01） | 桌面与手机浏览器检查通过 | 覆盖创建、鉴权、消息回执、定向调整、无关成果保留、旧尝试拒绝及刷新恢复；使用受控模型适配器 |
 | V2、回收与终止句柄回归（`8c91800`） | 68/68 通过 | 包括 dry-run、取消、并发与崩溃恢复 |
@@ -285,7 +296,7 @@ GP-4 是运行时护栏探针，不等于完整 V2 冒烟。报告应分别列�
 | `af-team.mjs`、`af-admin.mjs team` | 团队创建、查询、控制与控制器入口 |
 | `lib/team/` | 目标与成员模型、工作依赖、通信、调度、成果整合及交付衔接 |
 | `web/teams.html`、`server/read-api.mjs` | 团队页面与 HTTP 入口 |
-| `tests/team-*.test.mjs`、`qa/team-browser.mjs` | 团队回归与真实浏览器检查；模型输出使用受控适配器 |
+| `tests/team-*.test.mjs`、`qa/team-browser.mjs`、`qa/planner-browser.mjs` | 团队回归与真实浏览器检查；模型输出使用受控适配器 |
 | `prototypes/` | 前端视觉与交互原型，使用模拟数据，与正式团队页面分别维护 |
 | [协作核心决策](docs/adr/0011-team-collaboration-controller.md) | 控制器、持久化、恢复与执行边界 |
 | `orchestrator.mjs` | 任务入口、执行与恢复 |
