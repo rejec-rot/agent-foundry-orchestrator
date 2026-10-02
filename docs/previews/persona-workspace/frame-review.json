@@ -1,0 +1,307 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "create-dialog fits 1440",
+      "ok": true
+    },
+    {
+      "name": "create-dialog keeps native focus 1440",
+      "ok": true
+    },
+    {
+      "name": "create-dialog scrolls without horizontal clipping 1440",
+      "ok": true
+    },
+    {
+      "name": "token-dialog fits 1440",
+      "ok": true
+    },
+    {
+      "name": "token-dialog keeps native focus 1440",
+      "ok": true
+    },
+    {
+      "name": "token-dialog scrolls without horizontal clipping 1440",
+      "ok": true
+    },
+    {
+      "name": "message-dialog fits 1440",
+      "ok": true
+    },
+    {
+      "name": "message-dialog keeps native focus 1440",
+      "ok": true
+    },
+    {
+      "name": "message-dialog scrolls without horizontal clipping 1440",
+      "ok": true
+    },
+    {
+      "name": "work-dialog fits 1440",
+      "ok": true
+    },
+    {
+      "name": "work-dialog keeps native focus 1440",
+      "ok": true
+    },
+    {
+      "name": "work-dialog scrolls without horizontal clipping 1440",
+      "ok": true
+    },
+    {
+      "name": "replan-dialog fits 1440",
+      "ok": true
+    },
+    {
+      "name": "replan-dialog keeps native focus 1440",
+      "ok": true
+    },
+    {
+      "name": "replan-dialog scrolls without horizontal clipping 1440",
+      "ok": true
+    },
+    {
+      "name": "records-dialog fits 1440",
+      "ok": true
+    },
+    {
+      "name": "records-dialog keeps native focus 1440",
+      "ok": true
+    },
+    {
+      "name": "records-dialog scrolls without horizontal clipping 1440",
+      "ok": true
+    },
+    {
+      "name": "dispatch-dialog fits 1440",
+      "ok": true
+    },
+    {
+      "name": "dispatch-dialog keeps native focus 1440",
+      "ok": true
+    },
+    {
+      "name": "dispatch-dialog scrolls without horizontal clipping 1440",
+      "ok": true
+    },
+    {
+      "name": "create-dialog fits 390",
+      "ok": true
+    },
+    {
+      "name": "create-dialog keeps native focus 390",
+      "ok": true
+    },
+    {
+      "name": "create-dialog scrolls without horizontal clipping 390",
+      "ok": true
+    },
+    {
+      "name": "token-dialog fits 390",
+      "ok": true
+    },
+    {
+      "name": "token-dialog keeps native focus 390",
+      "ok": true
+    },
+    {
+      "name": "token-dialog scrolls without horizontal clipping 390",
+      "ok": true
+    },
+    {
+      "name": "message-dialog fits 390",
+      "ok": true
+    },
+    {
+      "name": "message-dialog keeps native focus 390",
+      "ok": true
+    },
+    {
+      "name": "message-dialog scrolls without horizontal clipping 390",
+      "ok": true
+    },
+    {
+      "name": "work-dialog fits 390",
+      "ok": true
+    },
+    {
+      "name": "work-dialog keeps native focus 390",
+      "ok": true
+    },
+    {
+      "name": "work-dialog scrolls without horizontal clipping 390",
+      "ok": true
+    },
+    {
+      "name": "replan-dialog fits 390",
+      "ok": true
+    },
+    {
+      "name": "replan-dialog keeps native focus 390",
+      "ok": true
+    },
+    {
+      "name": "replan-dialog scrolls without horizontal clipping 390",
+      "ok": true
+    },
+    {
+      "name": "records-dialog fits 390",
+      "ok": true
+    },
+    {
+      "name": "records-dialog keeps native focus 390",
+      "ok": true
+    },
+    {
+      "name": "records-dialog scrolls without horizontal clipping 390",
+      "ok": true
+    },
+    {
+      "name": "dispatch-dialog fits 390",
+      "ok": true
+    },
+    {
+      "name": "dispatch-dialog keeps native focus 390",
+      "ok": true
+    },
+    {
+      "name": "dispatch-dialog scrolls without horizontal clipping 390",
+      "ok": true
+    },
+    {
+      "name": "create-dialog fits 320",
+      "ok": true
+    },
+    {
+      "name": "create-dialog keeps native focus 320",
+      "ok": true
+    },
+    {
+      "name": "create-dialog scrolls without horizontal clipping 320",
+      "ok": true
+    },
+    {
+      "name": "token-dialog fits 320",
+      "ok": true
+    },
+    {
+      "name": "token-dialog keeps native focus 320",
+      "ok": true
+    },
+    {
+      "name": "token-dialog scrolls without horizontal clipping 320",
+      "ok": true
+    },
+    {
+      "name": "message-dialog fits 320",
+      "ok": true
+    },
+    {
+      "name": "message-dialog keeps native focus 320",
+      "ok": true
+    },
+    {
+      "name": "message-dialog scrolls without horizontal clipping 320",
+      "ok": true
+    },
+    {
+      "name": "work-dialog fits 320",
+      "ok": true
+    },
+    {
+      "name": "work-dialog keeps native focus 320",
+      "ok": true
+    },
+    {
+      "name": "work-dialog scrolls without horizontal clipping 320",
+      "ok": true
+    },
+    {
+      "name": "replan-dialog fits 320",
+      "ok": true
+    },
+    {
+      "name": "replan-dialog keeps native focus 320",
+      "ok": true
+    },
+    {
+      "name": "replan-dialog scrolls without horizontal clipping 320",
+      "ok": true
+    },
+    {
+      "name": "records-dialog fits 320",
+      "ok": true
+    },
+    {
+      "name": "records-dialog keeps native focus 320",
+      "ok": true
+    },
+    {
+      "name": "records-dialog scrolls without horizontal clipping 320",
+      "ok": true
+    },
+    {
+      "name": "dispatch-dialog fits 320",
+      "ok": true
+    },
+    {
+      "name": "dispatch-dialog keeps native focus 320",
+      "ok": true
+    },
+    {
+      "name": "dispatch-dialog scrolls without horizontal clipping 320",
+      "ok": true
+    },
+    {
+      "name": "high contrast preserves a visible native frame",
+      "ok": true
+    },
+    {
+      "name": "reduced motion keeps cards stationary",
+      "ok": true
+    },
+    {
+      "name": "delivery layout fits 1440",
+      "ok": true
+    },
+    {
+      "name": "long delivery rows do not overlap at 1440",
+      "ok": true
+    },
+    {
+      "name": "delivery layout fits 768",
+      "ok": true
+    },
+    {
+      "name": "long delivery rows do not overlap at 768",
+      "ok": true
+    },
+    {
+      "name": "delivery layout fits 390",
+      "ok": true
+    },
+    {
+      "name": "long delivery rows do not overlap at 390",
+      "ok": true
+    },
+    {
+      "name": "delivery layout fits 320",
+      "ok": true
+    },
+    {
+      "name": "long delivery rows do not overlap at 320",
+      "ok": true
+    },
+    {
+      "name": "expanded delivery settings fit mobile",
+      "ok": true
+    },
+    {
+      "name": "no browser runtime errors",
+      "ok": true
+    }
+  ],
+  "source": "read-only live preview; DOM-only long-label samples; no API writes",
+  "verified_at": "2026-10-02T11:30:37.571Z"
+}

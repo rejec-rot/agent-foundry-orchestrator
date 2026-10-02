@@ -35,15 +35,23 @@
 
 两个页面通过 `foundry-theme.css` 共用字体与交互样式。主要 CTA 使用斜切黑色前板、红色错位底板、小标题与独立箭头板；主要操作使用红色前板和黑色底板；次要操作使用纸白描边。悬停抬起前板，按下时前板与底板合拢。焦点轮廓保留在裁切图形外，禁用状态撤去底板，减少动画模式禁用位移动画。
 
+## 全站边框
+
+`foundry-frames.css` 在两页最后加载，统一面板、成员卡片、工作项、聊天区、动态、编组卡片、交付设置、输入框、证据和全部 7 个弹窗。大面板采用黑色连续描边、右上和左下斜切角、跟随轮廓的错位底板；Planner 与交付主面板使用红色底板。选中、执行和挂起状态继续保留独立的文字标记与红色强调。空状态使用浅色网纹，避免影响正文阅读。
+
+裁切施加在装饰底层，保留实际内容与焦点区域。输入框保持完整文字区域和原生下拉选单，通过角标、描边和焦点反馈呼应漫画面板。弹窗保留原生顶层、焦点约束与滚动，在框角、标题分隔和错位底板上加强视觉。高对比模式撤去装饰层、恢复系统边框。交付队列中的卡片禁止压缩，长状态可换行，队列自身滚动。
+
 ## 预览
 
-下面的截图来自真实 Chromium、HTTP 服务与协作控制器，模型输出使用受控测试适配器。
+协作流程截图来自真实 Chromium、HTTP 服务与协作控制器，模型输出使用受控测试适配器。新增空态与手机创建视口截图来自当前只读本地预览。
 
 ![Planner 桌面协作空间](../previews/persona-workspace/planner-desktop.png)
 
 [查看手机长图](../previews/persona-workspace/planner-mobile.png) · [手机编组窗口](../previews/persona-workspace/planner-dispatch-mobile.png) · [暂停并通知 Planner](../previews/persona-workspace/planner-rework-desktop.png)
 
 [简化后的创建页](../previews/persona-workspace/planner-create-desktop.png) · [手机模型与思考强度选择](../previews/persona-workspace/planner-create-mobile.png)
+
+[尚未创建团队时的完整边框](../previews/persona-workspace/teams-empty-desktop.png) · [手机创建弹窗视口](../previews/persona-workspace/create-dialog-viewport.png)
 
 创建入口只保留目标、项目和 Planner 的 Agent / 模型 / 思考强度。Worker 人数在计划确认时选择；开工授权、验收参数与提交标识收进“更多设置”。模型和强度联动：切换 Agent 清除不兼容覆盖，没有思考等级的模型禁用强度覆盖。手机端底部主按钮保持可见。Reviewer 沿用 Planner 配置并开启独立会话。
 
@@ -69,8 +77,10 @@ node --test tests/team-planner.test.mjs tests/team-api.test.mjs tests/web-api-re
 - 新流程覆盖 320–1920px，无页面横向溢出；成员列表在手机端可单独横向滚动。
 - Planner 后端检查覆盖手动与自动派工、复检新会话、版本冲突、计划与改向的重启恢复，以及无关定义保护。既有团队链路继续回归。
 - 交付页浏览器检查：只读 30/30、写操作 22/22 通过，覆盖本地字体、同款按钮、真实 CTA 点击、提交标识、只读预检、设置错误展开、任务创建/启动/取消、消息队列、令牌与响应式布局；320–1440px 的较长状态信息保留在卡片内。
-- 部署静态预检：45/45 通过，覆盖两页资源、字体许可与控制项。该预检检查部署输入，不等同于系统服务安装或真实模型验收。
+- 边框专项浏览器复检：75/75 通过，检查全部 7 个原生弹窗在 1440px、390px、320px 下的边界、焦点与滚动，高对比和减少动画模式，两页布局，以及长交付卡片的高度与换行。使用当前只读预览服务；长状态样例仅加入浏览器 DOM，不创建业务数据或调用写接口。此为视觉复检记录，工作流的自动回归仍由上面的脚本覆盖。
+- 部署静态预检：46/46 通过，覆盖两页资源、共享边框样式、字体许可与控制项。该预检检查部署输入，不等同于系统服务安装或真实模型验收。
 - 原始浏览器结果：[Planner 页](../previews/persona-workspace/planner-report.json)、[既有协作链路](../previews/persona-workspace/report.json)、[交付页](../previews/persona-workspace/workbench-report.json)。
+- 边框复检记录：[两页、全部弹窗与可访问性](../previews/persona-workspace/frame-review.json)。
 
 ## 资源
 

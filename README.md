@@ -108,6 +108,8 @@ Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图�
 
 浏览器默认进入 Persona 5 视觉风格协作空间：红黑白、斜切海报排版、原创面具、漫画对话气泡、行动卡片和四步流程条。协作空间与交付工作台共用本地加载的 Anton、Space Grotesk 和得意黑，以及带错位底板、箭头区和按压反馈的按钮。Planner 对话常驻左侧，计划与派工确认集中在右侧；创建目标、Worker 编组、定向调整和运行记录使用弹窗。手机端成员横向滚动，减少顶部占用。
 
+两页的面板、成员卡片、工作项、表单、折叠设置与全部弹窗共用 P5 边框：黑色描边、斜切角、错位底板，以及表示选中或执行状态的红色强调。文字输入保留完整区域，弹窗仍使用原生焦点与滚动；高对比模式保留系统边框。交付队列独立滚动，长卡片保持文字和状态标签的完整高度。
+
 [Planner 桌面预览](docs/previews/persona-workspace/planner-desktop.png) · [Planner 手机预览](docs/previews/persona-workspace/planner-mobile.png) · [手机编组窗口](docs/previews/persona-workspace/planner-dispatch-mobile.png) · [界面与验证说明](docs/design/PERSONA-COLLABORATION-WORKSPACE.md)
 
 [交付工作台桌面预览](docs/previews/persona-workspace/workbench-desktop.png) · [交付工作台手机预览](docs/previews/persona-workspace/workbench-mobile.png)
@@ -181,6 +183,7 @@ Web 使用现有令牌鉴权启动：`node af-admin.mjs web serve --allow-write 
 | 范围 | 记录结果 | 说明 |
 |---|---|---|
 | Planner 工作台（2026-10-02） | 本地全量 819 项：816 通过、3 跳过、0 失败；Planner 浏览器 27 项、既有界面 23 项通过 | 覆盖简洁创建、模型与思考强度选择、聊天、计划确认、局部暂停与改向、同配置新会话复检、重启恢复；使用受控模型适配器 |
+| 统一 P5 边框（2026-10-02） | 前端相关测试 13 项、浏览器回归 102 项、边框专项检查 75 项、部署静态预检 46 项通过 | 覆盖两页、7 个弹窗、320–1920px 布局、长状态卡片、焦点与高对比模式；专项检查使用只读服务与 DOM 样例 |
 | 协作核心与全量回归（2026-10-01） | 802 项：799 通过、3 跳过、0 失败、0 取消 | 模型输出使用受控适配器；文件投影、CAS、锁、验收和 Git 晋升使用实际实现；见[实施记录](docs/reviews/2026-10-01-team-core-implementation.md) |
 | 团队页面（2026-10-01） | 桌面与手机浏览器检查通过 | 覆盖创建、鉴权、消息回执、定向调整、无关成果保留、旧尝试拒绝及刷新恢复；使用受控模型适配器 |
 | V2、回收与终止句柄回归（`8c91800`） | 68/68 通过 | 包括 dry-run、取消、并发与崩溃恢复 |

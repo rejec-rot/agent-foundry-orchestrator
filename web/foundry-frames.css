@@ -1,0 +1,286 @@
+/* Shared Persona-inspired frames. Decorative planes are cut, while content,
+ * focus outlines, native selects and scroll areas keep their full bounds. */
+:root {
+  --frame-cut: 16px;
+  --frame-ink: var(--ink);
+  --frame-surface: var(--white, #fffef9);
+  --frame-texture: none;
+  --frame-back: var(--ink);
+  --frame-depth: 3px;
+}
+
+/* Two planes form a continuous outline, including the diagonal edges.
+ * The hard shadow follows the cut instead of outlining a rectangle. */
+:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+    .empty-members, .empty-board, .delivery-strip, .plan-approval,
+    .rework-status, .worker-profile, .planner-composer, .disclosure.flush) {
+  position: relative;
+  isolation: isolate;
+  border: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  filter: drop-shadow(var(--frame-depth) var(--frame-depth) 0 var(--frame-back));
+}
+:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+    .empty-members, .empty-board, .delivery-strip, .plan-approval,
+    .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::before,
+:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+    .empty-members, .empty-board, .delivery-strip, .plan-approval,
+    .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::after {
+  content: "";
+  position: absolute;
+  width: auto;
+  height: auto;
+  border: 0;
+  pointer-events: none;
+  transform: none;
+  clip-path: polygon(0 0, calc(100% - var(--frame-cut)) 0,
+    100% var(--frame-cut), 100% 100%, var(--frame-cut) 100%,
+    0 calc(100% - var(--frame-cut)));
+}
+:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+    .empty-members, .empty-board, .delivery-strip, .plan-approval,
+    .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::before {
+  inset: -2px;
+  z-index: -2;
+  background: var(--frame-ink);
+}
+:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+    .empty-members, .empty-board, .delivery-strip, .plan-approval,
+    .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::after {
+  --frame-cut: 14px;
+  inset: 0;
+  z-index: -1;
+  background: var(--frame-surface);
+  background-image: var(--frame-texture);
+}
+
+/* Strong bases for the main surfaces; compact cards share the contour. */
+.pane { --frame-depth: 5px; }
+.pane.work, .planner-console { --frame-back: var(--red); --frame-depth: 5px; }
+.pane-head {
+  position: relative;
+  border-bottom: 2px solid var(--ink);
+  color: var(--paper);
+  background: var(--ink);
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+}
+.pane-head .eyebrow { color: var(--paper); font-size: 13px; letter-spacing: .08em; }
+.pane-head .eyebrow small { color: #c6beb2; }
+.pane-head .count { color: #d8d1c5; }
+.pane-head::after {
+  content: "";
+  position: absolute;
+  inset: auto 24px -2px auto;
+  width: 40px;
+  height: 4px;
+  background: var(--red);
+  transform: skewX(-35deg);
+}
+.planner-header { clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%); }
+.planner-footer { clip-path: polygon(0 0, 100% 0, 100% 100%, 14px 100%, 0 calc(100% - 14px)); }
+.signal-shelf { --frame-depth: 4px; }
+.empty-members, .empty-board {
+  --frame-surface: var(--paper);
+  --frame-texture: repeating-linear-gradient(-45deg, #14141404 0 6px, transparent 6px 12px);
+  --frame-back: #bcb4a7;
+}
+.empty-board { overflow: visible; }
+.delivery-strip, .planner-composer { --frame-surface: var(--paper); }
+.planner-composer { --frame-back: var(--ink); --frame-depth: 2px; }
+.plan-approval { --frame-surface: var(--ink); --frame-back: var(--red); color: var(--paper); }
+.rework-status { --frame-surface: var(--red); --frame-back: var(--ink); color: var(--paper); }
+.member-card.reviewer { --frame-ink: #70695f; --frame-back: #bcb4a7; }
+.member-card:not(.reviewer):hover { --frame-back: var(--red); background: transparent; }
+.member-card.lead { --frame-back: var(--red); }
+.member-card[data-running="true"] { --frame-ink: var(--red); }
+.work-card:hover, .work-card.selected {
+  border: 2px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  --frame-back: var(--red);
+}
+.work-card.selected, .work-card[data-state="RUNNING"] { --frame-ink: var(--red); }
+.work-card[data-state="HELD"] {
+  border-color: transparent;
+  background: transparent;
+  --frame-ink: var(--red-dark);
+  --frame-texture: repeating-linear-gradient(-45deg, #e819320b 0 6px, transparent 6px 12px);
+}
+.work-card[data-state="DONE"] { --frame-back: #70695f; }
+.worker-profile { --frame-surface: var(--paper); margin-bottom: 4px; }
+
+/* Stage strips and their active edges. */
+.operation-route { border: 2px solid var(--ink); box-shadow: 3px 3px 0 var(--ink); }
+.operation-route li { border-right-width: 2px; }
+.operation-route li[data-current="true"] { box-shadow: inset 0 -4px var(--red); }
+.runway .stage {
+  border: 2px solid var(--ink);
+  border-inline-start-width: 4px;
+  box-shadow: 2px 2px 0 #bcb4a7;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%);
+  background-size: 8px 8px;
+  background-position: top right;
+  background-repeat: no-repeat;
+}
+.runway .stage.current { border-color: var(--ink); box-shadow: 3px 3px 0 var(--ink); }
+.runway .stage.done { border-color: var(--sage); border-inline-start-color: var(--sage); }
+.progress-track { height: 8px; border: 2px solid var(--ink); background: var(--white); }
+#progress-fill { height: 100%; }
+
+/* Native fields keep their complete text and popup areas. A small corner
+ * mark and an offset rule connect them to the larger comic frames. */
+:is(.field input:not([type="range"]), .field textarea, .field select,
+    .filter, .assignment-row select) {
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  box-shadow: 2px 2px 0 #bcb4a7;
+  background-color: var(--white, #fffef9);
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%);
+  background-size: 8px 8px;
+  background-position: top right;
+  background-repeat: no-repeat;
+  padding-inline-end: 24px;
+}
+:is(.field input:not([type="range"]), .field textarea, .field select,
+    .filter, .assignment-row select):focus-visible {
+  border-color: var(--red);
+  outline: 2px solid var(--red);
+  outline-offset: 3px;
+  box-shadow: 3px 3px 0 var(--ink);
+}
+:is(.field input, .field textarea, .field select, .assignment-row select):disabled {
+  border-color: #857d70;
+  box-shadow: none;
+  background-color: #eee9de;
+  background-image: none;
+  color: #70695f;
+}
+.planner-composer:focus-within { --frame-ink: var(--red); --frame-back: var(--red); }
+.chat-suggestions button { border: 2px solid var(--ink); box-shadow: 2px 2px 0 var(--ink); color: var(--ink); }
+.chat-suggestions button:hover { background: var(--ink); color: var(--paper); }
+.chat-suggestions button:hover span { color: var(--paper); }
+.chat-bubble { border-width: 2px; box-shadow: 3px 3px 0 var(--ink); }
+.chat-bubble.from-operator { box-shadow: 3px 3px 0 var(--red); }
+.agent-settings { border: 2px solid var(--ink); background: var(--paper); box-shadow: 3px 3px 0 var(--ink); }
+.agent-settings legend { padding-inline: 6px; background: var(--paper); }
+.planner-setup { box-shadow: 4px 4px 0 var(--red); }
+
+/* Disclosures show the same edges and explicit expanded-state marks. */
+.disclosure { border-top: 2px solid var(--ink); }
+.disclosure.flush { --frame-surface: var(--paper); --frame-depth: 2px; }
+.disclosure > summary { color: var(--ink); letter-spacing: .06em; }
+.disclosure > summary::before {
+  content: "+";
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  background: var(--ink);
+  color: var(--paper);
+  font: 600 16px/1 var(--body);
+  transform: none;
+  clip-path: polygon(0 0, 80% 0, 100% 20%, 100% 100%, 20% 100%, 0 80%);
+}
+.disclosure[open] > summary::before { content: "−"; transform: none; background: var(--red); }
+.disclosure[open] > summary { border-bottom: 2px solid var(--ink); margin-bottom: 16px; }
+.advanced { border-top: 2px solid var(--ink); }
+.advanced summary { color: var(--ink); }
+.advanced[open] { border-top-color: var(--red); }
+
+/* Native dialogs keep their scroll surface and top-layer focus containment. */
+.dialog {
+  border: 3px solid var(--ink);
+  box-shadow: 5px 5px 0 var(--paper), 8px 8px 0 var(--ink), 12px 12px 0 var(--red);
+  background-color: var(--paper);
+  background-image: linear-gradient(135deg, var(--ink) 12px, transparent 12px),
+    linear-gradient(-45deg, var(--ink) 12px, transparent 12px);
+  background-size: 24px 24px;
+  background-position: top left, bottom right;
+  background-repeat: no-repeat;
+}
+.dialog-heading { padding-bottom: 14px; border-bottom: 3px solid var(--ink); }
+.dialog-heading > .icon-button { background: var(--ink); color: var(--paper); transform: rotate(-4deg); }
+.dialog-heading > .icon-button:hover { background: var(--red); color: var(--paper); }
+.dialog-actions { border-top: 2px solid var(--ink); }
+.selected-work, .dialog-feedback, .gap {
+  border: 2px solid var(--ink);
+  border-left: 5px solid var(--red);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+.toast { border: 2px solid var(--paper); border-left: 6px solid var(--red); box-shadow: 4px 4px 0 var(--red); }
+
+/* Dense records use a lighter frame, with small angled stamps and rules. */
+.row { flex: 0 0 auto; border: 2px solid var(--ink); box-shadow: 3px 3px 0 #bcb4a7; }
+.row::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  background: linear-gradient(45deg, transparent 50%, var(--ink) 50%);
+  pointer-events: none;
+}
+.row:hover { box-shadow: 3px 3px 0 var(--ink); }
+.row[aria-current="true"] { border-color: var(--red); box-shadow: 3px 3px 0 var(--ink); }
+.row[aria-current="true"]::before { width: 4px; }
+.row[aria-current="true"]::after { background: linear-gradient(45deg, transparent 50%, var(--red) 50%); }
+.history-card { border-bottom: 2px solid var(--ink); }
+.history-card::before { width: 7px; height: 7px; transform: rotate(45deg); }
+.team-list > button { border: 1px solid #48433c; }
+.team-list > button[aria-current="true"] { border-color: var(--red); box-shadow: 2px 2px 0 var(--red); }
+.team-list > button[aria-current="true"]::before { clip-path: polygon(0 0, 100% 4px, 100% 100%, 0 calc(100% - 4px)); }
+pre.evidence { border: 2px solid var(--ink); border-left-width: 4px; box-shadow: 3px 3px 0 #bcb4a7; }
+:is(.tag, .chip, .badge, .state-badge) { border-width: 2px; box-shadow: 2px 2px 0 var(--ink); }
+.rail .mode { box-shadow: 2px 2px 0 #625b51; }
+.tag::before, .chip::before { border-radius: 0; transform: rotate(45deg); }
+.timeline-list li { border-left: 2px solid var(--ink); }
+.timeline-list li::before { border-radius: 0; transform: rotate(45deg); }
+.kv dt, .kv dd { border-bottom-color: #bcb4a7; }
+:is(.panel-heading, .records-columns h3, .assignment-heading, .block > h2) { border-bottom: 2px solid var(--ink); }
+:is(.panel-heading, .members-heading) h3 { position: relative; padding-left: 12px; }
+:is(.panel-heading, .members-heading) h3::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .2em;
+  width: 5px;
+  height: 1em;
+  background: var(--red);
+  transform: skewX(-15deg);
+}
+.activity-tabs { border-bottom: 2px solid var(--ink); }
+.activity-tabs button[aria-selected="true"] { border-bottom-width: 4px; }
+.work-dependency, .reviewer-binding { border-top-color: var(--ink); }
+.topbar, .mission-bottom, .foot { border-color: var(--ink); }
+.access-button { border-width: 2px; }
+.btn-quiet, .btn.danger { border: 2px solid var(--ink); }
+
+@media (max-width: 720px) {
+  .pane, .planner-console { --frame-depth: 3px; }
+  .dialog { box-shadow: 4px 4px 0 var(--ink), 7px 7px 0 var(--red); }
+  .dialog-heading { padding-bottom: 10px; }
+  .operation-route li:nth-child(-n+2) { border-bottom-width: 2px; }
+  .member-card { --frame-depth: 2px; }
+}
+@media (forced-colors: active) {
+  :is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+      .empty-members, .empty-board, .delivery-strip, .plan-approval,
+      .rework-status, .worker-profile, .planner-composer, .disclosure.flush) {
+    border: 2px solid CanvasText;
+    background: Canvas;
+    filter: none;
+  }
+  :is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+      .empty-members, .empty-board, .delivery-strip, .plan-approval,
+      .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::before,
+  :is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+      .empty-members, .empty-board, .delivery-strip, .plan-approval,
+      .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::after { display: none; }
+  .pane-head, .planner-header, .planner-footer { clip-path: none; }
+  .disclosure > summary::before { border: 1px solid CanvasText; clip-path: none; }
+  .dialog, pre.evidence, .row, .agent-settings { box-shadow: none; }
+}

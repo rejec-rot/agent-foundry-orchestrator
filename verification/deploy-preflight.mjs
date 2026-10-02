@@ -38,7 +38,7 @@ check('node major version satisfies the engines requirement (>=20)', major >= 20
 
 // ---------------------------------------------------------------- 2. the workbench itself
 const webFiles = ['web/index.html', 'web/entry.js', 'web/workbench.html', 'web/app.js', 'web/styles.css',
-  'web/teams.html', 'web/teams.js', 'web/teams.css', 'web/planner-workspace.css', 'web/foundry-theme.css', 'web/foundry-mark.svg',
+  'web/teams.html', 'web/teams.js', 'web/teams.css', 'web/planner-workspace.css', 'web/foundry-theme.css', 'web/foundry-frames.css', 'web/foundry-mark.svg',
   'web/fonts/Anton-Regular.ttf', 'web/fonts/SpaceGrotesk-Variable.ttf', 'web/fonts/SmileySans-Oblique.woff2',
   'web/fonts/Anton-OFL.txt', 'web/fonts/SpaceGrotesk-OFL.txt', 'web/fonts/SmileySans-OFL.txt'];
 for (const rel of webFiles) check(`the workbench asset exists: ${rel}`, existsSync(join(ROOT, rel)));
@@ -51,6 +51,7 @@ const externalRefs = [
   ...[...readFileSync(join(ROOT, 'web', 'styles.css'), 'utf8').matchAll(/url\(\s*['"]?([^'")]+)/g)].map((m) => m[1]),
   ...[...readFileSync(join(ROOT, 'web', 'teams.css'), 'utf8').matchAll(/url\(\s*['"]?([^'")]+)/g)].map((m) => m[1]),
   ...[...readFileSync(join(ROOT, 'web', 'foundry-theme.css'), 'utf8').matchAll(/url\(\s*['"]?([^'")]+)/g)].map((m) => m[1]),
+  ...[...readFileSync(join(ROOT, 'web', 'foundry-frames.css'), 'utf8').matchAll(/url\(\s*['"]?([^'")]+)/g)].map((m) => m[1]),
   ...[...readFileSync(join(ROOT, 'web', 'app.js'), 'utf8').matchAll(/(?:fetch|import)\(\s*['"`](https?:\/\/[^'"`]+)/g)].map((m) => m[1]),
 ].filter((v) => /^https?:\/\//i.test(v) && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(v));
 check('the page never fetches an external origin (works offline)', externalRefs.length === 0, externalRefs.join(', ') || 'no remote src/href/url()/fetch');
