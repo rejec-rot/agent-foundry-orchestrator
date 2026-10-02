@@ -38,7 +38,11 @@
     "explicit per-Worker model dropdowns",
     "operator Worker presets persist",
     "configuration does not dispatch any agents",
-    "sticky mobile Worker configuration action"
+    "sticky mobile Worker configuration action",
+    "visible automatic Agent/model scan",
+    "rescan preserves unsaved Planner choices",
+    "unknown Planner effort stays disabled",
+    "unknown Worker effort stays disabled"
   ],
-  "verified_at": "2026-10-02T13:05:39.228Z"
+  "verified_at": "2026-10-02T14:09:36.462Z"
 }

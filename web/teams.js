@@ -23,7 +23,7 @@ let token = '';
 try { token = sessionStorage.getItem('af-write-token') ?? ''; } catch {}
 let selected = null, workId = null, team = null, capabilities = null, refreshing = false;
 let pending = 0, editBase = null, goalBase = null, noticeTimer = null, lastConnectionError = null;
-let executorCatalog = null, dispatchBase = null, profileDraft = [];
+let executorCatalog = null, dispatchBase = null, profileDraft = [], agentScan = null;
 let createWorkersDraft = null, consoleProfileBase = null, consoleProfileDirty = false, consoleProfileKey = '', consoleProfileEditable = null, configCommand = null;
 const emptyConversation = $('planner-conversation').innerHTML;
 
@@ -214,13 +214,20 @@ function renderExecutorSelect() {
   updatePlannerControls();
 }
 function entryFor(id,forTeam=false) {
-  return forTeam?team?.planning?.eligible_executors.find(e=>e.executor_type===id):executorCatalog?.find(e=>e.id===id);
+  const live=executorCatalog?.find(e=>e.id===id);
+  if(!forTeam)return live;
+  const saved=team?.planning?.eligible_executors.find(e=>e.executor_type===id);
+  return saved ? {...saved,...(live??{})} : null;
 }
 function updateEffort(select,entry,model) {
-  const chosen=select.value, levels=entry?.models?.find(m=>m.id===(model||entry.default_model))?.reasoning_efforts??entry?.reasoning_efforts??[];
-  select.innerHTML='<option value="">默认</option>'+levels.map(level=>'<option value="'+esc(level)+'">'+esc(effortLabel(level))+' · '+esc(level)+'</option>').join('');
+  const chosen=select.value,selected=entry?.models?.find(m=>m.id===(model||entry.default_model)),levels=selected?.reasoning_efforts??[];
+  const verified=selected && selected.reasoning_status!=='unverified';
+  select.innerHTML='<option value="">'+(verified?'沿用 Agent 默认':'等级未确认 · 沿用默认')+'</option>'+levels.map(level=>'<option value="'+esc(level)+'">'+esc(effortLabel(level))+' · '+esc(level)+'</option>').join('');
   select.disabled=!levels.length;
   select.value=levels.includes(chosen)?chosen:'';
+  select.title=!verified?'未找到此模型的准确等级，不提供强度覆盖。':!levels.length?'此模型未公布可调思考等级。':'此模型支持：'+levels.join(' / ');
+  const hint=select.closest('.field')?.querySelector('[data-effort-hint]');
+  if(hint)hint.textContent=!verified?'等级未确认，使用 Agent 默认。':!levels.length?'未公布可调等级，使用默认。':'支持 '+levels.join(' / ');
 }
 function updatePlannerControls(reset=false) {
   const entry=entryFor($('planner-executor').value),input=$('planner-model-input'),select=$('planner-model-select');
@@ -231,7 +238,7 @@ function updatePlannerControls(reset=false) {
   select.disabled=!entry?.supports_model;
   input.hidden=select.value!=='__custom';input.disabled=!entry?.supports_model||input.hidden;
   updateEffort($('planner-effort'),entry,chosen);
-  $('model-selection-hint').textContent=!entry?'没有已接入的 Agent。':entry.availability==='UNREGISTERED'?'此 Agent 待接入；可以先选择模型与思考强度。':entry.availability==='DISABLED_BY_OPERATOR'?'此 Agent 已停用，切换已接入的 Agent 后开始。':entry.availability==='UNAVAILABLE'?'此 Agent 当前不可用，请选择其他 Agent。':entry.models?.length?'可选模型来自本地配置；也可以输入自定义模型 ID。':'输入自定义模型 ID，或沿用 Agent 默认模型。';
+  $('model-selection-hint').textContent=!entry?'没有已接入的 Agent。':entry.availability==='UNREGISTERED'?'此 Agent 待接入；可以先选择模型与思考强度。':entry.availability==='DISABLED_BY_OPERATOR'?'此 Agent 已停用，切换已接入的 Agent 后开始。':entry.availability==='UNAVAILABLE'?'此 Agent 当前不可用，请选择其他 Agent。':entry.models?.length?'从扫描目录选择模型；思考等级与所选模型联动。':'输入自定义模型 ID，或沿用 Agent 默认模型。';
   $('model-selection-hint').dataset.ready=String(entry?.availability==='AVAILABLE');
   if(!team){consoleProfileKey='';renderConsoleProfile();}
   writes();
@@ -266,6 +273,7 @@ function renderConsoleProfile() {
     $('console-planner-model-select').value='';
     $('console-planner-model-input').value=p.model??'';$('console-planner-effort').innerHTML='<option value="'+esc(p.effort??'')+'">'+esc(p.effort??'默认')+'</option>';
     updateConsoleControls();consoleProfileKey=key;
+    if(team && p.effort && $('console-planner-effort').value!==p.effort)consoleProfileDirty=true;
     consoleProfileBase={teamId:team?.team_id??null,revision:team?.plan_revision??0,goalRevision:team?.goal_revision??0,configRevision:team?.planning?.agent_config_revision??0};
   }
   // Status updates may unlock the editor without changing its saved profile.
@@ -274,7 +282,7 @@ function renderConsoleProfile() {
   if(editable!==consoleProfileEditable){if(editable)updateConsoleControls();else for(const control of $('console-planner-form').querySelectorAll('select,input'))control.disabled=true;consoleProfileEditable=editable;}
   if(!consoleProfileDirty)consoleProfileBase={teamId:team?.team_id??null,revision:team?.plan_revision??0,goalRevision:team?.goal_revision??0,configRevision:team?.planning?.agent_config_revision??0};
   const entry=entryFor($('console-planner-executor').value,Boolean(team?.planning));
-  $('console-profile-hint').textContent=configCommand?'配置正在保存，请等待回执。':!team?(entry?.availability==='AVAILABLE'?'选择后，新目标会使用这套 Planner 配置。':'此 Agent 待接入；可先选择模型与思考强度。'):!editable?'正在执行或交付；先暂停团队，再修改配置。':consoleProfileDirty?'有未保存的配置，保存后再继续商讨。':'配置已生效；修改后点击保存。';
+  $('console-profile-hint').textContent=configCommand?'配置正在保存，请等待回执。':!team?(entry?.availability==='AVAILABLE'?'选择后，新目标会使用这套 Planner 配置。':entry?.availability==='DISABLED_BY_OPERATOR'?'此 Agent 已停用；当前选择可保存为配置草稿。':entry?.availability==='UNAVAILABLE'?'此 Agent 当前不可用；请选择其他 Agent 开始。':'此 Agent 待接入；可先选择模型与思考强度。'):!editable?'正在执行或交付；先暂停团队，再修改配置。':consoleProfileDirty?'有未保存的配置，保存后再继续商讨。':'配置已生效；修改后点击保存。';
   $('save-console-planner').innerHTML=(team?'保存配置':'使用此 Planner')+' '+icon('arrow');
 }
 function syncConsoleToCreate() {
@@ -302,7 +310,7 @@ function renderDispatch() {
   const count=Number($('dispatch-workers').value),lead=team?.planning?.planner??consoleProfile();
   while(profileDraft.length<count)profileDraft.push({...lead});profileDraft=profileDraft.slice(0,count);
   $('dispatch-workers-output').value=String(count);
-  $('worker-profiles').innerHTML=profileDraft.map((p,i)=>'<div class="worker-profile"><strong aria-label="Worker '+(i+1)+'">'+String(i+1).padStart(2,'0')+'</strong><label class="field"><span>Agent</span><select data-profile-executor="'+i+'" aria-label="Worker '+(i+1)+' 执行器">'+executorOptions(p.executor_type,true)+'</select></label><label class="field"><span>模型</span><select data-profile-model-select="'+i+'" aria-label="Worker '+(i+1)+' 模型选择"></select><input data-profile-model="'+i+'" list="worker-models-'+i+'" maxlength="160" value="'+esc(p.model??'')+'" aria-label="Worker '+(i+1)+' 自定义模型 ID"><datalist id="worker-models-'+i+'"></datalist></label><label class="field worker-effort"><span>思考强度</span><select data-profile-effort="'+i+'" aria-label="Worker '+(i+1)+' 思考强度"><option value="'+esc(p.effort??'')+'" selected>'+esc(effortLabel(p.effort??'默认'))+'</option></select></label></div>').join('');
+  $('worker-profiles').innerHTML=profileDraft.map((p,i)=>'<div class="worker-profile"><strong aria-label="Worker '+(i+1)+'">'+String(i+1).padStart(2,'0')+'</strong><label class="field"><span>Agent</span><select data-profile-executor="'+i+'" aria-label="Worker '+(i+1)+' 执行器">'+executorOptions(p.executor_type,true)+'</select></label><label class="field"><span>模型</span><select data-profile-model-select="'+i+'" aria-label="Worker '+(i+1)+' 模型选择"></select><input data-profile-model="'+i+'" list="worker-models-'+i+'" maxlength="160" value="'+esc(p.model??'')+'" aria-label="Worker '+(i+1)+' 自定义模型 ID"><datalist id="worker-models-'+i+'"></datalist></label><label class="field worker-effort"><span>思考强度</span><select data-profile-effort="'+i+'" aria-label="Worker '+(i+1)+' 思考强度"><option value="'+esc(p.effort??'')+'" selected>'+esc(effortLabel(p.effort??'默认'))+'</option></select><small data-effort-hint></small></label></div>').join('');
   for(const row of document.querySelectorAll('.worker-profile'))updateWorkerControls(row);
   const previous=Object.fromEntries([...document.querySelectorAll('[data-assignment]')].map(s=>[s.dataset.assignment,s.value]));
   $('work-assignments').innerHTML=dispatchBase.items.map(item=>{
@@ -413,7 +421,18 @@ async function refresh(reloadCatalog=false) {
   $('refresh').setAttribute('aria-busy', 'true');
   try {
     if (!capabilities) capabilities = await request('/api/v2/capabilities');
-    if (!executorCatalog || reloadCatalog===true) { executorCatalog=(await request('/api/v2/executors')).executors; renderExecutorSelect(); }
+    if (!executorCatalog || reloadCatalog===true) {
+      $('agent-scan-status').textContent='正在扫描 Agents 与模型…';$('scan-agents').disabled=true;
+      const inventory=await request('/api/v2/executors?scan=1');executorCatalog=inventory.executors;agentScan=inventory.scan;
+      renderExecutorSelect();consoleProfileKey='';
+      if(consoleProfileDirty)updateConsoleControls();
+      if($('dispatch-dialog').open)for(const row of document.querySelectorAll('.worker-profile'))updateWorkerControls(row);
+      const available=executorCatalog.filter(e=>e.availability==='AVAILABLE').length;
+      const installed=executorCatalog.filter(e=>e.installed).length;
+      $('agent-scan-status').textContent='扫描'+(agentScan?.status==='partial'?'部分完成':'完成')+' · '+installed+' 个已安装 / '+available+' 个已接入';
+      const modelCount=executorCatalog.reduce((n,e)=>n+(e.models?.filter(m=>!m.configured_only).length??0),0);
+      $('agent-scan-details').textContent=modelCount+' 个目录模型 · '+new Date(agentScan?.completed_at??inventory.generated_at).toLocaleTimeString()+' · 未确认的强度保持默认';
+    }
     const listing = await request('/api/teams');
     if (selected && !listing.teams.some(item => item.team_id === selected)) { selected = null; team = null; workId = null; }
     if (!selected && listing.teams.length) selected = listing.teams[0].team_id;
@@ -432,13 +451,19 @@ async function refresh(reloadCatalog=false) {
     $('connection').querySelector('span').textContent = '实时连接';
     lastConnectionError = null;
   } catch (error) {
+    if($('agent-scan-status').textContent.includes('正在扫描')) {
+      $('agent-scan-status').textContent='扫描失败 · 可重新扫描';
+      $('agent-scan-details').textContent='未获取到最新目录，请重新扫描确认模型与等级。';
+    }
     $('connection').dataset.status = 'error';
     $('connection').querySelector('span').textContent = '连接中断';
     if (lastConnectionError !== error.message) notice(error.name === 'AbortError' ? '连接超时，正在等待服务恢复。' : error.message, 'error');
     lastConnectionError = error.message;
+    if(!executorCatalog || reloadCatalog===true){$('agent-scan-status').textContent='扫描未完成';$('agent-scan-details').textContent='目录读取失败，请重新扫描；不推断思考强度。';}
   } finally {
     refreshing = false;
     $('refresh').removeAttribute('aria-busy');
+    $('scan-agents').disabled=false;
   }
 }
 async function command(payload, baseTeam = team?.team_id) {
@@ -476,6 +501,7 @@ const syncNavigation = () => { navigation(false); $('sidebar').inert = mobile.ma
 mobile.addEventListener('change', syncNavigation);
 syncNavigation();
 $('refresh').onclick = ()=>refresh(true);
+$('scan-agents').onclick=()=>refresh(true);
 $('teams').onclick = handle(async event => {
   const id = event.target.closest('[data-team]')?.dataset.team;
   if (!id || id === selected) return;
@@ -635,4 +661,4 @@ $('key').value = operationId('goal-');
 writes();
 await refresh();
 setInterval(() => { if (!document.hidden) refresh(); }, 1500);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(true); });

@@ -151,7 +151,9 @@ node af-admin.mjs team adjust --team TEAM-your-task-id --work-item your-work-ite
 
 在页面中点击“确认编组”确认并开工；CLI 可用 `team command --file dispatch.json` 提交 `approve_plan`，字段与 HTTP 协议一致，见 [Planner 协议](docs/adr/0012-planner-workspace.md)。`--planner-executor`、`--planner-model`、`--planner-effort` 选择 Agent、模型与思考强度，例如 `--planner-executor codex --planner-model your-model-id --planner-effort high`；`--dispatch-mode planner` 允许 Planner 推荐后自动开工。不加 `--planning` 的既有 CLI 调用保留原团队启动流程。
 
-模型选项读取本地 Codex 模型目录、当前执行器配置以及注册表可选的 `model_options`；也支持自定义模型 ID。思考强度以执行器和具体模型支持的等级为准，未指定时保留执行器默认值。模型目录只读取公开配置字段，不返回凭据，不发送模型请求。未注册或已停用的 Agent 仍能查看配置，但不能开始任务。Planner 团队发生配额错误时保留所选配置并报告失败，不自动换模型或强度。
+打开协作页会自动扫描已安装的 Agent 与模型，也可点击“重新扫描”。Codex 使用原生 `model/list`，Cline 使用当前 provider 的原生模型目录；支持自定义模型 ID。已安装和已接入分别显示，未注册或已停用的 Agent 可以查看配置，但不能开始任务。扫描只请求目录元数据，不发送推理请求，也不返回凭据。
+
+思考强度严格跟随所选模型公布的等级；未知模型、没有等级信息的模型显示“等级未确认”，仅沿用 Agent 默认。Cline 还必须同时满足当前 CLI 可接受的等级，不将思考开关或 token 预算转换成强度。保存配置、请求提案及确认派工时后端重新校验，拒绝失效的等级。CLI 的 `--planner-effort` 同样需要对应模型的已确认元数据。Planner 团队发生配额错误时保留所选配置并报告失败，不自动换模型或强度。
 
 首次操作会启动持有全局团队租约的本地控制器；也可用 `node af-admin.mjs team serve` 在前台运行。前台服务收到 SIGINT/SIGTERM 时停止派发并等待受控执行范围退出。运行目录与任务目录通过 `AF_RUNTIME_DIR`、`AF_TASKS_DIR`、`AF_LOCKS_DIR` 或对应 CLI 参数配置，所有入口应使用同一组目录。自动启动的进程 PID 和 owner token 在 `locks/team-controller.lock`，日志在 `runtime/team-controller.log`。
 

@@ -2,6 +2,14 @@
   "executor_id": "codex",
   "display_name": "Codex CLI",
   "platform": "openai",
+  "default_model": "fixture-default-model",
+  "model_options": [
+    { "id": "fixture-default-model", "reasoning_efforts": ["low", "medium", "high", "xhigh"] },
+    { "id": "selected/planner-model", "reasoning_efforts": ["low", "high"] },
+    { "id": "operator-selected-model", "reasoning_efforts": ["low", "high"] },
+    { "id": "custom/planning-model", "reasoning_efforts": ["low", "high"] },
+    { "id": "worker-model", "reasoning_efforts": ["low"] }
+  ],
   "capabilities_audit": {
     "non_interactive_print": "PASS",
     "structured_output": "PASS",

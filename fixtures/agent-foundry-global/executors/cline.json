@@ -2,6 +2,8 @@
   "executor_id": "cline",
   "display_name": "Cline CLI",
   "platform": "cline",
+  "default_model": "fixture-cline-model",
+  "model_options": [{ "id": "fixture-cline-model", "reasoning_efforts": ["none", "low", "medium", "high", "xhigh"] }],
   "capabilities_audit": {
     "non_interactive_print": "PASS",
     "structured_output": "PASS",

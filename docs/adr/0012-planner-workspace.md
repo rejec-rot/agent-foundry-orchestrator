@@ -15,7 +15,7 @@
     "planner": {"executor_type": "codex", "model": null, "effort": "high"},
     "workers": [
       {"executor_type": "codex", "model": null, "effort": "low"},
-      {"executor_type": "cline", "model": null, "effort": "xhigh"}
+      {"executor_type": "cline", "model": null, "effort": null}
     ]
   }
 }
@@ -25,9 +25,13 @@
 
 `effort` 可省略或设为 `null`，沿用执行器默认思考强度；显式等级须通过服务端执行器和模型元数据校验。创建页直接展示 Planner 的 Agent、模型与思考强度，默认折叠开工授权与验收参数，不提前要求 Worker 人数。Planner 的编组提案可选择每位 Worker 的模型与 `effort`，手动确认时可调整。Planner 配置持久化到成员、任务的 `author_effort` / `reviewer_effort` 和同模型复检策略，每次执行会传入 capsule；运行记录也保存强度。
 
-`GET /api/v2/executors` 增加 `models`、`reasoning_efforts`、`default_model`、`default_effort`。Codex 从本地 `models_cache.json` 读取可展示模型及各模型等级，Cline 只展示当前 provider 的配置模型；其他模型可自定义或由唯一执行器注册表提供 `model_options: [{"id":"model-id","label":"Model","reasoning_efforts":["low","high"]}]`。读取时只投影白名单字段，绝不返回 provider key 或账户身份。未注册适配器的目录标记 `UNREGISTERED`，允许预览配置，禁止创建和派工，不能作为可运行注册表事实。已停用状态仍优先。
+`GET /api/v2/executors` 投影 `models`、`reasoning_efforts`、`default_model`、`default_effort`、安装与接入状态及目录来源。无 `scan` 参数时仅读取元数据；`?scan=1` 扫描当前本机客户端目录。协作页打开、手动重扫或重新进入前台时请求扫描；日常团队轮询不重复扫描。并发扫描共享正在执行的查询，下一次重扫重新获取。目录存于进程内投影，不建立第二份持久执行器注册表。
 
-思考强度不跨执行器硬套一组值。OpenAI Docs 将 `model_reasoning_effort` 定义为所选模型公布的等级，实际可选等级取决于模型与客户端；参见 [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。Cline 的等级与已安装 CLI 的 `--thinking` 一致。自定义模型没有本地元数据时只按执行器校验，最终可用性仍由模型提供方确认。
+Codex 使用已安装 CLI 的原生 `app-server`，初始化后分页请求 `model/list`，逐模型读取 `supportedReasoningEfforts`；本地 `models_cache.json` 提供配置预览。Cline 使用原生 ACP 的空会话查询并显式选中当前 provider，执行适配器使用同一 provider；不发送 `session/prompt`。目录查询有超时、输出大小限制及进程树清理，不启动推理回合。读取时只投影白名单字段，绝不返回 provider key 或账户身份。扫描失败显示部分完成；未注册或被禁用的客户端不能因为发现了模型就成为可运行 Agent。准入仍由 canonical 注册表、操作员限制和运行时健康状态决定。
+
+思考强度只允许具体模型确认的等级；参见 [Codex App Server 的模型目录](https://learn.chatgpt.com/docs/app-server)与[配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。未知、自定义或仅有名称的模型没有强度覆盖，不继承执行器的等级集合。空等级列表沿用默认；页面同时显示支持值或“等级未确认”。注册表可提供逐模型的 `model_options: [{"id":"model-id","label":"Model","reasoning_efforts":["low","high"]}]`，但不能把原生目录没有的模型加入当前 provider。
+
+Cline ACP 目前只返回模型选项，没有每模型的强度表。明确的本地或注册表模型元数据还需与已安装 CLI `--thinking` 可接受的值求交集；没有对应信息就保持默认。[Cline 原生推理选项](https://github.com/cline/cline/blob/main/sdk/packages/shared/src/llms/reasoning-options.ts)区分等级、开关与 token 预算，后两者不会转换为 `low` / `high`。适配器不再根据模型名称猜测 `xhigh`。配置保存、提案生成和派工前重新获取模型元数据，拒绝失效等级，并在同一个状态事务中持久化验证后的目录。
 
 团队从 `DISCUSSING` 开始。`message` 发给 `lead` 会启动只讨论、不编辑文件的 Planner 回合；回复来自受控运行的真实 `summary`，持久化到带 `from_run_id` 的对话记录。`propose_plan` 请求计划，Planner 返回 `workers` 推荐编组与完整工作图。
 
@@ -62,7 +66,7 @@ Planner 面板常驻 Agent、模型与思考强度选项。“选择 Worker Agen
   "expected_plan_revision": 0,
   "expected_agent_config_revision": 0,
   "planner": {"executor_type": "codex", "model": "model-id", "effort": "high"},
-  "workers": [{"executor_type": "cline", "model": null, "effort": "low"}]
+  "workers": [{"executor_type": "cline", "model": null, "effort": null}]
 }
 ```
 
@@ -82,4 +86,4 @@ Planner 回合不能修改工作文件。版本或工作图变化后，旧 Plann
 
 成果仍经过既有停止证明、快照密封、候选绑定、授权、受信验收与最终提升。选择同模型不会跳过这些交付检查。
 
-验证入口：`tests/team-agent-configuration.test.mjs`、`tests/team-planner.test.mjs`、`tests/team-api.test.mjs`、`qa/planner-browser.mjs`。浏览器及后端场景使用受控模型输出，真实 HTTP、控制器、文件系统和版本校验参与执行。
+验证入口：`tests/native-catalog.test.mjs`、`tests/agent-options.test.mjs`、`tests/executor-catalog-api.test.mjs`、`tests/team-agent-configuration.test.mjs`、`tests/team-planner.test.mjs`、`tests/team-api.test.mjs`、`qa/planner-browser.mjs`。目录协议验证使用受控子进程，覆盖分页、provider 选择、准确等级、超时和无推理调用；浏览器及后端场景使用受控模型输出，真实 HTTP、控制器、文件系统和版本校验参与执行。

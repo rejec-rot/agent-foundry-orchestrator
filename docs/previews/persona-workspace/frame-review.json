@@ -2,6 +2,10 @@
   "ok": true,
   "checks": [
     {
+      "name": "automatic model scan completes",
+      "ok": true
+    },
+    {
       "name": "Planner settings visible before creation",
       "ok": true
     },
@@ -22,7 +26,7 @@
       "ok": true
     },
     {
-      "name": "Worker custom model keeps its visible dropdown",
+      "name": "Known Worker model returns to the catalog dropdown",
       "ok": true
     },
     {
@@ -363,5 +367,5 @@
     }
   ],
   "source": "read-only live preview; local Planner/Worker presets and DOM-only long-label samples; no API writes",
-  "verified_at": "2026-10-02T13:10:30.986Z"
+  "verified_at": "2026-10-02T14:12:13.924Z"
 }

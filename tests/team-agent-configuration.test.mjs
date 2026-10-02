@@ -57,6 +57,23 @@ test('invalid model/effort/Agent changes are rejected without replacing the save
   }finally{await c.close();fx.cleanup();}
 });
 
+test('saving uses fresh native model grades and a later incompatible grade blocks planning before any run',async()=>{
+  const fx=plannerFixture();fx.io.adapters.codex={...fx.io.adapters.writer,type:'codex'};let grades=['low'];
+  const c=new TeamController({...fx.options,...fx.io,select:id=>fx.io.adapters[id],autoDeliver:false,discoverCatalog:async()=>({status:'ready',model_source:'native model/list',checked_at:new Date().toISOString(),client_version:'test',models:[{id:'new-model',label:'New model',reasoning_efforts:grades,reasoning_status:'verified'}]})});
+  try {
+    c.update(fx.team.team_id,'test-catalog',null,t=>t.planning.eligible_executors.push({executor_type:'codex',supports_model:true,models:[{id:'new-model',reasoning_efforts:['high']}]}));
+    fx.send(settings(c,fx,{planner:{executor_type:'codex',model:'new-model',effort:'low'}}),'CMD-fresh');await c.tick();
+    assert.equal(c.read(fx.team.team_id).commands['CMD-fresh'].status,'applied');assert.equal(fx.calls.length,0);
+    grades=['high'];fx.send({type:'propose_plan'},'CMD-incompatible');await c.tick();
+    const rejected=c.read(fx.team.team_id);assert.equal(rejected.commands['CMD-incompatible'].status,'rejected');assert.match(rejected.commands['CMD-incompatible'].reason,/reasoning effort low/);
+    assert.equal(rejected.state,'DISCUSSING');assert.equal(fx.calls.length,0);
+    fx.send(settings(c,fx,{planner:{executor_type:'codex',model:'new-model',effort:'high'}}),'CMD-reselected');await c.tick();
+    fx.send({type:'message',agent_id:'lead',message:'按确认后的强度商讨'},'CMD-verified-chat');
+    await drive(c,()=>c.read(fx.team.team_id).commands['CMD-verified-chat']?.status==='applied');
+    assert.equal(fx.calls[0].model,'new-model');assert.equal(fx.calls[0].effort,'high');
+  }finally{await c.close();fx.cleanup();}
+});
+
 test('configuration uses version checks, survives restart, and duplicate commands do not apply twice',async()=>{
   const fx=plannerFixture();let c=controller(fx);
   try {

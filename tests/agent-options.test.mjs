@@ -14,19 +14,56 @@ test('model catalogs expose supported levels and defaults without provider secre
     writeFileSync(paths.codexModels,JSON.stringify({identity:'private-account',models:[
       {slug:'visible-model',display_name:'Visible model',visibility:'list',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]},
       {slug:'hidden-model',visibility:'hide',supported_reasoning_levels:[{effort:'max'}]},
+      {slug:'missing-levels',visibility:'list'},
       {slug:'bad\nmodel',visibility:'list'},
     ]}));
     const options=agentOptions('codex',{paths});
     assert.equal(options.default_model,'visible-model');assert.equal(options.default_effort,'high');
-    assert.deepEqual(options.models,[{id:'visible-model',label:'Visible model',reasoning_efforts:['low','high']}]);
+    assert.equal(options.models.length,2);assert.equal(options.models[0].id,'visible-model');assert.deepEqual(options.models[0].reasoning_efforts,['low','high']);
+    assert.equal(options.models[1].reasoning_status,'unverified');assert.deepEqual(options.models[1].reasoning_efforts,[]);
     const catalog=[{id:'codex',...options}];
     assert.deepEqual(agentProfile({executor_type:'codex',model:'visible-model',effort:'high'},{catalog}),{executor_type:'codex',model:'visible-model',effort:'high'});
     assert.throws(()=>agentProfile({executor_type:'codex',model:'visible-model',effort:'max'},{catalog}),/does not support reasoning effort/);
     assert.throws(()=>agentProfile({executor_type:'codex',effort:'max'},{catalog}),/does not support reasoning effort/);
     writeFileSync(paths.clineSettings,JSON.stringify({lastUsedProvider:'active',providers:{active:{apiKey:'never-expose-this',settings:{model:'provider/model',reasoning:{enabled:true,effort:'xhigh'},apiKey:'never-expose-this'}},other:{settings:{model:'second/model'}}}}));
-    const cline=agentOptions('cline',{paths});assert.equal(cline.default_model,'provider/model');assert.equal(cline.default_effort,'xhigh');
+    const cline=agentOptions('cline',{paths});assert.equal(cline.default_model,'provider/model');assert.equal(cline.default_effort,null);assert.equal(cline.default_effort_status,'unverified');
     assert.equal(cline.models.length,1);assert.ok(!JSON.stringify(cline).includes('second/model'),'models from a different provider are not executable with a model-only override');assert.ok(!JSON.stringify([options,cline]).includes('never-expose-this'));assert.ok(!JSON.stringify(options).includes('private-account'));
   } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test('unknown models never inherit another model or executor reasoning levels',()=>{
+  const options=agentOptions('custom',{definition:{default_model:'known',reasoning_efforts:['low','high'],model_options:[{id:'known',reasoning_efforts:['high']},'unverified']}});
+  const catalog=[{executor_type:'custom',...options}],adapters={custom:{supportsModel:true,reasoningEfforts:['low','high']}};
+  for(const model of ['unknown','unverified'])assert.throws(()=>agentProfile({executor_type:'custom',model,effort:'high'},{catalog,adapters}),/does not support reasoning effort/);
+  assert.equal(agentProfile({executor_type:'custom',model:'unknown',effort:null},{catalog,adapters}).model,'unknown');
+  assert.equal(agentProfile({executor_type:'custom',model:'known',effort:'high'},{catalog,adapters}).effort,'high');
+});
+
+test('registry strings and unspecified model levels do not invent capabilities',()=>{
+  const options=agentOptions('codex',{definition:{default_model:'unverified',default_effort:'ultra',reasoning_efforts:['ultra'],model_options:['unverified',{id:'missing-levels'}]}});
+  assert.equal(options.supports_effort,false);assert.equal(options.default_effort,null);
+  assert.ok(options.models.every(m=>m.reasoning_status==='unverified'&&m.reasoning_efforts.length===0));
+});
+
+test('native models retain exact per-model levels and registry cannot resurrect a missing provider model',()=>{
+  const discovery={status:'ready',checked_at:'2026-10-02T00:00:00Z',model_source:'native client',client_version:'1.0',models:[{id:'available',label:'Available',reasoning_efforts:['low','high'],reasoning_status:'verified'}]};
+  const options=agentOptions('custom',{discovery,definition:{model_options:[{id:'available',reasoning_efforts:['ultra']},{id:'another-provider',reasoning_efforts:['high']}]}});
+  assert.equal(options.models.length,1);assert.deepEqual(options.models[0].reasoning_efforts,['low','high']);assert.equal(options.client_version,'1.0');
+});
+
+test('Cline toggle/budget controls do not masquerade as effort grades',()=>{
+  const root=mkdtempSync(join(tmpdir(),'af-cline-models-'));
+  try {
+    const paths={clineSettings:join(root,'providers.json'),clineModels:join(root,'models.json')};
+    writeFileSync(paths.clineSettings,JSON.stringify({lastUsedProvider:'active',providers:{active:{settings:{model:'graded'}}}}));
+    writeFileSync(paths.clineModels,JSON.stringify({providers:{active:{models:{
+      graded:{reasoningOptions:[{type:'effort',values:['low','high','default']}]},
+      toggle:{reasoningOptions:[{type:'toggle'}]},budget:{reasoningOptions:[{type:'budget_tokens',min:1024,max:8192}]}
+    }}}}));
+    const options=agentOptions('cline',{paths,discovery:null}),catalog=[{id:'cline',...options}];
+    assert.equal(agentProfile({executor_type:'cline',model:'graded',effort:'high'},{catalog}).effort,'high');
+    for(const model of ['toggle','budget'])assert.throws(()=>agentProfile({executor_type:'cline',model,effort:'high'},{catalog}),/does not support reasoning effort/);
+  }finally{rmSync(root,{recursive:true,force:true});}
 });
 
 test('unsupported reasoning controls reject overrides and registry metadata constrains known models', () => {

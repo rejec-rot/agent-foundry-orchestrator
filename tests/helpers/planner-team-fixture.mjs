@@ -13,7 +13,8 @@ export function plannerFixture({dispatch='human',run,revise,proposal,effort=null
   team.state='DISCUSSING';team.rework_requests=[];
   team.members[0].model='planning-model';
   if(effort)team.members[0].effort=effort;
-  team.planning={workflow:'planner',dispatch_mode:dispatch,planner:{executor_type:'writer',model:'planning-model',...(effort?{effort}:{})},eligible_executors:[{executor_type:'writer',supports_model:true,supports_effort:true,reasoning_efforts:['low','medium','high'],models:[]}],approved_plan_revision:null};
+  const models=['planning-model','worker-fast','worker-deep','worker-model','new-planner-model','saved-model','selected-worker','next-attempt-model','operator-model'].map(id=>({id,label:id,reasoning_efforts:['low','medium','high']}));
+  team.planning={workflow:'planner',dispatch_mode:dispatch,planner:{executor_type:'writer',model:'planning-model',...(effort?{effort}:{})},eligible_executors:[{executor_type:'writer',supports_model:true,supports_effort:true,default_model:'planning-model',reasoning_efforts:['low','medium','high'],models}],approved_plan_revision:null};
   commitTeam(fx.options.runtimeDir,team,'planner-fixture',null,()=>{});
   const original=io.adapters.writer.run;io.adapters.writer.supportsModel=true;
   io.adapters.writer.supportsFreshSession=true;

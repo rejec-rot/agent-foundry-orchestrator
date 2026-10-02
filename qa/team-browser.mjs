@@ -34,6 +34,7 @@ writeFileSync(registryFile,JSON.stringify({schema_version:PROJECT_REGISTRY_SCHEM
   policy:{allowed_root:['src/**','tests/**'],forbidden:[],protected_paths:[],projection:{exclude:[]},import:{deny:[]}},
   acceptance_profiles:[{profile_id:'default',acceptance:{command:'node',args:['--test','tests/gate.test.mjs']},assets:[]}]}]}));
 const server=await startReadApi({roots:{tasks:fx.options.tasksDir,locks:fx.options.locksDir,runtime:fx.options.runtimeDir,alerts:join(fx.root,'alerts.jsonl')},allowRecord:true,allowedRoots:[fx.repo],ensureController:null,
+  catalogScanner:async()=>null,
   env:{...process.env,AF_WEB_TOKEN:'browser-test-token',AF_WEB_TOKEN_FILE:'',AF_PROJECTS_FILE:registryFile,AF_SUBMISSION_DIR:join(fx.options.runtimeDir,'submissions')}});
 const tickErrors=[],timer=setInterval(()=>controller.tick().catch(err=>tickErrors.push(err.message)),30);
 const chrome=spawnManaged(process.env.AF_BROWSER_BIN??'/usr/bin/google-chrome',['--headless=new','--no-sandbox','--disable-dev-shm-usage','--disable-gpu','--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','ignore','pipe']});

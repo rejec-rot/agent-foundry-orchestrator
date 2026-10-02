@@ -83,13 +83,12 @@ test('CLINE-6: Daily rate limit / quota exceeded triggers fallback to cline-pass
   assert.strictEqual(cls2.category, 'RATE_LIMIT');
 });
 
-test('CLINE-7: Cline adapter sets max reasoning effort (xhigh) for deepseek fallback', async () => {
+test('CLINE-7: default effort remains the provider default and explicit effort reaches the CLI', async () => {
   const { rmSync, readFileSync } = await import('node:fs');
   const { CLINE_STUB, STUB_ARGV_LOG } = await import('./helpers/executor-stub-launcher.mjs');
 
   // Assert the ARGUMENTS the adapter builds, not whether the vendor CLI is
-  // installed: without an explicit effort, a deepseek model must be driven at
-  // xhigh reasoning effort.
+  // installed: the model name must never silently force a reasoning grade.
   rmSync(STUB_ARGV_LOG, { force: true });
   const previousLauncher = process.env.CLINE_LAUNCHER;
   const previousLog = process.env.AF_STUB_ARGV_LOG;
@@ -100,7 +99,7 @@ test('CLINE-7: Cline adapter sets max reasoning effort (xhigh) for deepseek fall
     const result = await ClineAdapter.run({
       task_id: 'TASK-CLINE-7',
       assigned_role: 'author',
-      prompt: 'Verify deepseek fallback reasoning effort',
+      prompt: 'Verify default reasoning effort',
       model: 'cline-pass/deepseek-v4-flash',
       cwd: tmpdir(),
       timeout_ms: 15000,
@@ -114,12 +113,11 @@ test('CLINE-7: Cline adapter sets max reasoning effort (xhigh) for deepseek fall
       .map((line) => JSON.parse(line));
     const args = invocations.at(-1);
 
-    const effortIndex = args.indexOf('--thinking');
-    assert.ok(effortIndex >= 0, 'the adapter must pass --thinking for a deepseek model');
-    assert.strictEqual(args[effortIndex + 1], 'xhigh', 'deepseek models must run at xhigh reasoning effort');
+    assert.equal(args.includes('--thinking'),false,'omitted effort must preserve the actual provider default');
+    assert.ok(args.includes('--provider'),'execution binds the same provider used for model discovery');
     await ClineAdapter.run({task_id:'TASK-CLINE-7-explicit',assigned_role:'author',prompt:'Respect the selected effort',model:'cline-pass/deepseek-v4-flash',effort:'low',cwd:tmpdir(),timeout_ms:15000});
     const explicitArgs=readFileSync(STUB_ARGV_LOG,'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line)).at(-1);
-    assert.strictEqual(explicitArgs[explicitArgs.indexOf('--thinking')+1],'low','explicit effort wins over the deepseek default');
+    assert.strictEqual(explicitArgs[explicitArgs.indexOf('--thinking')+1],'low','explicit effort is forwarded unchanged');
   } finally {
     if (previousLauncher === undefined) delete process.env.CLINE_LAUNCHER;
     else process.env.CLINE_LAUNCHER = previousLauncher;

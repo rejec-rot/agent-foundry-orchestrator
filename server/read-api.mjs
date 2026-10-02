@@ -40,7 +40,10 @@ import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 import { disabledExecutors } from '../lib/operator-control.mjs';
 import { createCollaborationTeam, commandTeam } from '../lib/team/service.mjs';
 import { supportsModel, supportsPlanner } from '../lib/team/planner.mjs';
-import { agentOptions } from '../lib/team/agent-options.mjs';
+import { agentOptions, setDiscoveredModels } from '../lib/team/agent-options.mjs';
+import { queryNativeCatalog, isClientInstalled } from '../lib/team/native-catalog.mjs';
+import { executorEligibility } from '../lib/executor-eligibility.mjs';
+import { runtimeGuard } from '../lib/executor-runtime-guard.mjs';
 import { loadCapabilityMap } from '../lib/executor-router.mjs';
 import { ADAPTERS } from '../lib/adapters.mjs';
 import { listTeams, teamView } from '../lib/team/store.mjs';
@@ -160,10 +163,12 @@ export function createReadApi({
   locksDir = null,
   spawnWorker = null,
   ensureController = undefined,
+  catalogScanner = queryNativeCatalog,
 } = {}) {
   const writeToken = token ?? resolveWriteToken(env);
   const writeAuth = (req) => authorizeWrite({ req, token: writeToken, expectedHosts: [req.headers?.host ?? ''] });
   const shape = (model) => redactModel(model, { redact, hash: hashPaths });
+  let scanPromise=null,scanCompletedAt=0;
 
   const readBody = (req) => new Promise((resolve, reject) => {
     let size = 0;
@@ -376,7 +381,7 @@ export function createReadApi({
       }
       if (path === '/api/v2/exceptions') return sendJson(res, 200, shape(buildExceptionsView({ roots, now: at })));
       if (path === '/api/v2/executors') {
-        // A read-only projection of the capability truth; never probes an executor.
+        // Registry admission and native, metadata-only catalogs remain separate.
         const status = loadExecutorStatus();
         // The deployed registry says whether an executor CAN run; the operator's restriction file
         // says whether it MAY. Showing "AVAILABLE" for an executor the system will refuse is a false
@@ -387,18 +392,34 @@ export function createReadApi({
         for (const id of Object.keys(ADAPTERS).filter(id => supportsPlanner(id))) {
           if (!entries.has(id)) entries.set(id, { executor_id:id, availability_status:'UNREGISTERED', capability_status:'UNKNOWN', reason:'executor registry entry missing; model choices are configuration only' });
         }
-        const executors = [...entries.values()].map((entry) => ({
+        if(url.searchParams.get('scan')==='1') {
+          if(!scanPromise) {
+            scanPromise=Promise.allSettled(['codex','cline'].filter(id=>entries.has(id)&&!operatorDisabled.has(id)).map(async id=>{
+              try {const discovery=await catalogScanner(id,{env,timeoutMs:8000});if(discovery)setDiscoveredModels(id,discovery);}
+              catch(err){setDiscoveredModels(id,{status:'unavailable',checked_at:new Date().toISOString(),client_version:null,model_source:'local configuration; native catalog unavailable'});}
+            })).finally(()=>{scanCompletedAt=Date.now();scanPromise=null;});
+          }
+          if(scanPromise)await scanPromise;
+        }
+        const executors = [...entries.values()].map((entry) => {
+          const eligibility=executorEligibility(entry.executor_id,{}, {adapters:ADAPTERS,capabilityMap:definitions,availabilityMap:status,runtimeGuard,requireHealth:true});
+          const options=agentOptions(entry.executor_id,{definition:definitions.get(entry.executor_id)??{}});
+          return {
           id: entry.executor_id,
-          availability: operatorDisabled.has(entry.executor_id) ? 'DISABLED_BY_OPERATOR' : entry.availability_status,
+          installed:isClientInstalled(entry.executor_id,env)||options.discovery_status==='ready',
+          availability: operatorDisabled.has(entry.executor_id) ? 'DISABLED_BY_OPERATOR' : entry.availability_status==='AVAILABLE'&&!eligibility.ok?'UNAVAILABLE':entry.availability_status,
           capability: entry.capability_status,
           supports_model: supportsModel(entry.executor_id),
           supports_planner: supportsPlanner(entry.executor_id),
-          ...agentOptions(entry.executor_id, { definition:definitions.get(entry.executor_id) ?? {} }),
+          ...options,
           reason: operatorDisabled.has(entry.executor_id)
             ? 'disabled by the operator (config/operator-executors.json); the platform will refuse to bind or run it'
-            : (entry.reason ?? null),
-        }));
-        return sendJson(res, 200, shape({ schema: 'af-v2-executors-v1', generated_at: new Date(at).toISOString(), executors, registry_configured:status.size > 0, source: 'executor capability registry and local model metadata (read-only projection)' }));
+            : (entry.availability_status==='AVAILABLE'&&!eligibility.ok?eligibility.reason:entry.reason??null),
+        };});
+        return sendJson(res, 200, shape({ schema: 'af-v2-executors-v1', generated_at: new Date().toISOString(), executors, registry_configured:status.size > 0,
+          scan:url.searchParams.get('scan')==='1'?{status:executors.some(e=>e.discovery_status==='unavailable')?'partial':'complete',completed_at:new Date(scanCompletedAt||Date.now()).toISOString(),
+            available_agents:executors.filter(e=>e.availability==='AVAILABLE').length,model_count:executors.reduce((n,e)=>n+e.models.filter(m=>!m.configured_only).length,0)}:null,
+          source: 'canonical executor registry, local configuration and metadata-only native catalogs' }));
       }
       if (path === '/api/v2/environment') {
         return sendJson(res, 200, shape({
