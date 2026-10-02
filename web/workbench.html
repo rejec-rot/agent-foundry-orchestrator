@@ -4,21 +4,20 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Agent Foundry · V2 工作台</title>
-<meta name="color-scheme" content="dark" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2314110e'/%3E%3Cpath d='M16 6l9 5v10l-9 5-9-5V11z' fill='none' stroke='%23e0a94a' stroke-width='2.2' stroke-linejoin='round'/%3E%3Cpath d='M11 16.5l3.2 3.2L21 13' fill='none' stroke='%238fbfa0' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<meta name="color-scheme" content="light" />
+<meta name="theme-color" content="#e81932" />
+<link rel="icon" href="/foundry-mark.svg" type="image/svg+xml" />
+<link rel="preload" href="/fonts/Anton-Regular.ttf" as="font" type="font/ttf" crossorigin />
 <link rel="stylesheet" href="/styles.css" />
+<link rel="stylesheet" href="/foundry-theme.css" />
 </head>
 <body>
 <a class="skip" href="#detail">跳到任务详情</a>
 
 <header class="rail">
   <div class="brand">
-    <svg class="mark" width="22" height="22" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-      <path d="M16 5l10 5.5v11L16 27 6 21.5v-11z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" />
-      <path d="M11 16.6l3.4 3.4L21.5 13" fill="none" stroke="var(--sage)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
-    <h1>Agent Foundry<span class="sub"> · V2 工作台</span></h1>
-    <a href="/teams.html" class="hint">团队协作</a>
+    <a href="/teams.html" class="brand-home" aria-label="Agent Foundry 团队协作"><img class="mark" src="/foundry-mark.svg" width="40" height="40" alt="" /><h1>AGENT FOUNDRY<span class="sub">THE COLLABORATION ENGINE</span></h1></a>
+    <nav class="workspace-nav" aria-label="工作空间"><a href="/teams.html">01 <span>团队协作</span></a><a href="/workbench.html" aria-current="page">02 <span>交付工作台</span></a></nav>
     <span id="mode-badge" class="mode badge readonly" title="写操作需要服务端 --allow-write 与操作令牌"><svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 11V8a5 5 0 0110 0v3" fill="none" stroke="currentColor" stroke-width="2.4" /><rect x="4.5" y="11" width="15" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="2.4" /></svg>只读</span>
   </div>
   <div class="rail-meta">
@@ -27,10 +26,19 @@
   </div>
 </header>
 
+<section class="handoff-hero" aria-labelledby="handoff-heading">
+  <div class="handoff-poster"><p class="handoff-kicker"><span aria-hidden="true">◆</span> THE HANDOFF / 交付现场</p><h2 id="handoff-heading">GOOD WORK.<br><span>GREAT FINISH.</span></h2></div>
+  <div class="handoff-copy">
+    <div class="handoff-stamp" aria-hidden="true"><svg viewBox="0 0 100 100"><path d="m50 2 10 19 21-5-2 22 19 12-19 11 2 23-22-5-9 19-11-19-22 5 3-23L2 50l18-12-3-22 22 5z" fill="currentColor"/><path d="m30 51 14 14 29-32" fill="none" stroke="#f7f4ec" stroke-width="7"/></svg><span>MAKE IT<br>COUNT.</span></div>
+    <h3>给好成果，一个好结局。</h3><p>查看交付阶段、评审与验收证据。<br>从团队的共同成果，到每一步可靠的交付。</p>
+    <a href="#s-goal" class="btn btn-ink handoff-cta"><span class="cta-copy"><small aria-hidden="true">READY FOR THE NEXT STEP</small><strong>新建交付任务</strong></span><span class="cta-arrow" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><path d="M5 19 19 5M5 5h14v14"/></svg></span></a>
+  </div>
+</section>
+
 <main class="shell">
   <section class="pane lane" aria-label="任务列表">
     <div class="pane-head">
-      <span class="eyebrow">任务</span>
+      <span class="eyebrow">你的交付 <small>THE QUEUE</small></span>
       <span id="task-count" class="count"></span>
     </div>
     <div class="side-body" style="padding-bottom: 0">
@@ -41,11 +49,11 @@
 
   <section class="pane work" aria-label="任务详情">
     <div class="pane-head">
-      <span class="eyebrow">任务详情</span>
+      <span class="eyebrow">交付进度 <small>THE PROCESS</small></span>
       <span id="detail-phase" class="count"></span>
     </div>
     <div id="detail" class="work-body">
-      <p class="hint">从左侧选择一个任务：这里会显示它的八个受信阶段、证据、以及事件时间线。</p>
+      <div class="delivery-empty"><span aria-hidden="true">↗</span><h3>每一份成果，都值得认真交付。</h3><p class="hint">选择一个任务，查看交付阶段、评审证据和验收结果。</p><a href="/teams.html" class="btn btn-quiet">返回团队协作 <span aria-hidden="true">↗</span></a></div>
     </div>
 
     <details class="disclosure collab">
@@ -81,20 +89,21 @@
 
   <aside class="pane side" aria-label="新建任务、操作令牌与环境">
     <div class="pane-head">
-      <span class="eyebrow">新建任务</span>
-      <span class="count">预检为只读判定</span>
+      <span class="eyebrow">发起交付 <small>TAKE ACTION</small></span>
     </div>
     <div class="side-body">
       <form id="submit-form" class="form" autocomplete="off">
-        <label class="field"><span>目标 goal</span><input id="s-goal" type="text" placeholder="要做什么" required /></label>
-        <label class="field"><span>目标路径 target_path</span><input id="s-target" type="text" placeholder="/srv/repo（必须在允许根内）" required /></label>
-        <label class="field"><span>验收命令</span><input id="s-command" type="text" value="node" required /></label>
-        <label class="field"><span>验收参数（空格分隔）</span><input id="s-args" type="text" value="--test tests/gate.test.mjs" /></label>
-        <label class="field"><span>幂等键 idempotency_key</span><input id="s-key" type="text" placeholder="相同键重试不会重复建任务" required /></label>
+        <label class="field"><span>交付目标</span><input id="s-goal" type="text" placeholder="这一次，你希望交付什么？" required /></label>
+        <label class="field"><span>项目目录</span><input id="s-target" type="text" placeholder="填写已注册的项目目录" required /></label>
+        <details class="disclosure flush submission-settings"><summary>验收与提交设置</summary><div class="disclosure-body form">
+          <label class="field"><span>验收命令</span><input id="s-command" type="text" value="node" required /></label>
+          <label class="field"><span>验收参数（空格分隔）</span><input id="s-args" type="text" value="--test tests/gate.test.mjs" /></label>
+          <label class="field"><span>提交标识</span><input id="s-key" type="text" placeholder="同一标识重试会保留原任务" required /></label>
+        </div></details>
         <div class="actions">
-          <button type="submit" class="btn primary" id="s-preview">预检（只读）</button>
-          <button type="button" class="btn" id="s-record" disabled title="需要服务端以 --allow-write 启动">记录（不启动）</button>
-          <button type="button" class="btn" id="s-create" disabled title="需要令牌与服务端 --allow-write">创建任务</button>
+          <button type="submit" class="btn primary" id="s-preview">检查交付条件 <span aria-hidden="true">↗</span></button>
+          <button type="button" class="btn btn-quiet" id="s-record" disabled title="需要服务端以 --allow-write 启动">保存草稿</button>
+          <button type="button" class="btn" id="s-create" disabled title="需要令牌与服务端 --allow-write">创建任务 <span aria-hidden="true">↗</span></button>
         </div>
       </form>
       <pre id="submit-result" class="evidence" role="status" aria-live="polite" tabindex="0" hidden></pre>

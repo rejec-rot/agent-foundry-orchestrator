@@ -99,9 +99,11 @@ Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图�
 
 ## 团队入口
 
-浏览器默认进入新的 Persona 5 视觉风格协作空间：红黑白、斜切海报排版、原创面具图形与简洁工作卡片。创建目标、成员对话、定向调整和运行记录使用独立弹窗，工作区集中显示真实的团队状态。
+浏览器默认进入 Persona 5 视觉风格协作空间：红黑白、斜切海报排版、原创面具图形与简洁工作卡片。协作空间与交付工作台共用本地加载的 Anton、Space Grotesk 和得意黑，以及带错位底板、箭头区和按压反馈的按钮。创建目标、成员对话、定向调整和运行记录使用独立弹窗，工作区集中显示真实的团队状态。
 
 [桌面预览](docs/previews/persona-workspace/team-desktop.png) · [手机预览](docs/previews/persona-workspace/team-mobile.png) · [界面与验证说明](docs/design/PERSONA-COLLABORATION-WORKSPACE.md)
+
+[交付工作台桌面预览](docs/previews/persona-workspace/workbench-desktop.png) · [交付工作台手机预览](docs/previews/persona-workspace/workbench-mobile.png)
 
 启动只读浏览：
 
@@ -110,7 +112,7 @@ node af-admin.mjs web serve --port 8787
 # 打开 http://127.0.0.1:8787/，默认进入 /teams.html
 ```
 
-交付工作台位于 `/workbench.html`；旧的 `/#TASK-*` 详情链接会保留任务标识并转到交付工作台。浏览器写操作仍使用下文的 `--allow-write` 与操作令牌配置。
+交付工作台位于 `/workbench.html`，采用同一套 Persona 视觉语言；旧的 `/#TASK-*` 详情链接会保留任务标识并转到交付工作台。浏览器写操作仍使用下文的 `--allow-write` 与操作令牌配置。
 
 先按既有部署要求配置项目注册表、验收 profile 和执行器隔离。创建使用与 V2 相同的提交 JSON：`goal`、`target_path`、`acceptance`、`idempotency_key`；执行器由平台绑定。
 

@@ -65,6 +65,8 @@ try {
   assert.equal(await browser.evaluate("location.pathname"),'/teams.html','the default entry opens the collaboration workspace');
   await browser.evaluate('document.fonts.ready');
   assert.equal(await browser.evaluate('document.fonts.check(\'800 20px "Foundry Display"\')'),true,'local display font loads');
+  assert.equal(await browser.evaluate('document.fonts.check(\'400 24px "Foundry Poster CN"\', "协作目标") && document.fonts.check(\'400 14px "Foundry Sans"\')'),true,'Chinese headings and body fonts load locally');
+  assert.equal(await browser.evaluate("getComputedStyle(document.querySelector('.hero-cta'),'::before').clipPath!=='none' && Boolean(document.querySelector('.hero-cta .cta-arrow'))"),true,'the primary action has a cut silhouette and separate arrow plate');
   assert.equal(await browser.evaluate("document.getElementById('start').disabled"),true);
   await browser.click('.topbar [data-open=token-dialog]');
   assert.equal(await browser.evaluate("document.activeElement.id==='token'"),true);
@@ -125,7 +127,7 @@ try {
   await browser.waitFor("document.querySelectorAll('#tasks .row').length>=2");
   assert.equal(await browser.evaluate('location.hash'),'#'+fx.task.task_id,'historical task bookmarks retain their task identity');
   assert.deepEqual(browser.errors,[]);assert.deepEqual(tickErrors,[]);
-  report={ok:true,browser:'Chromium',model_adapters:'controlled test adapters',checks:['default collaboration entry','historical task bookmark compatibility','authenticated pointer actions','four registered members','dependency graph','member message receipt','message escaping','scoped adjustment','unchanged peer artifact','old result discarded','reload persistence','aligned desktop plan and activity','mobile navigation and focus restoration','registered-profile creation dialog','inline error feedback preserves user draft','keyboard activity tabs','self-hosted display font','360–1920px responsive layouts','reduced motion'],desktop:'team-desktop.png',mobile:'team-mobile.png',verified_at:new Date().toISOString()};
+  report={ok:true,browser:'Chromium',model_adapters:'controlled test adapters',checks:['default collaboration entry','historical task bookmark compatibility','authenticated pointer actions','four registered members','dependency graph','member message receipt','message escaping','scoped adjustment','unchanged peer artifact','old result discarded','reload persistence','aligned desktop plan and activity','mobile navigation and focus restoration','registered-profile creation dialog','inline error feedback preserves user draft','keyboard activity tabs','self-hosted display font','local Chinese heading and body typography','cut action and arrow plate','360–1920px responsive layouts','reduced motion'],desktop:'team-desktop.png',mobile:'team-mobile.png',verified_at:new Date().toISOString()};
 } finally {
   clearInterval(timer);browser?.close();
   if(chrome.exitCode===null&&chrome.signalCode===null)await new Promise(resolve=>{

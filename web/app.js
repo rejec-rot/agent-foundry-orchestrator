@@ -1,7 +1,7 @@
-// app.js - V2 workbench (read-only). Zero dependencies, offline-capable.
+// app.js - V2 delivery workbench. Zero dependencies, offline-capable.
 //
-// Every value comes from the read-only API; this file never sends a mutating request (there is no
-// such route). A block that could not be read is rendered as UNVERIFIABLE/MISSING and never as
+// Read projections and authenticated commands keep server capabilities authoritative.
+// A block that could not be read is rendered as UNVERIFIABLE/MISSING and never as
 // "no data" - the UI must not claim emptiness it cannot prove.
 
 const STAGES = [
@@ -17,6 +17,7 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+const submissionKey = () => 'delivery-' + (crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join(''));
 
 /** One time format everywhere: `2026-09-24 02:45:29` (local). Raw ISO stays in the evidence well. */
 function fmtTime(value) {
@@ -424,6 +425,20 @@ async function boot() {
   // Attach the handlers FIRST: a failure in any of the read paths below must never leave the page
   // without its controls (or, worse, with controls that silently do nothing).
   $('filter').addEventListener('input', (e) => { state.filter = e.target.value; renderTasks(); });
+  let generatedKey = submissionKey();
+  $('s-key').value = generatedKey;
+  $('submit-form').addEventListener('input', (e) => {
+    // Identical retries retain their identity; a new draft gets a fresh one.
+    // An explicitly entered identity remains under the operator's control.
+    if (['s-goal', 's-target', 's-command', 's-args'].includes(e.target.id) && $('s-key').value === generatedKey) {
+      generatedKey = submissionKey();
+      $('s-key').value = generatedKey;
+    }
+  });
+  $('submit-form').addEventListener('invalid', (e) => {
+    const disclosure = e.target.closest('details');
+    if (disclosure) disclosure.open = true;
+  }, true);
   $('submit-form').addEventListener('submit', (e) => { e.preventDefault(); postSubmit('/api/v2/tasks/preflight'); });
   $('s-record').addEventListener('click', () => postSubmit('/api/v2/tasks/record'));
   $('msg-send').addEventListener('click', () => runWrite('排队消息', async () => {
@@ -434,12 +449,15 @@ async function boot() {
     await selectTask(state.selected);
     return model;
   }));
-  $('s-create').addEventListener('click', () => runWrite('创建任务', async () => {
-    const model = await postWrite('/api/v2/tasks/create', { spec: submitPayload() });
-    $('submit-result').textContent = `${JSON.stringify(model, null, 2)}\n\n启动：点左侧该任务，再按「启动（V2）」`;
-    await refreshList();
-    return model;
-  }));
+  $('s-create').addEventListener('click', () => {
+    if (!$('submit-form').reportValidity()) return;
+    return runWrite('创建任务', async () => {
+      const model = await postWrite('/api/v2/tasks/create', { spec: submitPayload() });
+      $('submit-result').textContent = `${JSON.stringify(model, null, 2)}\n\n启动：点左侧该任务，再按「启动（V2）」`;
+      await refreshList();
+      return model;
+    });
+  });
   $('a-start').addEventListener('click', () => runWrite('启动任务', async () => {
     const model = await postWrite(`/api/v2/tasks/${encodeURIComponent(state.selected)}/start`, {});
     await refreshList();

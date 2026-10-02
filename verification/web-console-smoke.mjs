@@ -34,7 +34,7 @@ function fixture() {
   const tasks = join(root, 'tasks');
   for (const d of [tasks, join(root, 'locks'), join(root, 'runtime')]) mkdirSync(d, { recursive: true });
   const mk = (id, state, phase, boundary) => writeFileSync(join(tasks, `${id}.json`), JSON.stringify({
-    task_id: id, state, state_version: 2, goal: `fixture goal for ${id}`,
+    task_id: id, state, state_version: 2, goal: id === 'TASK-SMOKE-1' ? '协作工作台：评审与验收成果交付' : '下一代协作 API：等待人工确认',
     author_executor: 'codex', reviewer_executor: 'claude',
     trusted_import: { enabled: true, phase, boundary_state: boundary },
   }, null, 2));
@@ -118,6 +118,25 @@ try {
 
   const title = await evaluate('document.title');
   check('page loaded the workbench', /V2/.test(String(title)), `title=${title}`);
+  await evaluate('document.fonts.ready');
+  check('delivery uses the same locally loaded fonts as collaboration', await evaluate('document.fonts.check(\'800 24px "Foundry Display"\') && document.fonts.check(\'400 24px "Foundry Poster CN"\', "交付工作台") && document.fonts.check(\'400 14px "Foundry Sans"\')'));
+  check('delivery poster and action use the shared cut design', await evaluate("document.querySelector('.handoff-poster h2')?.textContent.includes('GREAT FINISH.') && getComputedStyle(document.querySelector('.handoff-cta'), '::before').clipPath !== 'none'"));
+  const point = await evaluate("(() => {const r=document.querySelector('.handoff-cta').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()");
+  for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', {type, ...point, button: 'left', clickCount: 1});
+  check('the delivery CTA focuses the real submission field', await evaluate("document.activeElement.id==='s-goal'"));
+  check('a fresh submission has an automatically generated identity', await evaluate("/^delivery-.+/.test(document.getElementById('s-key').value)"));
+  const identities = await evaluate(`(() => {
+    const goal = document.getElementById('s-goal'), key = document.getElementById('s-key'), before = key.value;
+    goal.value = 'new delivery draft'; goal.dispatchEvent(new Event('input', {bubbles: true}));
+    const generated = key.value;
+    key.value = 'operator-defined-key'; goal.value = 'edited draft'; goal.dispatchEvent(new Event('input', {bubbles: true}));
+    const manual = key.value;
+    goal.value = ''; key.value = generated;
+    return {before, generated, manual};
+  })()`);
+  check('a changed draft gets a fresh generated identity', identities?.before !== identities?.generated);
+  check('an explicitly chosen identity survives draft edits', identities?.manual === 'operator-defined-key');
+  await evaluate("document.activeElement.blur();scrollTo({top:0,behavior:'instant'})");
 
   const rows = await evaluate("document.querySelectorAll('#tasks .row').length");
   check('the task list rendered from the API', Number(rows) === 2, `rows=${rows}`);
@@ -165,14 +184,17 @@ try {
     return Math.abs(work.w - (column * 6 + 5 * grid.gutter)) <= 1 && Math.abs(side.w - lane.w) <= 1;
   })(), JSON.stringify((grid?.panes ?? []).map((p) => p.w)));
   check('the eight runway steps are equal', new Set(grid?.stageWidths ?? []).size === 1, JSON.stringify(grid?.stageWidths));
-  check('the display face resolves to the serif stack', /Serif/i.test(String(grid?.displayFont)), String(grid?.displayFont).slice(0, 60));
+  check('the task title uses the Chinese poster face', /Foundry Poster CN/.test(String(grid?.displayFont)), String(grid?.displayFont).slice(0, 80));
 
   for (const width of BREAKPOINTS) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width <= 480 });
     await sleep(400);
     const overflow = await evaluate('({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth })');
     check(`no horizontal overflow at ${width}px`, overflow.sw <= overflow.cw + 1, `scrollWidth=${overflow.sw} clientWidth=${overflow.cw}`);
-    const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+    const tagsContained = await evaluate("[...document.querySelectorAll('.row .tag')].every(tag => tag.getBoundingClientRect().right <= tag.closest('.row').getBoundingClientRect().right + 1 && tag.scrollWidth <= tag.clientWidth + 1)");
+    check(`long task statuses stay inside their cards at ${width}px`, tagsContained);
+    const {cssContentSize} = await cdp.send('Page.getLayoutMetrics');
+    const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: {x: 0, y: 0, width: cssContentSize.width, height: cssContentSize.height, scale: 1} });
     const file = join(artifacts, `workbench-${width}.png`);
     writeFileSync(file, Buffer.from(shot.data, 'base64'));
     console.log(`      screenshot: ${file}`);
@@ -198,6 +220,9 @@ try {
     try {
       document.getElementById('s-goal').value = 'smoke goal';
       document.getElementById('s-target').value = ${JSON.stringify(fixtureData.root)};
+      document.getElementById('s-key').value = '';
+      document.getElementById('s-preview').click();
+      if (!document.querySelector('.submission-settings').open) throw new Error('invalid advanced settings must be revealed');
       document.getElementById('s-key').value = 'smoke-key-1';
       document.getElementById('s-preview').click();
       for (let i = 0; i < 30; i += 1) {

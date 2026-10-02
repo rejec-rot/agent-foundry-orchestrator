@@ -1,10 +1,3 @@
-@font-face {
-  font-family: "Foundry Display";
-  src: url("/fonts/BarlowCondensed-ExtraBold.ttf") format("truetype");
-  font-weight: 800;
-  font-style: normal;
-  font-display: swap;
-}
 :root {
   color-scheme: light;
   --red: #e81932;
@@ -92,17 +85,6 @@ h1, h2, h3, h4, p { margin: 0; }
 .hero h1 { font: 800 clamp(64px, 6.7vw, 116px)/.91 var(--display); letter-spacing: -1.5px; margin: 24px 0 20px; }
 .hero h1 > span { display: inline-block; white-space: nowrap; color: var(--paper); background: var(--red); padding: 0 12px 8px 8px; margin-left: -8px; transform: rotate(-2deg); clip-path: polygon(1% 3%,100% 0,98% 98%,0 96%); }
 .hero-description { color: #6f685f; font-size: 12px; line-height: 1.9; margin-bottom: 22px; }
-.btn { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; padding: 10px 17px; border: 1px solid transparent; font-size: 12px; font-weight: 600; transition: transform .18s, background .18s, color .18s, box-shadow .18s; }
-.btn .icon { width: 16px; height: 16px; }
-.btn:not(:disabled):hover { transform: translateY(-2px); }
-.btn-ink { background: var(--ink); color: var(--paper); }
-.btn-ink:hover { box-shadow: 4px 4px 0 var(--red); }
-.btn-red { background: var(--red); color: #fff; }
-.btn-red:not(:disabled):hover { background: var(--red-dark); box-shadow: 3px 3px 0 var(--ink); }
-.btn-quiet { background: transparent; border-color: var(--line); color: var(--ink); }
-.btn-quiet:not(:disabled):hover { border-color: var(--ink); }
-.btn-quiet.danger:not(:disabled):hover { color: var(--red-dark); border-color: var(--red-dark); }
-.hero-cta { min-width: 156px; justify-content: space-between; }
 .hero-art { position: relative; background: var(--red); clip-path: polygon(9% 0,100% 3%,96% 95%,0 100%); overflow: hidden; min-width: 0; align-self: stretch; margin: 0 0 3px; }
 .hero-art::before { content: ""; position: absolute; inset: 0; background: radial-gradient(var(--ink) .65px, transparent .9px) 0 0/5px 5px; opacity: .12; }
 .hero-art::after { content: ""; position: absolute; width: 90px; height: 400px; background: var(--ink); top: -42px; right: -40px; transform: rotate(28deg); }
@@ -273,7 +255,7 @@ h3 > span { font-size: 9px; color: #746a5d; font-weight: 500; letter-spacing: 1.
   .topbar { padding-inline: 28px; }
   .workspace-content { padding-inline: 28px; }
   .hero { min-height: 300px; }
-  .hero h1 { font-size: 82px; }
+  .hero h1 { font-size: 72px; }
   .hero-art { margin-left: 0; }
   .art-caption { font-size: 6px; left: 15%; }
   .art-label { font-size: 18px; right: 24px; }
@@ -282,7 +264,7 @@ h3 > span { font-size: 9px; color: #746a5d; font-weight: 500; letter-spacing: 1.
 }
 @media (max-width: 950px) {
   .hero { grid-template-columns: 1fr .85fr; }
-  .hero h1 { font-size: 70px; }
+  .hero h1 { font-size: 58px; }
   .hero-description { font-size: 11px; }
   .hero-art { min-height: 260px; }
   .board-columns { grid-template-columns: 1fr; gap: 28px; }
@@ -319,7 +301,6 @@ h3 > span { font-size: 9px; color: #746a5d; font-weight: 500; letter-spacing: 1.
   .foundry-art { width: 115%; left: -6%; padding: 0; }
   .art-caption { display: none; }
   .art-label { display: none; }
-  .hero-cta { min-width: 132px; min-height: 36px; font-size: 11px; padding: 9px 12px; }
   .mission-heading { gap: 10px; }
   .mission-title h2 { font-size: 18px; letter-spacing: -.3px; }
   .mission-title > .eyebrow { font-size: 8px; letter-spacing: 1px; }
@@ -327,7 +308,6 @@ h3 > span { font-size: 9px; color: #746a5d; font-weight: 500; letter-spacing: 1.
   .mission-title > .hint { font-size: 11px; }
   .state-badge { font-size: 9px; padding: 5px 7px; margin-top: 26px; gap: 5px; }
   .mission-toolbar { align-items: flex-start; padding: 17px 0 24px; }
-  .btn { padding: 9px 12px; font-size: 11px; min-height: 38px; gap: 6px; }
   .btn .icon { width: 14px; height: 14px; }
   .actions { gap: 6px; }
   .toolbar-secondary { gap: 6px; padding-top: 2px; }

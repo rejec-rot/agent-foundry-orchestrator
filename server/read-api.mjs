@@ -113,6 +113,7 @@ const CONTENT_TYPES = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ttf': 'font/ttf',
+  '.woff2': 'font/woff2',
 };
 
 function sendJson(res, status, payload) {
