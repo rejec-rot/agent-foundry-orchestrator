@@ -4,7 +4,7 @@
 // start has exactly ONE owner (a second one is refused, a restart resumes rather than re-authoring).
 
 import './helpers/executors-fixture.mjs';
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,6 +17,13 @@ import { loadProjectRegistry, PROJECT_REGISTRY_SCHEMA } from '../lib/projects.mj
 import { acceptanceCommandAllowed, loadAcceptanceAllowlist } from '../lib/submission.mjs';
 import { recordSubmission } from '../lib/submission.mjs';
 import { submissionKeyDigest } from '../lib/submission-store.mjs';
+import { ADAPTERS } from '../lib/adapters.mjs';
+
+// These tests own submission and execution admission; workers below use
+// controlled runners. Native model installations and accounts are not fixtures.
+for (const id of ['codex', 'cline', 'command-code']) {
+  mock.method(ADAPTERS[id], 'health', () => ({ ok: true }));
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ALLOWLIST = loadAcceptanceAllowlist({ file: join(ROOT, 'config', 'acceptance-allowlist.json') });

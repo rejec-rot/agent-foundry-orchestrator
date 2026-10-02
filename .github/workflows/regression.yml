@@ -11,7 +11,7 @@ on:
 
 jobs:
   regression:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -21,11 +21,25 @@ jobs:
 
       # Intake preflight checks the real restricted-sandbox capability. The
       # runner needs the isolation tool, but no model-provider CLI or account.
-      - name: install restricted sandbox
+      - name: install isolation test tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install --no-install-recommends -y bubblewrap
+          sudo apt-get install --no-install-recommends -y bubblewrap xdg-dbus-proxy dbus-daemon dbus-tests libglib2.0-bin
           bwrap --version
+
+      # Ubuntu's user-namespace restriction needs an explicit per-application
+      # allowance. Keep the host policy enabled and grant it only to bwrap.
+      - name: allow bubblewrap user namespaces
+        run: |
+          sudo tee /etc/apparmor.d/af-ci-bwrap >/dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+          /usr/bin/bwrap flags=(default_allow) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/af-ci-bwrap
+          bwrap --ro-bind / / --unshare-user -- /bin/true
 
       # The suite must be green on a CLEAN checkout: no sibling repositories, no
       # provider CLIs, no pre-existing runtime state.

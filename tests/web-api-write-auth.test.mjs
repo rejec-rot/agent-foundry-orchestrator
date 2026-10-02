@@ -2,7 +2,7 @@
 // the CSRF header and a matching Origin, and starting hands the run to a detached worker.
 
 import './helpers/executors-fixture.mjs';
-import { test, after } from 'node:test';
+import { test, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,13 @@ import { fileURLToPath } from 'node:url';
 import { startReadApi } from '../server/read-api.mjs';
 import { resolveWriteToken, authorizeWrite } from '../server/web-auth.mjs';
 import { PROJECT_REGISTRY_SCHEMA } from '../lib/projects.mjs';
+import { ADAPTERS } from '../lib/adapters.mjs';
+
+// HTTP admission uses controlled health results, just as worker dispatch below
+// is controlled. Token, origin, profile and eligibility checks remain real.
+for (const id of ['codex', 'cline', 'command-code']) {
+  mock.method(ADAPTERS[id], 'health', () => ({ ok: true }));
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 process.env.AF_ACCEPTANCE_ALLOWLIST = process.env.AF_ACCEPTANCE_ALLOWLIST || join(ROOT, 'config', 'acceptance-allowlist.json');

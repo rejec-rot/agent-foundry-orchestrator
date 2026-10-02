@@ -75,6 +75,7 @@ import {
   reapWriterScope,
   spawnManaged,
   pidIsAlive,
+  killTree,
 } from '../lib/child-process.mjs';
 import { runTrustedImportTask } from '../lib/trusted-import/orchestrator-adapter.mjs';
 
@@ -105,6 +106,58 @@ function agyIsolationFixture() {
     },
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
+}
+
+// A private session bus with two live echo services makes filtering observable
+// without relying on a desktop keyring or the operator's own D-Bus session.
+async function privateDbusFixture() {
+  const children = [];
+  const cleanup = async () => {
+    await Promise.all(children.reverse().map(({ child }) => killTree(child, { graceMs: 250, pollMs: 10 })));
+  };
+  const start = (command, args, env = process.env) => {
+    const child = spawnManaged(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const state = { child, error: null, stderr: '' };
+    child.once('error', error => { state.error = error; });
+    child.stderr.on('data', data => { state.stderr += data; });
+    children.push(state);
+    return child;
+  };
+  const waitUntil = async (ready, label) => {
+    const deadline = Date.now() + 3000;
+    while (!ready()) {
+      for (const { child, error, stderr } of children) {
+        if (error) throw error;
+        if (child.exitCode !== null || child.signalCode !== null) {
+          throw new Error(`${label}: fixture process exited: ${stderr}`);
+        }
+      }
+      assert.ok(Date.now() < deadline, `${label}: fixture did not become ready`);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  };
+  try {
+    let addressOutput = '';
+    const daemon = start('dbus-daemon', ['--session', '--nofork', '--print-address=1']);
+    daemon.stdout.on('data', data => { addressOutput += data; });
+    await waitUntil(() => addressOutput.includes('\n'), 'private D-Bus address');
+    const address = addressOutput.split('\n')[0].trim();
+    const env = { ...process.env, DBUS_SESSION_BUS_ADDRESS: address };
+    for (const name of ['org.freedesktop.secrets', 'org.freedesktop.systemd1']) {
+      start('dbus-test-tool', ['echo', '--session', `--name=${name}`], env);
+      await waitUntil(() => {
+        const result = spawnSync('gdbus', ['call', '--address', address,
+          '--dest', 'org.freedesktop.DBus', '--object-path', '/org/freedesktop/DBus',
+          '--method', 'org.freedesktop.DBus.NameHasOwner', name, '--timeout', '1'],
+        { encoding: 'utf8', timeout: 2000 });
+        return result.status === 0 && result.stdout.includes('true');
+      }, `D-Bus name ${name}`);
+    }
+    return { address, cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
 }
 
 test('HIB-1: Non-owner DAC boundary prevents chmod on canonical repo, CAS, and task state (EPERM)', () => {
@@ -657,19 +710,31 @@ test('HIB-16: Gap 2 挂载范围最小化与角色分离 (Author vs Reviewer)', 
   }
 });
 
-test('HIB-17: Gap 3 D-Bus 精准过滤代理 (Secret Service 独立透传 & 其它服务阻断)', () => {
+test('HIB-17: Gap 3 D-Bus 精准过滤代理 (Secret Service 独立透传 & 其它服务阻断)', async () => {
   if (!canUseRestrictedSandbox()) return;
 
-  const proxy = startFilteredDbusProxy({ allowedNames: ['org.freedesktop.secrets'] });
+  const bus = await privateDbusFixture();
+  const oldBus = process.env.DBUS_SESSION_BUS_ADDRESS;
+  let proxy;
   try {
+    // Both destinations must answer before filtering, so a blocked call cannot
+    // pass merely because the destination service was never running.
+    for (const name of ['org.freedesktop.secrets', 'org.freedesktop.systemd1']) {
+      const result = spawnSync('gdbus', ['call', '--address', bus.address,
+        '--dest', name, '--object-path', '/org/af/test',
+        '--method', 'org.af.Test.Ping', '--timeout', '1'], { encoding: 'utf8', timeout: 2000 });
+      assert.equal(result.status, 0, `${name} must answer on the unfiltered bus: ${result.stderr}`);
+    }
+    process.env.DBUS_SESSION_BUS_ADDRESS = bus.address;
+    proxy = startFilteredDbusProxy({ allowedNames: ['org.freedesktop.secrets'] });
     const launch = buildRestrictedSandboxArgs({
       command: 'bash',
       args: ['-c', `
-        # 1. Calling org.freedesktop.secrets introspect must SUCCEED
-        gdbus introspect --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets >/dev/null 2>&1 || exit 1
+        # 1. The allowed echo service must answer through the filtered proxy
+        gdbus call --session --dest org.freedesktop.secrets --object-path /org/af/test --method org.af.Test.Ping --timeout 1 >/dev/null 2>&1 || exit 1
 
         # 2. Calling unauthorized service (e.g. systemd1) must FAIL / be filtered
-        if gdbus introspect --session --dest org.freedesktop.systemd1 --object-path /org/freedesktop/systemd1 >/dev/null 2>&1; then
+        if gdbus call --session --dest org.freedesktop.systemd1 --object-path /org/af/test --method org.af.Test.Ping --timeout 1 >/dev/null 2>&1; then
           exit 2
         fi
 
@@ -689,7 +754,10 @@ test('HIB-17: Gap 3 D-Bus 精准过滤代理 (Secret Service 独立透传 & 其�
     const res = spawnSync(launch.command, launch.args, { encoding: 'utf8' });
     assert.strictEqual(res.status, 0, `Filtered D-Bus probe failed (code ${res.status}): stderr=${res.stderr}`);
   } finally {
-    proxy.cleanup();
+    if (oldBus !== undefined) process.env.DBUS_SESSION_BUS_ADDRESS = oldBus;
+    else delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    proxy?.cleanup();
+    await bus.cleanup();
   }
 });
 

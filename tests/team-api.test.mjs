@@ -1,4 +1,4 @@
-import {test} from 'node:test';
+import {test,mock} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdirSync,writeFileSync,readdirSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -8,6 +8,11 @@ import {TeamController} from '../lib/team/controller.mjs';
 import {PROJECT_REGISTRY_SCHEMA} from '../lib/projects.mjs';
 import {pendingCommands,readTeam} from '../lib/team/store.mjs';
 import {Scheduler} from '../lib/scheduler.mjs';
+import {ADAPTERS} from '../lib/adapters.mjs';
+
+// Team execution already uses adaptersFor(); admission must also be independent
+// of installed model accounts while retaining the real routing policy.
+for(const id of ['codex','cline','command-code'])mock.method(ADAPTERS[id],'health',()=>({ok:true}));
 
 const TOKEN='team-test-token';
 const AUTH={authorization:`Bearer ${TOKEN}`,'x-af-csrf':'1'};

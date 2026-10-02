@@ -172,9 +172,11 @@ Web 使用现有令牌鉴权启动：`node af-admin.mjs web serve --allow-write 
 
 ## 环境与配置
 
-需要 Node.js >= 20、Git，以及对应执行器 CLI 和有效认证。已验证的 Docker 镜像使用 Node.js 24。
+需要 Node.js >= 20 和 Git；运行真实模型还需要对应执行器 CLI 和有效认证。已验证的 Docker 镜像使用 Node.js 24。
 
-默认提交预检还检查宿主机的 bubblewrap（`bwrap`）可用性，Linux 部署需要安装该工具。GitHub 回归会安装 bubblewrap，模型输出仍使用受控测试适配器。
+默认提交预检还检查宿主机的 bubblewrap（`bwrap`）可用性，Linux 部署需要安装该工具。启用用户命名空间限制的 Ubuntu 还需要为 `bwrap` 配置应用级许可，参见 [Ubuntu 官方说明](https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces)。
+
+Linux 隔离回归使用 `bubblewrap`、`xdg-dbus-proxy`、`dbus-daemon`、`dbus-tests` 和 `libglib2.0-bin`。[GitHub 回归配置](.github/workflows/regression.yml)会安装这些工具并仅为 `bwrap` 配置命名空间许可。任务创建使用受控健康检查，模型输出使用受控适配器，D-Bus 过滤使用私有测试会话，无需模型账号或桌面会话。
 
 真实 V2 需要 Docker writer scope 或可用的 Linux delegated cgroup v2；缺少强写者范围时拒绝启动。cgroup 负责进程范围与回收，不单独提供文件系统或凭据隔离，部署仍需保护 canonical、CAS 和控制面状态。
 
