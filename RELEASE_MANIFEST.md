@@ -1,5 +1,29 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Agent Card Motion — 2026-10-03
+
+| Attribute | Verification |
+| :--- | :--- |
+| Code commit | [`c1da8707238069e150afffee2ebb9e19e37e6530`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/c1da8707238069e150afffee2ebb9e19e37e6530) — Persona inspired Agent inventory cards |
+| Verified at | 2026-10-03T11:43:30Z, Node v24.21.0 |
+| Full regression | 891 tests: 886 passed, 0 failed, 5 skipped by existing environment/opt-in gates |
+| Architecture invariants | 6 passed, 0 failed, 0 skipped |
+| Browser verification | 32 discovery checks, 40 Planner workflow checks, 15 real local visual/accessibility checks; all passed |
+| Independent review | Non-author reviewer checked the final card renderer, motion, shared frames and CSS specificity, and independently passed 32 discovery checks |
+
+All inventory cards use cut outlines, red offset shadows, dark name strips,
+halftone surfaces, serial number artwork and decorative stars. Opening the
+inventory starts one staggered entrance; pointer hover and keyboard focus
+produce a short lift, tilt and diagonal swipe. Motion is bounded and uses CSS
+transform/opacity with inline SVG decoration. Reduced motion disables movement;
+forced colors restores visible borders and hides decorative artwork. The real
+preview was checked at 320, 390, 768, 1440 and 1920px, including touch layout and
+actual keyboard Tab navigation.
+
+Agent status, model metadata, reasoning grades and admission remain unchanged.
+Visual interactions caused zero native scans. The existing five regression
+skips retain their documented environment/opt-in gates; no gate was weakened.
+
 ## V2 Catalog Loading Update — 2026-10-03
 
 | Attribute | Verification |
