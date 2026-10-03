@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "checks": [
+    "native Command Code models are exposed in the read API",
+    "configured default model belongs to the native catalog",
+    "Planner dropdown contains every scanned cmd model",
+    "Planner shows the configured default model",
+    "Planner model selection synchronizes the new-goal form",
+    "unverified cmd effort cannot be overridden for Planner",
+    "Worker inherits the selected cmd Agent",
+    "Worker dropdown contains every scanned cmd model",
+    "Worker can independently choose another cmd model",
+    "unverified cmd effort cannot be overridden for Worker",
+    "long cmd model IDs fit the Worker dialog at 1440",
+    "long cmd model IDs fit the Worker dialog at 390",
+    "long cmd model IDs fit the Worker dialog at 320",
+    "catalog selection never submits an API write",
+    "no browser runtime errors"
+  ],
+  "model_count": 86,
+  "default_model": "deepseek/deepseek-v4.1-flash",
+  "source": "read-only live preview; native Command Code CLI models; no model turns or API writes",
+  "verified_at": "2026-10-03T01:27:38.202Z"
+}

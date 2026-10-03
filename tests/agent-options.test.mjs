@@ -66,6 +66,25 @@ test('Cline toggle/budget controls do not masquerade as effort grades',()=>{
   }finally{rmSync(root,{recursive:true,force:true});}
 });
 
+test('Command Code reads the current model and exact BYOK grades without exposing provider secrets',()=>{
+  const root=mkdtempSync(join(tmpdir(),'af-cmd-options-'));
+  try {
+    const paths={commandCodeConfig:join(root,'config.json'),commandCodeSettings:join(root,'settings.json'),commandCodeProviders:join(root,'providers.json')};
+    writeFileSync(paths.commandCodeConfig,JSON.stringify({model:'vendor/previous',reasoningEffort:{'custom/vendor:model':'high'},private_key:'never-expose-this'}));
+    writeFileSync(paths.commandCodeSettings,JSON.stringify({model:'custom/vendor:model'}));
+    writeFileSync(paths.commandCodeProviders,JSON.stringify({provider:{custom:{baseURL:'https://private-endpoint.example',apiKey:'never-expose-this',headers:{authorization:'secret'},models:{'vendor:model':{name:'Private gateway model',reasoningEfforts:['low','high','ultra']},unverified:{reasoning:true}}},disabled:{disabled:true,models:{removed:{reasoningEfforts:['high']}}}}}));
+    const discovery={status:'ready',model_source:'Command Code native --list-models',default_model:'vendor/default',models:[{id:'custom/vendor:model',reasoning_efforts:[],reasoning_status:'unverified'},{id:'custom/unverified',reasoning_efforts:[],reasoning_status:'unverified'},{id:'vendor/default',reasoning_efforts:[],reasoning_status:'unverified'}]};
+    const options=agentOptions('command-code',{paths,discovery}),catalog=[{id:'command-code',...options}];
+    assert.equal(options.default_model,'custom/vendor:model');assert.equal(options.default_effort,'high');
+    assert.deepEqual(options.models[0].reasoning_efforts,['low','high']);
+    assert.equal(agentProfile({executor_type:'command-code',effort:'high'},{catalog}).effort,'high');
+    for(const model of ['custom/unverified','vendor/default'])assert.throws(()=>agentProfile({executor_type:'command-code',model,effort:'high'},{catalog}),/does not support reasoning effort/);
+    assert.doesNotMatch(JSON.stringify(options),/never-expose-this|private-endpoint|authorization|disabled\/removed|vendor\/previous/);
+    const fallback=agentOptions('command-code',{paths:{commandCodeConfig:join(root,'absent','config.json')},discovery});
+    assert.equal(fallback.default_model,'vendor/default');assert.equal(fallback.supports_effort,false);
+  }finally{rmSync(root,{recursive:true,force:true});}
+});
+
 test('unsupported reasoning controls reject overrides and registry metadata constrains known models', () => {
   assert.throws(()=>agentProfile({executor_type:'dsh',effort:'high'}),/does not support reasoning effort/);
   assert.throws(()=>agentProfile({executor_type:'cline',effort:'max'}),/does not support reasoning effort/);

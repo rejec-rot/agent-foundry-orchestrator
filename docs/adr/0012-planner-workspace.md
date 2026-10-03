@@ -2,6 +2,8 @@
 
 日期：2026-10-02。状态：已实现，真实模型账号联调待验收。
 
+2026-10-03：补充 Command Code 原生模型扫描及用户默认模型读取。
+
 新协作空间先与 Planner 商讨，再决定如何派工。选定的 Planner 执行器与模型同时用于 Reviewer，复检使用独立会话。已有单作者 V2 和未启用 Planner 的 CLI 团队继续使用原流程。
 
 ## 创建与派工
@@ -28,6 +30,10 @@
 `GET /api/v2/executors` 投影 `models`、`reasoning_efforts`、`default_model`、`default_effort`、安装与接入状态及目录来源。无 `scan` 参数时仅读取元数据；`?scan=1` 扫描当前本机客户端目录。协作页打开、手动重扫或重新进入前台时请求扫描；日常团队轮询不重复扫描。并发扫描共享正在执行的查询，下一次重扫重新获取。目录存于进程内投影，不建立第二份持久执行器注册表。
 
 Codex 使用已安装 CLI 的原生 `app-server`，初始化后分页请求 `model/list`，逐模型读取 `supportedReasoningEfforts`；本地 `models_cache.json` 提供配置预览。Cline 使用原生 ACP 的空会话查询并显式选中当前 provider，执行适配器使用同一 provider；不发送 `session/prompt`。目录查询有超时、输出大小限制及进程树清理，不启动推理回合。读取时只投影白名单字段，绝不返回 provider key 或账户身份。扫描失败显示部分完成；未注册或被禁用的客户端不能因为发现了模型就成为可运行 Agent。准入仍由 canonical 注册表、操作员限制和运行时健康状态决定。
+
+Command Code 的页面名称为 `cmd`，执行器 ID 保持 `command-code`。扫描解析本机原生 `--no-auto-update --list-models` 输出，验证目录头、行数、唯一 ID 与结束标记，拒绝截断或格式变化后的结果；同时支持 `cmd`、`cmdc`、`commandcode` 别名及显式 `COMMAND_CODE_BIN`。目录进程禁用遥测，查询模型列表与版本后退出，不传入 prompt、不打开会话。默认模型优先读取用户 `settings.json` / `config.json`，未配置时采用原生目录默认值。可通过 `COMMAND_CODE_CONFIG_PATH` 指定用户配置路径；来源只投影模型字段。
+
+原生 `--list-models` 没有每模型等级信息，不将模型描述中的 reasoning 字样当作等级。BYOK 使用 provider 限定的模型 ID，将 [Command Code 模型配置](https://commandcode.ai/docs/byok)中明确的 `reasoningEfforts` 合并到原生目录的对应项，并限制为该客户端的合法参数值；单个 `reasoning` 开关和用户当前选择的强度不证明支持范围。原生目录里没有的模型不恢复到列表。后端保存和派工时也重扫 Command Code。目录中的专用 decision model 提示不作为普通 Planner / Worker 模型加入。
 
 思考强度只允许具体模型确认的等级；参见 [Codex App Server 的模型目录](https://learn.chatgpt.com/docs/app-server)与[配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。未知、自定义或仅有名称的模型没有强度覆盖，不继承执行器的等级集合。空等级列表沿用默认；页面同时显示支持值或“等级未确认”。注册表可提供逐模型的 `model_options: [{"id":"model-id","label":"Model","reasoning_efforts":["low","high"]}]`，但不能把原生目录没有的模型加入当前 provider。
 

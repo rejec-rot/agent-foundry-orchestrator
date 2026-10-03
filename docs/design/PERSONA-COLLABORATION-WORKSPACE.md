@@ -1,6 +1,6 @@
 # Persona 协作空间
 
-日期：2026-10-02。
+日期：2026-10-02。2026-10-03 更新 Command Code 扫描。
 
 以用户指定的 Persona 5 红黑白、斜切构图和怪盗漫画风为视觉方向，设计质量参考 [Awwwards](https://www.awwwards.com/) 与 [CSS Design Awards](https://www.cssdesignawards.com/about)。页面面向多 Agent 协作：一个目标、多个成员、可调整的行动计划，以及可追踪的交付。
 
@@ -13,6 +13,7 @@
 - 点击 Planner 聚焦常驻对话框；点击 Worker，选择真实接收者并发送消息。
 - Planner 面板常驻 Agent、模型与思考强度选单；“你的团队”旁的“选择 Worker Agents”逐位配置 Worker，创建前和商讨阶段即可预设。目录模型用下拉选单，自定义模型显示额外输入框；保存配置不会开工，未保存的 Planner 修改会阻止继续聊天或请求提案。
 - 打开页面自动扫描 Agent 和原生模型目录，团队上方显示安装数、接入数、模型数及扫描时间，可手动重扫。强度选单只展示所选模型确认的等级，并显示具体值；没有元数据则禁用覆盖、沿用默认。重扫保留配置草稿并清除失效等级，不触发派工。
+- Command Code 在 Agent 选单中显示为 `cmd`，通过原生 `--list-models` 读取目录，Planner 与每位 Worker 都能独立选择；默认项显示用户当前配置的模型。它的文本模型目录不携带每模型等级，只有明确的 BYOK 或注册表等级元数据才启用强度覆盖。
 - 已开工的团队先暂停，全部执行范围停止后才能换配置；保留已接受成果，配置用于后续尝试。确认同时绑定配置版本，Reviewer 在交付时继承最新 Planner 配置并建立独立会话。
 - 点击执行中的工作项，暂停旧尝试与受影响的依赖并提交反馈；Planner 改写后才重新派工。提交绑定打开编辑器时的版本，防止静默覆盖后续修改。
 - 计划提案默认停在 `PLAN_READY`；编组窗口允许 1–8 位 Worker、相同或不同的执行器/模型以及逐项分配。确认绑定计划版本和目标版本。
@@ -58,6 +59,8 @@
 
 [尚未创建团队时的完整边框](../previews/persona-workspace/teams-empty-desktop.png) · [手机创建弹窗视口](../previews/persona-workspace/create-dialog-viewport.png)
 
+[Command Code Planner 模型选择](../previews/persona-workspace/command-code-planner-desktop.png) · [Command Code Worker 模型选择](../previews/persona-workspace/command-code-workers-desktop.png) · [手机 Command Code 编组](../previews/persona-workspace/command-code-workers-mobile.png)
+
 创建入口只保留目标、项目和 Planner 的 Agent / 模型 / 思考强度。Worker 人数默认在计划确认时选择，也可提前通过独立配置入口预设；开工授权、验收参数与提交标识收进“更多设置”。模型和强度联动：切换 Agent 清除不兼容覆盖，没有思考等级的模型禁用强度覆盖。Cline 的模型名称目录不作为强度证据，开关和 token 预算不转换成等级；自定义模型也不继承其他模型的强度。手机端底部主按钮保持可见。Reviewer 沿用 Planner 配置并开启独立会话。
 
 ![交付工作台](../previews/persona-workspace/workbench-desktop.png)
@@ -81,9 +84,10 @@ node --test tests/team-agent-configuration.test.mjs tests/team-planner.test.mjs 
 - Planner 页 Chromium 验证 40 项行为，覆盖真实聊天、消息转义、确认前不派工、计划后修改人数、不同执行器与模型、逐项分配、暂停、Planner 改写、下游挂起、旧结果拒绝、无关成果保留、重载与手机编组窗口；包括简洁创建、常驻 Planner 配置保存、商讨阶段的 Worker 配置、模型下拉与自定义、执行器和模型的强度限制，以及真实执行请求中的 Planner / Worker 强度。新增自动扫描、重扫保留草稿、未知 Planner 和 Worker 模型清除强度覆盖。
 - 新流程覆盖 320–1920px，无页面横向溢出；成员列表在手机端可单独横向滚动。
 - Planner 后端检查覆盖手动与自动派工、复检新会话、版本冲突、计划与改向的重启恢复，以及无关定义保护。既有团队链路继续回归。
-- Agent 配置后端检查 7/7 通过：保存不派工、模型与强度传入执行、最新 Reviewer 绑定、非法配置拒绝、版本冲突和重启恢复、暂停后换配置保留无关成果、预设人数约束，以及当前模型目录变化后拒绝旧强度。新增目录检查 13/13 通过，覆盖逐模型等级、provider 一致性、元数据脱敏、超时清理、并发查询合并和扫描失败。完整测试 836 项：833 通过、3 跳过、0 失败。
+- Agent 配置后端检查 7/7 通过：保存不派工、模型与强度传入执行、最新 Reviewer 绑定、非法配置拒绝、版本冲突和重启恢复、暂停后换配置保留无关成果、预设人数约束，以及当前模型目录变化后拒绝旧强度。目录检查 17/17 通过，覆盖逐模型等级、provider 一致性、元数据脱敏、超时清理、并发查询合并和扫描失败；包含 Command Code 原生列表、截断拒绝、别名、用户默认模型与 BYOK 精确等级。完整测试 840 项：837 通过、3 跳过、0 失败。
 - 交付页浏览器检查：只读 30/30、写操作 22/22 通过，覆盖本地字体、同款按钮、真实 CTA 点击、提交标识、只读预检、设置错误展开、任务创建/启动/取消、消息队列、令牌与响应式布局；320–1440px 的较长状态信息保留在卡片内。
 - 当前只读预览专项复检：91/91 通过，检查自动扫描完成、创建前 Planner 选择与创建弹窗同步、Worker 草稿保存并重开、320–1920px 配置布局，全部 7 个原生弹窗的边界、焦点与滚动，高对比和减少动画模式，以及长交付卡片的高度与换行。只修改页面草稿和长状态 DOM 样例，未调用写接口。此为专项复检记录，工作流的自动回归仍由上面的脚本覆盖。
+- Command Code 当前只读预览复检 15/15 通过：本机 CLI v1.73.0 返回 86 个模型，两处选单完整显示、默认模型匹配、Worker 独立选择、未知强度禁用、320/390/1440px 长模型 ID 无横向溢出、无运行时错误及无 API 写请求。模型数为本次目录快照，随客户端与 provider 变化；[原始检查记录](../previews/persona-workspace/command-code-report.json)。
 - 部署静态预检：46/46 通过，覆盖两页资源、共享边框样式、字体许可与控制项。该预检检查部署输入，不等同于系统服务安装或真实模型验收。
 - 原始浏览器结果：[Planner 页](../previews/persona-workspace/planner-report.json)、[既有协作链路](../previews/persona-workspace/report.json)、[交付页](../previews/persona-workspace/workbench-report.json)。
 - 边框复检记录：[两页、全部弹窗与可访问性](../previews/persona-workspace/frame-review.json)。

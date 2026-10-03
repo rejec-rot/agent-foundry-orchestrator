@@ -394,7 +394,7 @@ export function createReadApi({
         }
         if(url.searchParams.get('scan')==='1') {
           if(!scanPromise) {
-            scanPromise=Promise.allSettled(['codex','cline'].filter(id=>entries.has(id)&&!operatorDisabled.has(id)).map(async id=>{
+            scanPromise=Promise.allSettled(['codex','cline','command-code'].filter(id=>entries.has(id)&&!operatorDisabled.has(id)).map(async id=>{
               try {const discovery=await catalogScanner(id,{env,timeoutMs:8000});if(discovery)setDiscoveredModels(id,discovery);}
               catch(err){setDiscoveredModels(id,{status:'unavailable',checked_at:new Date().toISOString(),client_version:null,model_source:'local configuration; native catalog unavailable'});}
             })).finally(()=>{scanCompletedAt=Date.now();scanPromise=null;});

@@ -12,9 +12,9 @@ test('opening the scan endpoint merges concurrent requests, rescans fresh data a
   const server=await startReadApi({roots:{tasks:join(root,'tasks'),runtime:join(root,'runtime'),locks:join(root,'locks'),alerts:join(root,'alerts.jsonl')},catalogScanner:async id=>{calls++;await new Promise(resolve=>setTimeout(resolve,30));return metadata(id,grade);}});
   try {
     const responses=await Promise.all([fetch(server.url+'/api/v2/executors?scan=1'),fetch(server.url+'/api/v2/executors?scan=1')]);
-    const bodies=await Promise.all(responses.map(r=>r.json()));assert.equal(calls,2,'concurrent tabs share the same metadata queries');
-    for(const body of bodies){assert.equal(body.model.scan.status,'complete');assert.deepEqual(body.model.executors.find(e=>e.id==='codex').models.find(m=>m.id==='codex/model').reasoning_efforts,['high']);assert.doesNotMatch(JSON.stringify(body),/never-expose-this|private_key/);}
-    grade='low';const next=await (await fetch(server.url+'/api/v2/executors?scan=1')).json();assert.equal(calls,4);
+    const bodies=await Promise.all(responses.map(r=>r.json()));assert.equal(calls,3,'concurrent tabs share the same metadata queries');
+    for(const body of bodies){assert.equal(body.model.scan.status,'complete');assert.deepEqual(body.model.executors.find(e=>e.id==='codex').models.find(m=>m.id==='codex/model').reasoning_efforts,['high']);assert.deepEqual(body.model.executors.find(e=>e.id==='command-code').models.find(m=>m.id==='command-code/model').reasoning_efforts,['high']);assert.doesNotMatch(JSON.stringify(body),/never-expose-this|private_key/);}
+    grade='low';const next=await (await fetch(server.url+'/api/v2/executors?scan=1')).json();assert.equal(calls,6);
     assert.deepEqual(next.model.executors.find(e=>e.id==='codex').models.find(m=>m.id==='codex/model').reasoning_efforts,['low']);
     assert.ok(!readdirSync(root).includes('tasks'),'discovery does not create a delivery or a team');
   }finally{await server.close();rmSync(root,{recursive:true,force:true});}

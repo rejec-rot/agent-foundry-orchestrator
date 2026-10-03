@@ -204,7 +204,7 @@ function renderPlanner() {
 }
 function executorOptions(selectedId, forTeam=false) {
   const entries=forTeam&&team?.planning?team.planning.eligible_executors.map(e=>({...e,id:e.executor_type})):executorCatalog??[];
-  return entries.map(e=>'<option value="'+esc(e.id)+'"'+(e.id===selectedId?' selected':'')+(!forTeam&&e.supports_planner===false?' disabled':'')+'>'+esc(e.id)+(e.availability==='DISABLED_BY_OPERATOR'?' · 已停用':e.availability==='UNAVAILABLE'?' · 当前不可用':e.availability==='UNREGISTERED'?' · 待接入':!forTeam&&e.supports_planner===false?' · 用于 Worker':'')+'</option>').join('')||'<option value="">没有已接入的 Agent</option>';
+  return entries.map(e=>'<option value="'+esc(e.id)+'"'+(e.id===selectedId?' selected':'')+(!forTeam&&e.supports_planner===false?' disabled':'')+'>'+esc(e.id==='command-code'?'cmd':e.id)+(e.availability==='DISABLED_BY_OPERATOR'?' · 已停用':e.availability==='UNAVAILABLE'?' · 当前不可用':e.availability==='UNREGISTERED'?' · 待接入':!forTeam&&e.supports_planner===false?' · 用于 Worker':'')+'</option>').join('')||'<option value="">没有已接入的 Agent</option>';
 }
 function renderExecutorSelect() {
   const chosen=$('planner-executor').value;
