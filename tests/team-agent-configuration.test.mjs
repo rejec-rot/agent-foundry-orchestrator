@@ -16,7 +16,7 @@ const confirm = (c,fx) => {const t=c.read(fx.team.team_id);fx.send({type:'approv
 const controller = fx => new TeamController({...fx.options,...fx.io,select:id=>fx.io.adapters[id]});
 
 test('Pi requires an explicit provider model and rejects models absent from a fresh catalog',()=>{
-  const adapters={pi:{supportsModel:true,requiresModel:true}},catalog=[{executor_type:'pi',discovery_status:'ready',models:[{id:'provider/model',reasoning_efforts:['off']}]}];
+  const adapters={pi:{supportsModel:true,requiresModel:true}},catalog=[{executor_type:'pi',discovery_status:'ready',models:[{id:'provider/model',reasoning_efforts:['off'],reasoning_status:'verified'}]}];
   assert.throws(()=>agentProfile({executor_type:'pi',model:null},{adapters,catalog}),/requires an explicitly configured provider model/);
   assert.throws(()=>agentProfile({executor_type:'pi',model:'provider/missing'},{adapters,catalog}),/not available in the current native catalog/);
   assert.equal(agentProfile({executor_type:'pi',model:'provider/model',effort:'off'},{adapters,catalog}).effort,'off');
@@ -79,7 +79,7 @@ test('saving uses fresh native model grades and a later incompatible grade block
   const fx=plannerFixture();fx.io.adapters.codex={...fx.io.adapters.writer,type:'codex'};let grades=['low'];
   const c=new TeamController({...fx.options,...fx.io,select:id=>fx.io.adapters[id],autoDeliver:false,discoverCatalog:async()=>({status:'ready',model_source:'native model/list',checked_at:new Date().toISOString(),client_version:'test',models:[{id:'new-model',label:'New model',reasoning_efforts:grades,reasoning_status:'verified'}]})});
   try {
-    c.update(fx.team.team_id,'test-catalog',null,t=>t.planning.eligible_executors.push({executor_type:'codex',supports_model:true,models:[{id:'new-model',reasoning_efforts:['high']}]}));
+    c.update(fx.team.team_id,'test-catalog',null,t=>t.planning.eligible_executors.push({executor_type:'codex',supports_model:true,models:[{id:'new-model',reasoning_efforts:['high'],reasoning_status:'verified'}]}));
     fx.send(settings(c,fx,{planner:{executor_type:'codex',model:'new-model',effort:'low'}}),'CMD-fresh');await c.tick();
     assert.equal(c.read(fx.team.team_id).commands['CMD-fresh'].status,'applied');assert.equal(fx.calls.length,0);
     grades=['high'];fx.send({type:'propose_plan'},'CMD-incompatible');await c.tick();

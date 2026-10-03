@@ -10,6 +10,8 @@ import {pendingCommands,readTeam} from '../lib/team/store.mjs';
 import {Scheduler} from '../lib/scheduler.mjs';
 import {ADAPTERS} from '../lib/adapters.mjs';
 import {createCollaborationTeam} from '../lib/team/service.mjs';
+import {setDiscoveredModels} from '../lib/team/agent-options.mjs';
+import {clineProvider} from '../lib/team/native-catalog.mjs';
 
 // Team execution already uses adaptersFor(); admission must also be independent
 // of installed model accounts while retaining the real routing policy.
@@ -108,6 +110,9 @@ test('Planner intake binds the selected model to an independent Reviewer session
   const spec={goal:'discuss then dispatch',target_path:fx.repo,idempotency_key:'planner-api-create',acceptance:{command:'node',args:['--test','tests/gate.test.mjs']}};
   const planning={dispatch_mode:'human',planner:{executor_type:'codex',model:'operator-selected-model',effort:'high'},workers:[{executor_type:'codex',model:'worker-model',effort:'low'},{executor_type:'cline',model:null,effort:'xhigh'}]};
   try {
+    setDiscoveredModels('cline',undefined);
+    const cold=await post(server.url,'/api/teams',{spec,planning});assert.equal(cold.status,422,'Cline cached grades cannot bypass the missing CLI acceptance scan');
+    setDiscoveredModels('cline',{status:'ready',provider:clineProvider(),model_source:'test-only native catalog',client_reasoning_efforts:['none','low','medium','high','xhigh'],models:[{id:'fixture-cline-model',reasoning_efforts:['low','medium','high','xhigh'],reasoning_status:'verified'}]});
     const response=await post(server.url,'/api/teams',{spec,planning});assert.equal(response.status,201,JSON.stringify(await response.clone().json()));
     const id=(await response.json()).model.team_id,team=readTeam(fx.options.runtimeDir,id);
     assert.equal(team.state,'DISCUSSING');assert.equal(team.members[0].model,'operator-selected-model');
@@ -127,5 +132,5 @@ test('Planner intake binds the selected model to an independent Reviewer session
     assert.equal((await post(server.url,'/api/teams',{spec:{...spec,idempotency_key:'wrong-executor-effort'},planning:{...planning,planner:{executor_type:'cline',effort:'max'}}})).status,422);
     assert.equal((await post(server.url,'/api/teams',{spec:{...spec,idempotency_key:'invalid-profile'},planning:{...planning,planner:{executor_type:'unknown'}}})).status,422);
     assert.equal((await post(server.url,'/api/teams',{spec:{...spec,idempotency_key:'invalid-planning'},planning:'bad'})).status,422);
-  }finally{await server.close();fx.cleanup();}
+  }finally{setDiscoveredModels('cline',undefined);await server.close();fx.cleanup();}
 });

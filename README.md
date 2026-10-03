@@ -153,9 +153,11 @@ node af-admin.mjs team adjust --team TEAM-your-task-id --work-item your-work-ite
 
 打开协作页会自动扫描已安装的 Agent 与模型，也可点击“重新扫描”。Codex 使用原生 `model/list`，Cline 使用当前 provider 的原生模型目录，`cmd`（Command Code，协议 ID 为 `command-code`）使用原生 `--list-models`；支持自定义模型 ID。已安装和已接入分别显示，未注册或已停用的 Agent 可以查看配置，但不能开始任务。扫描只请求目录元数据，不发送推理请求，也不返回凭据。
 
-思考强度严格跟随所选模型公布的等级；未知模型、没有等级信息的模型显示“等级未确认”，仅沿用 Agent 默认。Cline 还必须同时满足当前 CLI 可接受的等级，不将思考开关或 token 预算转换成强度。保存配置、请求提案及确认派工时后端重新校验，拒绝失效的等级。CLI 的 `--planner-effort` 同样需要对应模型的已确认元数据。Planner 团队发生配额错误时保留所选配置并报告失败，不自动换模型或强度。
+页面打开或点击“重新扫描”时，统一获取本机已接入 Agent 的模型和逐模型思考能力。每个模型返回 `reasoning_efforts`、`reasoning_status`、`reasoning_control` 与 `reasoning_source`；目录卡片显示可调档位与待确认的模型数量。Planner、Worker 和后端派工校验使用同一份协议。等级严格跟随所选模型：支持开关或 token 预算的模型不会被转换成 `low / high`；状态必须明确为 `verified` 才能启用档位，缺少状态的旧快照保持默认，并说明原因。保存配置、请求提案及确认派工时后端重新扫描，拒绝失效等级。CLI 的 `--planner-effort` 同样需要对应模型的已确认元数据。Planner 团队发生配额错误时保留所选配置并报告失败，不自动换模型或强度。
 
-`cmd` 的默认模型读取用户 `settings.json` 和 `config.json`；Planner 与 Worker 都可从扫描目录独立选择模型。原生文本目录没有逐模型强度表，因此只有明确的 BYOK `reasoningEfforts` 或注册表模型元数据能启用强度覆盖；不根据模型名称、`reasoning: true` 或 CLI 示例猜测等级。参考 [Command Code 模型目录](https://commandcode.ai/docs/reference/cli/models)及 [BYOK 模型配置](https://commandcode.ai/docs/byok)。
+Cline 的 ACP 目录提供模型名称，思考能力读取本机安装 SDK 的 `getModelsForProvider`，按当前 provider 和准确模型 ID 合并，再与 CLI `--thinking` 接受值求交集。provider 已切换或尚未完成 CLI 扫描时，缓存不能启用档位。本机默认 DeepSeek 模型公布 `low / high / max`，但当前 CLI 不接受 `max`，所以界面只提供 `low / high`；其他模型按自身元数据处理。SDK 查询在独立进程中禁用 `fetch`，读取本地目录，不发用户消息。
+
+`cmd` 的默认模型读取用户 `settings.json` 和 `config.json`；Planner 与 Worker 都可从扫描目录独立选择模型。目录命令在临时 HOME 中运行，以 `CI=1` 禁用启动时的 IDE 自动安装，只复制 BYOK 模型名称与明确档位，认证和真实服务地址不进入子进程；启动时的配置迁移只影响临时目录。当前安装版 1.73.0 的文本目录只提供名称，强度读取其 `/model` 选择器实际使用的静态注册表及后备档位表，只解析数据、不加载或执行 CLI bundle；未知版本或结构变化保持未确认。BYOK 的明确 `reasoningEfforts` 补充对应模型，不根据名称或 `reasoning: true` 猜测。比如本机 cmd 的 DeepSeek V4.1 Flash 为 `low / high / max`，Qwen3.8-Flash 为 `low / medium / xhigh`，不能互相套用。参考 [Command Code 模型目录](https://commandcode.ai/docs/reference/cli/models)及 [BYOK 模型配置](https://commandcode.ai/docs/byok)。
 
 本机发现还会枚举用户命令目录、其他 Node 安装的全局包与包入口，按实际安装匹配内置适配器，并对别名去重。Qoder CLI 和 Pi 已提供内置适配器，可用于 Planner、Worker 和独立 Reviewer；DSH 显示为 Worker 执行器，未匹配客户端（例如 Kiro）显示“待适配”。页面分别显示已安装、已匹配和可派工的数量，扫描 GET 请求不写注册表。
 

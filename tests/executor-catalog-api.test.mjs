@@ -5,7 +5,8 @@ import {mkdtempSync,readdirSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {startReadApi} from '../server/read-api.mjs';
-const metadata=(id,grade)=>({status:'ready',checked_at:new Date().toISOString(),client_version:'test-version',provider:id==='cline'?'active':null,client_reasoning_efforts:['low','high'],
+import {clineProvider} from '../lib/team/native-catalog.mjs';
+const metadata=(id,grade)=>({status:'ready',checked_at:new Date().toISOString(),client_version:'test-version',provider:id==='cline'?clineProvider():null,client_reasoning_efforts:['low','high'],
   model_source:'native catalog',models:[{id:id+'/model',label:'Current model',reasoning_efforts:[grade],reasoning_status:'verified',private_key:'never-expose-this'}]});
 const agentDiscoverer=()=>['codex','cline','command-code','qoder','pi','kiro','dsh','antigravity'].map(id=>({id,installed:true,protocol:id==='pi'?'rpc':'native-cli',discovery_source:'test installation'}));
 test('opening the scan endpoint merges concurrent requests, rescans fresh data and never writes tasks',async()=>{
@@ -16,6 +17,8 @@ test('opening the scan endpoint merges concurrent requests, rescans fresh data a
     const bodies=await Promise.all(responses.map(r=>r.json()));assert.equal(calls,5,'concurrent tabs share the same metadata queries; no query is sent to unsupported or disabled clients');
     for(const body of bodies){assert.equal(body.model.scan.status,'complete');assert.deepEqual(body.model.executors.find(e=>e.id==='codex').models.find(m=>m.id==='codex/model').reasoning_efforts,['high']);assert.deepEqual(body.model.executors.find(e=>e.id==='command-code').models.find(m=>m.id==='command-code/model').reasoning_efforts,['high']);assert.doesNotMatch(JSON.stringify(body),/never-expose-this|private_key/);}
     const installed=bodies[0].model;
+    assert.equal(installed.scan.reasoning.adjustable_models,installed.executors.flatMap(e=>e.models).filter(m=>!m.configured_only&&m.reasoning_status==='verified'&&m.reasoning_efforts.length).length);
+    assert.ok(installed.executors.flatMap(e=>e.models).filter(m=>!m.configured_only).every(m=>m.reasoning_control&&m.reasoning_source));
     assert.equal(installed.scan.installed_agents,8);assert.equal(installed.scan.matched_agents,7);assert.equal(installed.scan.unmatched_agents,1);
     assert.equal(installed.executors.find(e=>e.id==='qoder').supports_planner,true);
     assert.equal(installed.executors.find(e=>e.id==='pi').supports_model,true);

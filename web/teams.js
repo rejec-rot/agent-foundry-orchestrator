@@ -37,9 +37,9 @@ function setHTML(id, html) {
     htmlCache.set(id, html);
   }
 }
-async function request(path, body = null) {
+async function request(path, body = null, { timeoutMs = 12000 } = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const options = body === null ? { cache: 'no-store' } : {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token, 'x-af-csrf': '1' },
@@ -256,10 +256,13 @@ function renderAgentInventory() {
     const adapterLabel=entry.adapter_status==='matched'?'已匹配':entry.adapter_status==='unsupported'?'待适配':'状态未知';
     const discovery=entry.discovery_source||'未提供发现来源说明';
     const models=(entry.models??[]).filter(model=>!model.configured_only).length;
+    const adjustable=(entry.models??[]).filter(m=>m.reasoning_status==='verified'&&m.reasoning_efforts?.length).length;
+    const unknown=(entry.models??[]).filter(m=>!m.configured_only&&m.reasoning_status!=='verified').length;
     return '<article class="agent-inventory-card" data-adapter="'+esc(entry.adapter_status??'unknown')+'" data-dispatchable="'+dispatchable+'">'+
       '<div class="agent-inventory-heading"><strong>'+esc(entry.id==='command-code'?'cmd':entry.id)+'</strong><span>'+esc(protocolLabel(entry.protocol))+'</span></div>'+
       '<div class="agent-inventory-states"><span data-state="'+(installed?'ready':'muted')+'">'+(installed?'已安装':'未检测到安装')+'</span><span data-state="'+(matched?'ready':'pending')+'">'+esc(adapterLabel)+'</span><span data-state="'+(dispatchable?'ready':'pending')+'">'+esc(availabilityLabel(entry))+'</span></div>'+
       '<p>'+esc(unsupportedAdapter(entry)?'角色能力待验证':entry.supports_planner===true?'Planner 与 Worker':entry.supports_planner===false?'Worker 专用':'角色能力未提供')+' · '+(entry.supports_model?'支持模型配置':'仅使用默认模型')+' · '+models+' 个目录模型</p>'+
+      (models?'<p class="hint">'+adjustable+' 个模型可调思考档位'+(unknown?' · '+unknown+' 个待确认':' · 已完成逐模型确认')+'</p>':'')+
       (entry.id==='pi'&&entry.discovery_status==='ready'&&models===0?'<p class="hint">Pi 尚未配置可用模型；在 Pi 配置模型提供方后重新扫描。</p>':'')+
       '<small>发现来源：'+esc(discovery)+'</small></article>';
   }).join('')||'<p class="agent-inventory-empty">未发现可显示的 Agent。</p>');
@@ -291,15 +294,19 @@ function selectedWorkersDispatchable() {
   });
 }
 function updateEffort(select,entry,model) {
-  const chosen=select.value,selected=entry?.models?.find(m=>m.id===(model||entry.default_model)),levels=selected?.reasoning_efforts??[];
+  const chosen=select.value,selected=entry?.models?.find(m=>m.id===(model||entry.default_model));
   const verified=selected?.reasoning_status==='verified';
+  const levels=verified?selected.reasoning_efforts??[]:[];
+  const control=verified?selected.reasoning_control:'unknown';
+  const reason=!entry?.supports_model?'此接入使用 Agent 的默认配置。':!selected&&!model&&!entry?.default_model?'先选择模型，再确认其思考档位。':!verified?'未读取到此模型的准确档位，使用 Agent 默认。':control==='toggle'?'此模型提供思考开关，没有分级强度。':control==='budget'?'此模型提供思考预算，没有分级强度。':!levels.length?(control==='effort'?'当前 CLI 没有可用的思考档位。':'此模型不提供可选思考档位。'):null;
   const nativeDefault=levels.includes(selected?.default_effort)?selected.default_effort:null;
-  select.innerHTML='<option value="">'+(nativeDefault?'模型默认 · '+esc(effortLabel(nativeDefault))+' ('+esc(nativeDefault)+')':verified?'沿用 Agent 默认':'等级未确认 · 沿用默认')+'</option>'+levels.map(level=>'<option value="'+esc(level)+'">'+esc(effortLabel(level))+' · '+esc(level)+'</option>').join('');
+  const defaultLabel=!selected&&!model&&!entry?.default_model&&entry?.supports_model?'请先选择模型':control==='toggle'?'仅思考开关 · 沿用默认':control==='budget'?'仅思考预算 · 沿用默认':nativeDefault?'模型默认 · '+effortLabel(nativeDefault)+' ('+nativeDefault+')':verified||!entry?.supports_model?'沿用 Agent 默认':'档位未确认 · 沿用默认';
+  select.innerHTML='<option value="">'+esc(defaultLabel)+'</option>'+levels.map(level=>'<option value="'+esc(level)+'">'+esc(effortLabel(level))+' · '+esc(level)+'</option>').join('');
   select.disabled=!levels.length;
   select.value=levels.includes(chosen)?chosen:'';
-  select.title=!verified?'未找到此模型的准确等级，不提供强度覆盖。':!levels.length?'此模型未公布可调思考等级。':'此模型支持：'+levels.join(' / ');
+  select.title=reason??'此模型支持：'+levels.join(' / ');
   const hint=select.closest('.field')?.querySelector('[data-effort-hint]');
-  if(hint)hint.textContent=!verified?'等级未确认，使用 Agent 默认。':!levels.length?'未公布可调等级，使用默认。':'支持 '+levels.join(' / ');
+  if(hint)hint.textContent=reason??'支持 '+levels.join(' / ')+(entry?.default_effort_status==='unverified'&&(!model||model===entry.default_model)?' · Agent 默认强度未确认，建议明确选择。':'');
 }
 function updatePlannerControls(reset=false) {
   const entry=entryFor($('planner-executor').value),input=$('planner-model-input'),select=$('planner-model-select');
@@ -495,7 +502,8 @@ async function refresh(reloadCatalog=false) {
     if (!capabilities) capabilities = await request('/api/v2/capabilities');
     if (!executorCatalog || reloadCatalog===true) {
       $('agent-scan-status').textContent='正在扫描 Agents 与模型…';$('scan-agents').disabled=true;
-      const inventory=await request('/api/v2/executors?scan=1');executorCatalog=inventory.executors;agentScan=inventory.scan;
+      // Each native client can use 12 seconds plus startup and cleanup time.
+      const inventory=await request('/api/v2/executors?scan=1',null,{timeoutMs:30000});executorCatalog=inventory.executors;agentScan=inventory.scan;
       renderExecutorSelect();consoleProfileKey='';
       renderAgentInventory();
       if(consoleProfileDirty)updateConsoleControls();
@@ -507,7 +515,9 @@ async function refresh(reloadCatalog=false) {
       const dispatchable=executorCatalog.filter(e=>e.adapter_status==='matched'&&e.availability==='AVAILABLE').length;
       $('agent-scan-status').textContent='扫描'+(agentScan?.status==='partial'?'部分完成':'完成')+' · '+installed+' 个已安装客户端 / '+matched+' 个已匹配适配器 / '+dispatchable+' 个当前可派工';
       const modelCount=executorCatalog.reduce((n,e)=>n+(e.models?.filter(m=>!m.configured_only).length??0),0);
-      $('agent-scan-details').textContent=unmatched+' 个已安装客户端待适配 · '+modelCount+' 个目录模型 · '+new Date(agentScan?.completed_at??inventory.generated_at).toLocaleTimeString()+' · 未确认的思考强度保持默认';
+      const adjustable=executorCatalog.reduce((n,e)=>n+e.models.filter(m=>!m.configured_only&&m.reasoning_status==='verified'&&m.reasoning_efforts?.length).length,0);
+      const unknown=executorCatalog.reduce((n,e)=>n+e.models.filter(m=>!m.configured_only&&m.reasoning_status!=='verified').length,0);
+      $('agent-scan-details').textContent=unmatched+' 个已安装客户端待适配 · '+modelCount+' 个目录模型 · '+adjustable+' 个模型可调思考档位 / '+unknown+' 个模型的思考能力待确认 · '+new Date(agentScan?.completed_at??inventory.generated_at).toLocaleTimeString();
     }
     const listing = await request('/api/teams');
     if (selected && !listing.teams.some(item => item.team_id === selected)) { selected = null; team = null; workId = null; }

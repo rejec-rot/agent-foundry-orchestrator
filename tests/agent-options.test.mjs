@@ -51,6 +51,39 @@ test('native models retain exact per-model levels and registry cannot resurrect 
   assert.equal(options.models.length,1);assert.deepEqual(options.models[0].reasoning_efforts,['low','high']);assert.equal(options.client_version,'1.0');
 });
 
+test('unified reasoning metadata distinguishes grades, toggles, budgets and unknown models',()=>{
+  const discovery={status:'ready',model_source:'native metadata',models:[
+    {id:'graded',reasoning_efforts:['low','high'],reasoning_status:'verified',default_effort:'high'},
+    {id:'toggle',reasoning_efforts:[],reasoning_status:'verified',reasoning_control:'toggle'},
+    {id:'budget',reasoning_efforts:[],reasoning_status:'verified',reasoning_control:'budget'},
+    {id:'none',reasoning_efforts:[],reasoning_status:'verified'},
+    {id:'unknown',reasoning_efforts:['high'],reasoning_status:'unverified',default_effort:'high',apiKey:'never-expose-this'},
+    {id:'pending',reasoning_efforts:['high'],reasoning_status:'pending'},
+    {id:'unstamped',reasoning_efforts:['high']},
+  ]};
+  const options=agentOptions('custom',{discovery}),catalog=[{id:'custom',...options}];
+  assert.deepEqual(options.models.map(m=>m.reasoning_control),['effort','toggle','budget','none','unknown','unknown','unknown']);
+  assert.deepEqual(options.reasoning_summary,{verified_models:4,adjustable_models:1,unverified_models:3});
+  assert.ok(options.models.every(m=>m.reasoning_source==='native metadata'));
+  assert.equal(agentProfile({executor_type:'custom',model:'graded',effort:'high'},{catalog,adapters:{custom:{supportsModel:true}}}).effort,'high');
+  assert.deepEqual(options.models.at(-1).reasoning_efforts,[]);
+  assert.equal(options.models.at(-1).default_effort,undefined);
+  for(const model of ['toggle','budget','none','unknown','pending','unstamped'])assert.throws(()=>agentProfile({executor_type:'custom',model,effort:'high'},{catalog,adapters:{custom:{supportsModel:true}}}),/does not support reasoning effort/);
+  for(const model of ['pending','unstamped'])assert.throws(()=>agentProfile({executor_type:'custom',model,effort:'high'},{catalog:[{id:'custom',models:discovery.models}],adapters:{custom:{supportsModel:true}}}),/does not support reasoning effort/);
+  assert.doesNotMatch(JSON.stringify(options),/apiKey|never-expose-this/);
+  assert.deepEqual(JSON.parse(JSON.stringify(options)),options,'catalog snapshots must survive the journal JSON round trip');
+});
+
+test('failed live discovery cannot re-enable grades through registry annotations',()=>{
+  for(const status of ['unavailable','pending']){
+    const discovery={status,model_source:'native catalog not ready',models:[{id:'known',reasoning_efforts:['high'],reasoning_status:'verified'}]};
+    const options=agentOptions('custom',{discovery,definition:{model_options:[{id:'known',reasoning_efforts:['high']}]}});
+    assert.equal(options.supports_effort,false);
+    assert.equal(options.models[0].reasoning_status,'unverified');
+    assert.equal(options.models[0].reasoning_control,'unknown');
+  }
+});
+
 test('Cline toggle/budget controls do not masquerade as effort grades',()=>{
   const root=mkdtempSync(join(tmpdir(),'af-cline-models-'));
   try {
@@ -60,10 +93,27 @@ test('Cline toggle/budget controls do not masquerade as effort grades',()=>{
       graded:{reasoningOptions:[{type:'effort',values:['low','high','default']}]},
       toggle:{reasoningOptions:[{type:'toggle'}]},budget:{reasoningOptions:[{type:'budget_tokens',min:1024,max:8192}]}
     }}}}));
-    const options=agentOptions('cline',{paths,discovery:null}),catalog=[{id:'cline',...options}];
+    const cold=agentOptions('cline',{paths,discovery:null});
+    assert.equal(cold.supports_effort,false,'cached model grades cannot bypass the CLI acceptance scan');
+    const discovery={status:'ready',provider:'active',client_reasoning_efforts:['none','low','high'],model_source:'native ACP',models:['graded','toggle','budget'].map(id=>({id,reasoning_efforts:[],reasoning_status:'unverified'}))};
+    const options=agentOptions('cline',{paths,discovery}),catalog=[{id:'cline',...options}];
     assert.equal(agentProfile({executor_type:'cline',model:'graded',effort:'high'},{catalog}).effort,'high');
     for(const model of ['toggle','budget'])assert.throws(()=>agentProfile({executor_type:'cline',model,effort:'high'},{catalog}),/does not support reasoning effort/);
+    const stale=agentOptions('cline',{paths,discovery:{...discovery,provider:'previous'}});
+    assert.equal(stale.supports_effort,false);
+    assert.equal(stale.discovery_status,'unavailable');
+    assert.ok(stale.models.every(m=>m.reasoning_status==='unverified'));
   }finally{rmSync(root,{recursive:true,force:true});}
+});
+
+test('Cline cannot enable model grades until this CLI accepts their wire values',()=>{
+  const paths={clineSettings:join(tmpdir(),'af-missing-provider-settings-'+process.pid)};
+  const discovery={status:'ready',provider:'cline',model_source:'native SDK',models:[{id:'model',reasoning_efforts:['low','high','max'],reasoning_status:'verified',reasoning_control:'effort'}]};
+  const unavailable=agentOptions('cline',{paths,discovery});
+  assert.equal(unavailable.models.find(m=>m.id==='model').reasoning_status,'unverified');
+  assert.equal(unavailable.supports_effort,false);
+  const ready=agentOptions('cline',{paths,discovery:{...discovery,client_reasoning_efforts:['none','low','medium','high','xhigh']}});
+  assert.deepEqual(ready.models.find(m=>m.id==='model').reasoning_efforts,['low','high']);
 });
 
 test('Command Code reads the current model and exact BYOK grades without exposing provider secrets',()=>{

@@ -22,7 +22,7 @@ const fx=plannerFixture({
   revise:()=>new Promise(resolve=>{releaseRevision=()=>resolve(output({summary:'已细化 API 的验收要求，保留界面成果。现在重新下达这个工作项及其依赖任务。',work_items:readTeam(fx.options.runtimeDir,fx.team.team_id).work_items.map(i=>({...i,goal:i.work_item_id==='a'?'细化 API 的错误处理与验收契约':i.goal}))}));}),
 });
 const initial=readTeam(fx.options.runtimeDir,fx.team.team_id);initial.goal='设计并交付下一代 Agent 协作工作台';
-initial.planning.eligible_executors.push({executor_type:'secondary',supports_model:true,supports_effort:true,reasoning_efforts:['medium','high'],models:[{id:'worker-deep',label:'Worker deep',reasoning_efforts:['high']},{id:'worker-no-thinking',label:'Worker no thinking',reasoning_efforts:[]}]});
+initial.planning.eligible_executors.push({executor_type:'secondary',supports_model:true,supports_effort:true,reasoning_efforts:['medium','high'],models:[{id:'worker-deep',label:'Worker deep',reasoning_efforts:['high'],reasoning_status:'verified'},{id:'worker-no-thinking',label:'Worker no thinking',reasoning_efforts:[],reasoning_status:'verified'}]});
 commitTeam(fx.options.runtimeDir,initial,'browser-goal',null,()=>{});
 fx.io.adapters.secondary={...fx.io.adapters.writer,type:'secondary'};
 const controller=new TeamController({...fx.options,...fx.io,select:id=>fx.io.adapters[id],autoDeliver:false});

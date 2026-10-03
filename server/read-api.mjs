@@ -40,7 +40,7 @@ import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 import { disabledExecutors } from '../lib/operator-control.mjs';
 import { createCollaborationTeam, commandTeam } from '../lib/team/service.mjs';
 import { supportsModel, supportsPlanner } from '../lib/team/planner.mjs';
-import { agentOptions, setDiscoveredModels } from '../lib/team/agent-options.mjs';
+import { agentOptions, setDiscoveredModels, reasoningSummary } from '../lib/team/agent-options.mjs';
 import { queryNativeCatalog } from '../lib/team/native-catalog.mjs';
 import { discoverInstalledAgents, hasNativeCatalog, AGENT_CLIENTS } from '../lib/agent-discovery.mjs';
 import { executorEligibility } from '../lib/executor-eligibility.mjs';
@@ -428,7 +428,8 @@ export function createReadApi({
         return sendJson(res, 200, shape({ schema: 'af-v2-executors-v1', generated_at: new Date().toISOString(), executors, registry_configured:status.size > 0,
           scan:url.searchParams.get('scan')==='1'?{status:executors.some(e=>e.discovery_status==='unavailable')?'partial':'complete',completed_at:new Date(scanCompletedAt||Date.now()).toISOString(),
             installed_agents:executors.filter(e=>e.installed).length,matched_agents:executors.filter(e=>e.installed&&e.adapter_status==='matched').length,unmatched_agents:executors.filter(e=>e.installed&&e.adapter_status==='unsupported').length,
-            available_agents:executors.filter(e=>e.availability==='AVAILABLE').length,model_count:executors.reduce((n,e)=>n+e.models.filter(m=>!m.configured_only).length,0)}:null,
+            available_agents:executors.filter(e=>e.availability==='AVAILABLE').length,model_count:executors.reduce((n,e)=>n+e.models.filter(m=>!m.configured_only).length,0),
+            reasoning:reasoningSummary(executors.flatMap(e=>e.models))}:null,
           source: 'canonical executor registry, local configuration and metadata-only native catalogs' }));
       }
       if (path === '/api/v2/environment') {
