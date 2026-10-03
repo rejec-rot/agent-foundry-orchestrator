@@ -23,8 +23,9 @@ const catalog=[
   {id:'antigravity',installed:true,availability:'UNAVAILABLE',adapter_status:'matched',protocol:'native-cli',discovery_source:'Antigravity client detected; runtime is unavailable.',supports_planner:true,supports_model:false,models:[]},
   {id:'kiro',installed:true,availability:'UNSUPPORTED',adapter_status:'unsupported',protocol:null,discovery_source:'Kiro client detected; no adapter is registered.',supports_planner:false,supports_model:false,models:[]},
 ];
+catalog[1].discovered_at='2020-01-02T03:04:05.000Z';
 const inventory={generated_at:new Date().toISOString(),executors:catalog,scan:{status:'complete',completed_at:new Date().toISOString(),installed_agents:7,matched_agents:8,unmatched_agents:1,available_agents:5,model_count:10}};
-let showTeam=false,catalogReads=0;
+let showTeam=false,catalogReads=0,scanReads=0,holdNextTeamRead=false,heldTeamResponse=null;
 const team={
   team_id:'team-discovery',task_id:'task-discovery',goal:'Browser discovery check',state:'PLAN_READY',goal_revision:1,plan_revision:1,
   team_revision:1,created_at:new Date().toISOString(),updated_at:new Date().toISOString(),integration:null,paused_from_state:null,
@@ -37,15 +38,27 @@ const team={
   messages:[],commands:[],runs:[],delivery_runs:[],artifacts:[],rework_requests:[],delivery:null,
 };
 function json(res,value){res.writeHead(200,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(value));}
+async function holdTeamPoll(){
+  holdNextTeamRead=true;
+  const end=Date.now()+5000;
+  while(!heldTeamResponse&&Date.now()<end)await new Promise(resolve=>setTimeout(resolve,25));
+  assert.ok(heldTeamResponse,'the browser has an active background team poll');
+}
+function releaseTeamPoll(){const res=heldTeamResponse;heldTeamResponse=null;json(res,{teams:showTeam?[team]:[]});}
 const server=createServer((req,res)=>{
   const url=new URL(req.url,'http://127.0.0.1');
   if(url.pathname==='/api/v2/capabilities')return json(res,{read:{workspace:true},write:{team_command:true}});
   if(url.pathname==='/api/v2/executors'){
+    catalogReads++;
+    if(url.searchParams.get('scan')!=='1')return json(res,{...inventory,scan:null});
     // A cold native scan can exceed the ordinary 12-second request budget.
-    if(++catalogReads===1){setTimeout(()=>json(res,inventory),13000);return;}
+    if(++scanReads===1){setTimeout(()=>json(res,inventory),13000);return;}
     return json(res,inventory);
   }
-  if(url.pathname==='/api/teams')return json(res,{teams:showTeam?[team]:[]});
+  if(url.pathname==='/api/teams'){
+    if(holdNextTeamRead){holdNextTeamRead=false;heldTeamResponse=res;return;}
+    return json(res,{teams:showTeam?[team]:[]});
+  }
   if(url.pathname==='/api/teams/team-discovery')return showTeam?json(res,team):json(res,{error:'not found'});
   if(url.pathname.startsWith('/api/'))return json(res,{error:'unexpected API request'});
   let local;
@@ -73,9 +86,33 @@ try{
   await browser.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1080,deviceScaleFactor:1,mobile:false});
   await browser.send('Page.addScriptToEvaluateOnNewDocument',{source:"try{sessionStorage.setItem('af-write-token','browser-test-token')}catch{}"});
   await browser.send('Page.navigate',{url:origin+'/teams.html'});
+  await browser.waitFor("document.getElementById('agent-scan-status')?.textContent.includes('已加载目录')&&document.getElementById('connection')?.dataset.status==='connected'",3000);
+  check('opening the page reads the existing catalog without a native scan',catalogReads===1&&scanReads===0);
+  check('cached metadata keeps its real scan date instead of the page opening time',await browser.evaluate("document.getElementById('agent-scan-details').textContent.includes('2020')"));
+  check('the explicit rescan button remains visible and enabled',await browser.evaluate("document.getElementById('scan-agents').textContent.includes('重新扫描')&&!document.getElementById('scan-agents').disabled"));
+  await browser.send('Page.reload');
+  await browser.waitFor("document.getElementById('agent-scan-status')?.textContent.includes('已加载目录')&&document.getElementById('connection')?.dataset.status==='connected'",3000);
+  check('reopening the page reuses metadata without rescanning',catalogReads===2&&scanReads===0);
+  await browser.evaluate("document.dispatchEvent(new Event('visibilitychange'))");
+  await browser.waitFor("!document.getElementById('refresh').hasAttribute('aria-busy')");
+  check('returning to the foreground reads metadata without rescanning',catalogReads===3&&scanReads===0);
+  await browser.click('#refresh');
+  await browser.waitFor("!document.getElementById('refresh').hasAttribute('aria-busy')");
+  check('the ordinary refresh button does not trigger a native scan',catalogReads===4&&scanReads===0);
+  await holdTeamPoll();
+  await browser.evaluate("document.dispatchEvent(new Event('visibilitychange'))");
+  releaseTeamPoll();
+  await browser.waitFor("!document.getElementById('refresh').hasAttribute('aria-busy')");
+  check('foreground catalog reads are queued behind an active team poll',catalogReads===5&&scanReads===0);
+  await holdTeamPoll();
+  await browser.evaluate("document.dispatchEvent(new Event('visibilitychange'))");
+  await browser.click('#scan-agents');
+  check('manual scanning waits for the active team poll',catalogReads===5&&scanReads===0);
+  releaseTeamPoll();
   try{await browser.waitFor("document.getElementById('agent-scan-status')?.textContent.includes('扫描完成')",20000);}
   catch(error){console.error('browser errors:',browser.errors);console.error('page state:',await browser.evaluate("({status:document.getElementById('agent-scan-status')?.textContent,details:document.getElementById('agent-scan-details')?.textContent,connection:document.getElementById('connection')?.textContent,html:document.body.innerText.slice(0,500)})"));throw error;}
-  check('a slow native scan completes without the browser aborting and silently retrying',catalogReads===1);
+  check('a slow manual scan completes without the browser aborting and silently retrying',catalogReads===6&&scanReads===1);
+  check('a queued manual scan takes priority over a queued cache read',catalogReads===6&&scanReads===1);
   check('scan summary distinguishes installed, matched, and dispatchable counts',await browser.evaluate("document.getElementById('agent-scan-status').textContent.includes('7 个已安装客户端 / 8 个已匹配适配器 / 5 个当前可派工')"));
   check('discovery details show protocol, adapter status, and public source',await browser.evaluate("(()=>{const cards=[...document.querySelectorAll('.agent-inventory-card')];return cards.length===9&&document.querySelector('.agent-inventory-card[data-adapter=unsupported]')?.textContent.includes('Kiro client detected')&&document.querySelector('.agent-inventory-card[data-adapter=matched] .agent-inventory-heading span')?.textContent==='RPC'})()"));
   check('Planner marks DSH as Worker-only and Kiro as pending adaptation',await browser.evaluate("(()=>{const options=[...document.getElementById('planner-executor').options];return options.find(o=>o.value==='dsh')?.disabled&&options.find(o=>o.value==='dsh')?.textContent.includes('仅 Worker')&&options.find(o=>o.value==='kiro')?.disabled&&options.find(o=>o.value==='kiro')?.textContent.includes('待适配')})()"));
@@ -111,6 +148,7 @@ try{
   showTeam=true;
   await browser.send('Page.reload');
   await browser.waitFor("document.getElementById('team-state')?.textContent==='等待确认计划'");
+  check('reopening after a manual scan still does not trigger another scan',scanReads===1);
   await browser.click('#configure-dispatch');
   check('existing team keeps its saved eligible pool and retains Worker-only DSH',await browser.evaluate("(()=>{const options=[...document.querySelectorAll('[data-profile-executor]')[0].options];return options.map(o=>o.value).sort().join(',')==='codex,dsh,qoder'&&Boolean(options.find(o=>o.value==='dsh'&&!o.disabled))})()"));
   check('unregistered Worker can keep model settings but cannot be dispatched',await browser.evaluate("document.getElementById('approve-plan').disabled&&document.getElementById('worker-profile-hint').textContent.includes('当前不能派工')"));
@@ -118,6 +156,7 @@ try{
   assert.deepEqual(browser.errors,[]);
 }finally{
   browser?.close();
+  heldTeamResponse?.destroy();
   if(chrome.exitCode===null&&chrome.signalCode===null)await new Promise(resolve=>{chrome.once('close',resolve);chrome.kill('SIGTERM');setTimeout(()=>chrome.kill('SIGKILL'),5000).unref();});
   await new Promise(resolve=>server.close(resolve));
   rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});

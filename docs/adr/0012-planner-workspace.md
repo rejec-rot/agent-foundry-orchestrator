@@ -27,7 +27,7 @@
 
 `effort` 可省略或设为 `null`，沿用执行器默认思考强度；显式等级须通过服务端执行器和模型元数据校验。创建页直接展示 Planner 的 Agent、模型与思考强度，默认折叠开工授权与验收参数，不提前要求 Worker 人数。Planner 的编组提案可选择每位 Worker 的模型与 `effort`，手动确认时可调整。Planner 配置持久化到成员、任务的 `author_effort` / `reviewer_effort` 和同模型复检策略，每次执行会传入 capsule；运行记录也保存强度。
 
-`GET /api/v2/executors` 投影 `models`、`reasoning_efforts`、`default_model`、`default_effort`、安装与接入状态及目录来源。逐模型统一返回 `reasoning_status`、`reasoning_control`（`effort / toggle / budget / none / unknown`）和 `reasoning_source`，执行器与扫描结果统计已确认、可调档位及待确认的模型数。无 `scan` 参数时仅读取元数据；`?scan=1` 扫描当前本机客户端目录。协作页打开、手动重扫或重新进入前台时请求扫描；日常团队轮询不重复扫描。并发扫描共享正在执行的查询，下一次重扫重新获取。目录存于进程内投影，不建立第二份持久执行器注册表。
+`GET /api/v2/executors` 投影 `models`、`reasoning_efforts`、`default_model`、`default_effort`、安装与接入状态及目录来源。逐模型统一返回 `reasoning_status`、`reasoning_control`（`effort / toggle / budget / none / unknown`）和 `reasoning_source`，执行器与扫描结果统计已确认、可调档位及待确认的模型数。无 `scan` 参数时仅读取元数据；`?scan=1` 扫描当前本机客户端目录。协作页打开、普通刷新或重新进入前台时读取已有目录，只有点击“重新扫描”才请求原生客户端扫描；日常团队轮询不重复读取目录。并发扫描共享正在执行的查询，下一次重扫重新获取。目录存于进程内投影，不建立第二份持久执行器注册表；服务重启后可手动扫描补齐。缓存读取时间不作为扫描时间，界面显示目录内实际的最近扫描时间。
 
 安装发现独立于 Planner 能力过滤：枚举命令与全局包，返回 `adapter_status`、`protocol` 与公开来源；未知适配器显示 `UNSUPPORTED`，已匹配但未注册显示 `UNREGISTERED`。Qoder/Pi 自动匹配内置适配器，原生目录分别走版本已验证的 CLI 和离线 RPC；Pi 等级由已安装 SDK 的公开逐模型函数给出。注册是显式 `executor connect` 写入 canonical registry 的动作，GET 扫描不授予派工资格、不覆盖既有记录或停用策略，未做真实模型调用的能力保持 `UNVERIFIED`。
 

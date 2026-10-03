@@ -151,9 +151,9 @@ node af-admin.mjs team adjust --team TEAM-your-task-id --work-item your-work-ite
 
 在页面中点击“确认编组”确认并开工；CLI 可用 `team command --file dispatch.json` 提交 `approve_plan`，字段与 HTTP 协议一致，见 [Planner 协议](docs/adr/0012-planner-workspace.md)。`--planner-executor`、`--planner-model`、`--planner-effort` 选择 Agent、模型与思考强度，例如 `--planner-executor codex --planner-model your-model-id --planner-effort high`；`--dispatch-mode planner` 允许 Planner 推荐后自动开工。不加 `--planning` 的既有 CLI 调用保留原团队启动流程。
 
-打开协作页会自动扫描已安装的 Agent 与模型，也可点击“重新扫描”。Codex 使用原生 `model/list`，Cline 使用当前 provider 的原生模型目录，`cmd`（Command Code，协议 ID 为 `command-code`）使用原生 `--list-models`；支持自定义模型 ID。已安装和已接入分别显示，未注册或已停用的 Agent 可以查看配置，但不能开始任务。扫描只请求目录元数据，不发送推理请求，也不返回凭据。
+打开协作页、普通刷新和切回前台时读取已有 Agent 与模型目录，减少进入页面的等待时间；保留“重新扫描”按钮，点击后才重新查询本机客户端。目录缓存保存在服务进程内，服务重启后可手动扫描补齐。Codex 使用原生 `model/list`，Cline 使用当前 provider 的原生模型目录，`cmd`（Command Code，协议 ID 为 `command-code`）使用原生 `--list-models`；支持自定义模型 ID。已安装和已接入分别显示，未注册或已停用的 Agent 可以查看配置，但不能开始任务。扫描只请求目录元数据，不发送推理请求，也不返回凭据。
 
-页面打开或点击“重新扫描”时，统一获取本机已接入 Agent 的模型和逐模型思考能力。每个模型返回 `reasoning_efforts`、`reasoning_status`、`reasoning_control` 与 `reasoning_source`；目录卡片显示可调档位与待确认的模型数量。Planner、Worker 和后端派工校验使用同一份协议。等级严格跟随所选模型：支持开关或 token 预算的模型不会被转换成 `low / high`；状态必须明确为 `verified` 才能启用档位，缺少状态的旧快照保持默认，并说明原因。保存配置、请求提案及确认派工时后端重新扫描，拒绝失效等级。CLI 的 `--planner-effort` 同样需要对应模型的已确认元数据。Planner 团队发生配额错误时保留所选配置并报告失败，不自动换模型或强度。
+点击“重新扫描”时，统一获取本机已接入 Agent 的模型和逐模型思考能力。每个模型返回 `reasoning_efforts`、`reasoning_status`、`reasoning_control` 与 `reasoning_source`；目录卡片显示可调档位与待确认的模型数量。Planner、Worker 和后端派工校验使用同一份协议。等级严格跟随所选模型：支持开关或 token 预算的模型不会被转换成 `low / high`；状态必须明确为 `verified` 才能启用档位，缺少状态的旧快照保持默认，并说明原因。保存配置、请求提案及确认派工时后端重新扫描，拒绝失效等级。CLI 的 `--planner-effort` 同样需要对应模型的已确认元数据。Planner 团队发生配额错误时保留所选配置并报告失败，不自动换模型或强度。
 
 Cline 的 ACP 目录提供模型名称，思考能力读取本机安装 SDK 的 `getModelsForProvider`，按当前 provider 和准确模型 ID 合并，再与 CLI `--thinking` 接受值求交集。provider 已切换或尚未完成 CLI 扫描时，缓存不能启用档位。本机默认 DeepSeek 模型公布 `low / high / max`，但当前 CLI 不接受 `max`，所以界面只提供 `low / high`；其他模型按自身元数据处理。SDK 查询在独立进程中禁用 `fetch`，读取本地目录，不发用户消息。
 

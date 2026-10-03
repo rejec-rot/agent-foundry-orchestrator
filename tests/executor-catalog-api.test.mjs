@@ -13,6 +13,9 @@ test('opening the scan endpoint merges concurrent requests, rescans fresh data a
   const root=mkdtempSync(join(tmpdir(),'af-scan-api-'));let grade='high',calls=0;
   const server=await startReadApi({roots:{tasks:join(root,'tasks'),runtime:join(root,'runtime'),locks:join(root,'locks'),alerts:join(root,'alerts.jsonl')},agentDiscoverer,catalogScanner:async id=>{calls++;await new Promise(resolve=>setTimeout(resolve,30));return metadata(id,grade);}});
   try {
+    const cold=await (await fetch(server.url+'/api/v2/executors')).json();
+    assert.equal(calls,0,'reading the existing directory never launches native clients');
+    assert.equal(cold.model.scan,null);
     const responses=await Promise.all([fetch(server.url+'/api/v2/executors?scan=1'),fetch(server.url+'/api/v2/executors?scan=1')]);
     const bodies=await Promise.all(responses.map(r=>r.json()));assert.equal(calls,5,'concurrent tabs share the same metadata queries; no query is sent to unsupported or disabled clients');
     for(const body of bodies){assert.equal(body.model.scan.status,'complete');assert.deepEqual(body.model.executors.find(e=>e.id==='codex').models.find(m=>m.id==='codex/model').reasoning_efforts,['high']);assert.deepEqual(body.model.executors.find(e=>e.id==='command-code').models.find(m=>m.id==='command-code/model').reasoning_efforts,['high']);assert.doesNotMatch(JSON.stringify(body),/never-expose-this|private_key/);}
@@ -25,6 +28,10 @@ test('opening the scan endpoint merges concurrent requests, rescans fresh data a
     assert.equal(installed.executors.find(e=>e.id==='kiro').availability,'UNSUPPORTED');
     assert.equal(installed.executors.find(e=>e.id==='dsh').supports_planner,false);
     assert.equal(installed.executors.find(e=>e.id==='antigravity').availability,'UNAVAILABLE');
+    const cached=await (await fetch(server.url+'/api/v2/executors')).json();
+    assert.equal(calls,5,'opening another page reuses the last native metadata');
+    assert.equal(cached.model.scan,null);
+    assert.deepEqual(cached.model.executors,installed.executors,'cached reads preserve exact models, grades and discovery timestamps');
     grade='low';const next=await (await fetch(server.url+'/api/v2/executors?scan=1')).json();assert.equal(calls,10);
     assert.deepEqual(next.model.executors.find(e=>e.id==='codex').models.find(m=>m.id==='codex/model').reasoning_efforts,['low']);
     assert.ok(!readdirSync(root).includes('tasks'),'discovery does not create a delivery or a team');

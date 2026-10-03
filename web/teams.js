@@ -23,7 +23,7 @@ let token = '';
 try { token = sessionStorage.getItem('af-write-token') ?? ''; } catch {}
 let selected = null, workId = null, team = null, capabilities = null, refreshing = false;
 let pending = 0, editBase = null, goalBase = null, noticeTimer = null, lastConnectionError = null;
-let executorCatalog = null, dispatchBase = null, profileDraft = [], agentScan = null;
+let executorCatalog = null, dispatchBase = null, profileDraft = [], agentScan = null, pendingCatalogRefresh = null;
 let createWorkersDraft = null, consoleProfileBase = null, consoleProfileDirty = false, consoleProfileKey = '', consoleProfileEditable = null, configCommand = null;
 const emptyConversation = $('planner-conversation').innerHTML;
 
@@ -494,16 +494,21 @@ function render() {
     ' 项文件变化</small></article>').join('') || '<p class="hint">成员提交的成果会保留在这里。</p>');
   writes();
 }
-async function refresh(reloadCatalog=false) {
-  if (refreshing) return;
+async function refresh({ reloadCatalog=false, scan=false }={}) {
+  if (refreshing) {
+    if(reloadCatalog || scan) pendingCatalogRefresh={reloadCatalog:reloadCatalog || Boolean(pendingCatalogRefresh?.reloadCatalog),scan:scan || Boolean(pendingCatalogRefresh?.scan)};
+    return;
+  }
   refreshing = true;
+  let loadingCatalog = false;
   $('refresh').setAttribute('aria-busy', 'true');
   try {
     if (!capabilities) capabilities = await request('/api/v2/capabilities');
-    if (!executorCatalog || reloadCatalog===true) {
-      $('agent-scan-status').textContent='正在扫描 Agents 与模型…';$('scan-agents').disabled=true;
-      // Each native client can use 12 seconds plus startup and cleanup time.
-      const inventory=await request('/api/v2/executors?scan=1',null,{timeoutMs:30000});executorCatalog=inventory.executors;agentScan=inventory.scan;
+    if (!executorCatalog || reloadCatalog || scan) {
+      loadingCatalog=true;
+      $('agent-scan-status').textContent=scan?'正在扫描 Agents 与模型…':'正在读取已有目录…';$('scan-agents').disabled=true;
+      // Only an explicit rescan launches native clients, which can take over 12 seconds.
+      const inventory=await request(scan?'/api/v2/executors?scan=1':'/api/v2/executors',null,{timeoutMs:scan?30000:12000});executorCatalog=inventory.executors;agentScan=inventory.scan;
       renderExecutorSelect();consoleProfileKey='';
       renderAgentInventory();
       if(consoleProfileDirty)updateConsoleControls();
@@ -513,11 +518,13 @@ async function refresh(reloadCatalog=false) {
       const matched=count('matched_agents',()=>executorCatalog.filter(e=>e.installed&&e.adapter_status==='matched').length);
       const unmatched=count('unmatched_agents',()=>executorCatalog.filter(e=>e.installed&&e.adapter_status==='unsupported').length);
       const dispatchable=executorCatalog.filter(e=>e.adapter_status==='matched'&&e.availability==='AVAILABLE').length;
-      $('agent-scan-status').textContent='扫描'+(agentScan?.status==='partial'?'部分完成':'完成')+' · '+installed+' 个已安装客户端 / '+matched+' 个已匹配适配器 / '+dispatchable+' 个当前可派工';
+      $('agent-scan-status').textContent=(scan?'扫描'+(agentScan?.status==='partial'?'部分完成':'完成'):'已加载目录')+' · '+installed+' 个已安装客户端 / '+matched+' 个已匹配适配器 / '+dispatchable+' 个当前可派工';
       const modelCount=executorCatalog.reduce((n,e)=>n+(e.models?.filter(m=>!m.configured_only).length??0),0);
       const adjustable=executorCatalog.reduce((n,e)=>n+e.models.filter(m=>!m.configured_only&&m.reasoning_status==='verified'&&m.reasoning_efforts?.length).length,0);
       const unknown=executorCatalog.reduce((n,e)=>n+e.models.filter(m=>!m.configured_only&&m.reasoning_status!=='verified').length,0);
-      $('agent-scan-details').textContent=unmatched+' 个已安装客户端待适配 · '+modelCount+' 个目录模型 · '+adjustable+' 个模型可调思考档位 / '+unknown+' 个模型的思考能力待确认 · '+new Date(agentScan?.completed_at??inventory.generated_at).toLocaleTimeString();
+      const lastScan=scan?Date.parse(agentScan?.completed_at):Math.max(0,...executorCatalog.map(e=>Date.parse(e.discovered_at)||0));
+      $('agent-scan-details').textContent=unmatched+' 个已安装客户端待适配 · '+modelCount+' 个目录模型 · '+adjustable+' 个模型可调思考档位 / '+unknown+' 个模型的思考能力待确认'+(lastScan?' · 最近扫描 '+new Date(lastScan).toLocaleString():'')+' · 更新目录请点击「重新扫描」';
+      loadingCatalog=false;
     }
     const listing = await request('/api/teams');
     if (selected && !listing.teams.some(item => item.team_id === selected)) { selected = null; team = null; workId = null; }
@@ -537,19 +544,19 @@ async function refresh(reloadCatalog=false) {
     $('connection').querySelector('span').textContent = '实时连接';
     lastConnectionError = null;
   } catch (error) {
-    if($('agent-scan-status').textContent.includes('正在扫描')) {
-      $('agent-scan-status').textContent='扫描失败 · 可重新扫描';
-      $('agent-scan-details').textContent='未获取到最新目录，请重新扫描确认模型与等级。';
+    if(loadingCatalog) {
+      $('agent-scan-status').textContent=scan?'扫描失败 · 可重新扫描':'目录读取失败';
+      $('agent-scan-details').textContent=scan?'未获取到最新目录，请重新扫描确认模型与等级。':'已有目录读取失败，可刷新页面重试。';
     }
     $('connection').dataset.status = 'error';
     $('connection').querySelector('span').textContent = '连接中断';
     if (lastConnectionError !== error.message) notice(error.name === 'AbortError' ? '连接超时，正在等待服务恢复。' : error.message, 'error');
     lastConnectionError = error.message;
-    if(!executorCatalog || reloadCatalog===true){$('agent-scan-status').textContent='扫描未完成';$('agent-scan-details').textContent='目录读取失败，请重新扫描；不推断思考强度。';}
   } finally {
     refreshing = false;
     $('refresh').removeAttribute('aria-busy');
     $('scan-agents').disabled=false;
+    if(pendingCatalogRefresh){const next=pendingCatalogRefresh;pendingCatalogRefresh=null;await refresh(next);}
   }
 }
 async function command(payload, baseTeam = team?.team_id) {
@@ -586,8 +593,8 @@ const mobile = matchMedia('(max-width:720px)');
 const syncNavigation = () => { navigation(false); $('sidebar').inert = mobile.matches; };
 mobile.addEventListener('change', syncNavigation);
 syncNavigation();
-$('refresh').onclick = ()=>refresh(true);
-$('scan-agents').onclick=()=>refresh(true);
+$('refresh').onclick = ()=>refresh({reloadCatalog:true});
+$('scan-agents').onclick=()=>refresh({scan:true});
 $('teams').onclick = handle(async event => {
   const id = event.target.closest('[data-team]')?.dataset.team;
   if (!id || id === selected) return;
@@ -747,4 +754,4 @@ $('key').value = operationId('goal-');
 writes();
 await refresh();
 setInterval(() => { if (!document.hidden) refresh(); }, 1500);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(true); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh({reloadCatalog:true}); });
