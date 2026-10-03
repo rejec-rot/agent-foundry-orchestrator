@@ -1,5 +1,39 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Development Update — 2026-10-03
+
+The V2 development line remains `2.0.0-dev`. The v1.2 freeze record below is
+historical; this update records the current collaboration-platform change.
+
+| Attribute | Verification |
+| :--- | :--- |
+| Code commit | [`a9dbd9d473562ad9603c1b062557abf21888bd4d`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/a9dbd9d473562ad9603c1b062557abf21888bd4d) — unified per-model reasoning discovery |
+| Verified at | 2026-10-03T10:42:41Z, Node v24.21.0 |
+| Full regression | 891 tests: 886 passed, 0 failed, 5 skipped by existing environment/opt-in gates |
+| Architecture invariants | 6 passed, 0 failed, 0 skipped |
+| Browser verification | 22 discovery checks, 40 Planner workflow checks, 25 real local catalog checks; all passed |
+| Independent review | Cline audit reviewed Command Code metadata/isolation; Command Code audit reviewed Cline, shared projection, API and UI; identified issues were fixed and rechecked |
+
+Cline obtains exact provider/model controls from its installed SDK and
+intersects grades with its CLI's accepted values. Command Code 1.73.0 reads
+the installed picker registry and fallback arrays without evaluating the
+bundle. Its listing processes use a disposable home, credential-free BYOK
+metadata and `CI=1`, so startup migration and IDE installation cannot modify
+the operator's configuration. Unknown model or scan states cannot enable
+grades. Planner and Worker use the same contract, and a 13-second scan fixture
+verifies that the page waits for its first response rather than retrying.
+
+Local metadata verification found 18 Cline models (9 graded, 8 toggle-only,
+1 unconfirmed), 86 Command Code models (57 graded, 29 without grades), and
+2 graded Qoder models. An additional isolated BYOK fixture preserved its exact
+model ID and `low / max` grades; original configuration files were unchanged.
+These counts describe the tested local installation, not a universal catalog.
+No model prompt was sent by the native metadata verification.
+
+The five skipped tests are two Docker deployment acceptance cases, one real
+executor integration case disabled by default, and two missing-registry cases
+inapplicable with the configured fixture registry. No test gate was weakened.
+
 ## Release Overview
 
 | Attribute | Specification |
