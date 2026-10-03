@@ -9,7 +9,7 @@ import {spawnManaged} from '../lib/child-process.mjs';
 function fixture() {
   const root=mkdtempSync(join(tmpdir(),'af-catalog-test-')),script=join(root,'client.mjs'),log=join(root,'methods.jsonl'),settings=join(root,'providers.json');
   writeFileSync(settings,JSON.stringify({lastUsedProvider:'active',providers:{active:{settings:{auth:{accessToken:'never-expose-this'}}}}}));
-  writeFileSync(script,`import {appendFileSync} from 'node:fs';import {createInterface} from 'node:readline';
+  writeFileSync(script,`#!${process.execPath}\nimport {appendFileSync} from 'node:fs';import {createInterface} from 'node:readline';
     if(process.argv.includes('--help')){console.log('--thinking <level> Set reasoning effort: none|low|medium|high');process.exit(0);}
     if(process.argv.includes('--version')){console.log('Command Code v1.73.0');process.exit(0);}
     if(process.argv.includes('--list-models')&&process.env.CATALOG_HANG!=='1'){
@@ -27,7 +27,8 @@ function fixture() {
       if(m.method==='session/set_config_option')return send(m.id,{configOptions:options(m.params.value)});
       console.log(JSON.stringify({id:m.id,error:{code:-1,message:'never-expose-this'}}));
     });setInterval(()=>{},1000);`);
-  return {root,log,env:{...process.env,CATALOG_LOG:log,CLINE_SETTINGS_PATH:settings,COMMAND_CODE_BIN:process.execPath},launch:(bin,args,options)=>spawnManaged(process.execPath,[script,...args],options),cleanup:()=>rmSync(root,{recursive:true,force:true})};
+  chmodSync(script,0o755);
+  return {root,log,env:{...process.env,CATALOG_LOG:log,CODEX_BIN:script,CLINE_BIN:script,CLINE_SETTINGS_PATH:settings,COMMAND_CODE_BIN:script},launch:(bin,args,options)=>spawnManaged(process.execPath,[script,...args],options),cleanup:()=>rmSync(root,{recursive:true,force:true})};
 }
 test('native Codex discovery paginates exact model/effort metadata and never starts a turn',async()=>{
   const fx=fixture();try{
