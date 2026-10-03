@@ -1,5 +1,31 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Catalog Loading Update — 2026-10-03
+
+| Attribute | Verification |
+| :--- | :--- |
+| Code commit | [`2bb4379abde46b6e72303689f1b30ade8bcf8a49`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/2bb4379abde46b6e72303689f1b30ade8bcf8a49) — cached directory reads and explicit manual rescanning |
+| Verified at | 2026-10-03T11:09:45Z, Node v24.21.0 |
+| Full regression | 891 tests: 886 passed, 0 failed, 5 skipped by existing environment/opt-in gates |
+| Architecture invariants | 6 passed, 0 failed, 0 skipped |
+| Browser verification | 32 discovery checks, 40 Planner workflow checks, 10 real local cache checks; all passed |
+| Independent review | Non-author reviewer rechecked the diff and independently passed all 32 discovery browser checks after the refresh queue fix |
+
+Opening, reloading or returning to the collaboration page reads the existing
+catalog without launching native model discovery. The “重新扫描” button remains
+available and explicitly requests fresh Agent/model/reasoning metadata. Cache
+reads keep the original discovery time and exact verified model grades. A busy
+team poll queues explicit catalog requests; a queued scan takes priority over a
+queued cached read. The 13-second scan fixture still verifies one completed
+request without a silent retry.
+
+The real local preview was checked without any native scan or model prompt;
+Cline, Command Code and Qoder kept their verified per-model reasoning choices.
+The cache remains an in-process projection, so service restart can require a
+manual scan to refill native metadata. Backend save, proposal and dispatch
+validation remains unchanged. The five existing skipped cases are documented
+in the preceding reasoning-discovery update below; no test gate was weakened.
+
 ## V2 Development Update — 2026-10-03
 
 The V2 development line remains `2.0.0-dev`. The v1.2 freeze record below is
