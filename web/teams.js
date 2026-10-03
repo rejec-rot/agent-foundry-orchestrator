@@ -249,7 +249,7 @@ function availabilityLabel(entry) {
 function renderAgentInventory() {
   if(!executorCatalog)return;
   $('agent-inventory-count').textContent=executorCatalog.length+' 个 Agent';
-  setHTML('agent-inventory',executorCatalog.map(entry=>{
+  setHTML('agent-inventory',executorCatalog.map((entry,index)=>{
     const installed=entry.installed===true;
     const matched=entry.adapter_status==='matched';
     const dispatchable=matched&&entry.availability==='AVAILABLE';
@@ -258,7 +258,9 @@ function renderAgentInventory() {
     const models=(entry.models??[]).filter(model=>!model.configured_only).length;
     const adjustable=(entry.models??[]).filter(m=>m.reasoning_status==='verified'&&m.reasoning_efforts?.length).length;
     const unknown=(entry.models??[]).filter(m=>!m.configured_only&&m.reasoning_status!=='verified').length;
-    return '<article class="agent-inventory-card" data-adapter="'+esc(entry.adapter_status??'unknown')+'" data-dispatchable="'+dispatchable+'">'+
+    const name=entry.id==='command-code'?'cmd':entry.id;
+    return '<article class="agent-inventory-card" tabindex="0" aria-label="'+esc(name+' · '+availabilityLabel(entry))+'" data-agent="'+esc(entry.id)+'" data-adapter="'+esc(entry.adapter_status??'unknown')+'" data-dispatchable="'+dispatchable+'" style="--agent-order:'+index+'">'+
+      '<span class="agent-card-art" aria-hidden="true"><span class="agent-card-number">'+String(index+1).padStart(2,'0')+'</span><svg class="agent-card-spark" viewBox="0 0 52 52"><path d="m26 2 6 18 18 6-18 6-6 18-6-18-18-6 18-6z"/></svg></span>'+
       '<div class="agent-inventory-heading"><strong>'+esc(entry.id==='command-code'?'cmd':entry.id)+'</strong><span>'+esc(protocolLabel(entry.protocol))+'</span></div>'+
       '<div class="agent-inventory-states"><span data-state="'+(installed?'ready':'muted')+'">'+(installed?'已安装':'未检测到安装')+'</span><span data-state="'+(matched?'ready':'pending')+'">'+esc(adapterLabel)+'</span><span data-state="'+(dispatchable?'ready':'pending')+'">'+esc(availabilityLabel(entry))+'</span></div>'+
       '<p>'+esc(unsupportedAdapter(entry)?'角色能力待验证':entry.supports_planner===true?'Planner 与 Worker':entry.supports_planner===false?'Worker 专用':'角色能力未提供')+' · '+(entry.supports_model?'支持模型配置':'仅使用默认模型')+' · '+models+' 个目录模型</p>'+

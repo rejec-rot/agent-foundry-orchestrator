@@ -11,7 +11,7 @@
 
 /* Two planes form a continuous outline, including the diagonal edges.
  * The hard shadow follows the cut instead of outlining a rectangle. */
-:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card, .agent-inventory-card,
     .empty-members, .empty-board, .delivery-strip, .plan-approval,
     .rework-status, .worker-profile, .planner-composer, .disclosure.flush) {
   position: relative;
@@ -22,10 +22,10 @@
   box-shadow: none;
   filter: drop-shadow(var(--frame-depth) var(--frame-depth) 0 var(--frame-back));
 }
-:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card, .agent-inventory-card,
     .empty-members, .empty-board, .delivery-strip, .plan-approval,
     .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::before,
-:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card, .agent-inventory-card,
     .empty-members, .empty-board, .delivery-strip, .plan-approval,
     .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::after {
   content: "";
@@ -39,14 +39,14 @@
     100% var(--frame-cut), 100% 100%, var(--frame-cut) 100%,
     0 calc(100% - var(--frame-cut)));
 }
-:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card, .agent-inventory-card,
     .empty-members, .empty-board, .delivery-strip, .plan-approval,
     .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::before {
   inset: -2px;
   z-index: -2;
   background: var(--frame-ink);
 }
-:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+:is(.pane, .planner-console, .signal-shelf, .member-card, .work-card, .agent-inventory-card,
     .empty-members, .empty-board, .delivery-strip, .plan-approval,
     .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::after {
   --frame-cut: 14px;
@@ -55,6 +55,8 @@
   background: var(--frame-surface);
   background-image: var(--frame-texture);
 }
+
+.agent-inventory-details .agent-inventory-card::after { background-size: 6px 6px; }
 
 /* Strong bases for the main surfaces; compact cards share the contour. */
 .pane { --frame-depth: 5px; }
@@ -267,20 +269,22 @@ pre.evidence { border: 2px solid var(--ink); border-left-width: 4px; box-shadow:
   .member-card { --frame-depth: 2px; }
 }
 @media (forced-colors: active) {
-  :is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+  :is(.pane, .planner-console, .signal-shelf, .member-card, .work-card, .agent-inventory-card,
       .empty-members, .empty-board, .delivery-strip, .plan-approval,
       .rework-status, .worker-profile, .planner-composer, .disclosure.flush) {
     border: 2px solid CanvasText;
     background: Canvas;
     filter: none;
   }
-  :is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+  :is(.pane, .planner-console, .signal-shelf, .member-card, .work-card, .agent-inventory-card,
       .empty-members, .empty-board, .delivery-strip, .plan-approval,
       .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::before,
-  :is(.pane, .planner-console, .signal-shelf, .member-card, .work-card,
+  :is(.pane, .planner-console, .signal-shelf, .member-card, .work-card, .agent-inventory-card,
       .empty-members, .empty-board, .delivery-strip, .plan-approval,
       .rework-status, .worker-profile, .planner-composer, .disclosure.flush)::after { display: none; }
   .pane-head, .planner-header, .planner-footer { clip-path: none; }
+  .agent-inventory-heading { clip-path: none; }
+  .agent-card-art { display: none; }
   .disclosure > summary::before { border: 1px solid CanvasText; clip-path: none; }
   .dialog, pre.evidence, .row, .agent-settings { box-shadow: none; }
 }
