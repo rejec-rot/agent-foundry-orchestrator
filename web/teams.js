@@ -293,7 +293,8 @@ function selectedWorkersDispatchable() {
 function updateEffort(select,entry,model) {
   const chosen=select.value,selected=entry?.models?.find(m=>m.id===(model||entry.default_model)),levels=selected?.reasoning_efforts??[];
   const verified=selected?.reasoning_status==='verified';
-  select.innerHTML='<option value="">'+(verified?'沿用 Agent 默认':'等级未确认 · 沿用默认')+'</option>'+levels.map(level=>'<option value="'+esc(level)+'">'+esc(effortLabel(level))+' · '+esc(level)+'</option>').join('');
+  const nativeDefault=levels.includes(selected?.default_effort)?selected.default_effort:null;
+  select.innerHTML='<option value="">'+(nativeDefault?'模型默认 · '+esc(effortLabel(nativeDefault))+' ('+esc(nativeDefault)+')':verified?'沿用 Agent 默认':'等级未确认 · 沿用默认')+'</option>'+levels.map(level=>'<option value="'+esc(level)+'">'+esc(effortLabel(level))+' · '+esc(level)+'</option>').join('');
   select.disabled=!levels.length;
   select.value=levels.includes(chosen)?chosen:'';
   select.title=!verified?'未找到此模型的准确等级，不提供强度覆盖。':!levels.length?'此模型未公布可调思考等级。':'此模型支持：'+levels.join(' / ');

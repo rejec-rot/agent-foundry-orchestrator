@@ -168,7 +168,7 @@ node af-admin.mjs executor connect pi --json
 node af-admin.mjs executor connect --installed --json
 ```
 
-注册只记录安装与目录观察，不把模型调用或会话续接标成已验证。Qoder 使用本机 `--list-models`、JSON 输出和显式会话 ID；版本 1.1.57 的目录没有逐模型强度，因此只提供默认强度。Pi 使用离线 RPC 读取已配置 provider 的可用模型，并从当前安装 SDK 的公开 `getSupportedThinkingLevels(model)` 获取准确等级；保留其原生 `off` 值，模型 ID 使用 `provider/model`。Pi 未配置 provider 时返回空目录并显示不可派工，不虚构模型。执行共用现有隔离、取消、超时和终止证据链路；真实认证及模型调用仍由本机客户端负责。
+注册只记录安装与目录观察，不把模型调用或会话续接标成已验证。Qoder 通过本机 `--list-models` 读取可用名称，再使用原生 SDK 控制通道的 `initialize` / `get_models` 读取每个模型的 `efforts` 与 `defaultEffort`；不发送用户消息或推理请求，不持久化扫描会话、不执行工具。本机 1.1.57 返回 Qwen3.8-Max/Flash 的 `low / medium / xhigh`，默认 `medium`；档位随原生目录更新，元数据不可用时保留模型名称并禁用强度覆盖。参见 [官方模型选择示例](https://github.com/QoderAI/qoder-agent-sdk-samples/tree/main/typescript/model-selection)。Pi 使用离线 RPC 读取已配置 provider 的可用模型，并从当前安装 SDK 的公开 `getSupportedThinkingLevels(model)` 获取准确等级；保留其原生 `off` 值，模型 ID 使用 `provider/model`。Pi 未配置 provider 时返回空目录并显示不可派工，不虚构模型。执行共用现有隔离、取消、超时和终止证据链路；真实认证及模型调用仍由本机客户端负责。
 
 首次操作会启动持有全局团队租约的本地控制器；也可用 `node af-admin.mjs team serve` 在前台运行。前台服务收到 SIGINT/SIGTERM 时停止派发并等待受控执行范围退出。运行目录与任务目录通过 `AF_RUNTIME_DIR`、`AF_TASKS_DIR`、`AF_LOCKS_DIR` 或对应 CLI 参数配置，所有入口应使用同一组目录。自动启动的进程 PID 和 owner token 在 `locks/team-controller.lock`，日志在 `runtime/team-controller.log`。
 

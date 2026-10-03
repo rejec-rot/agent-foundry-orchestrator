@@ -15,7 +15,7 @@ import {
 function fixtureLaunch({ output = '', stderr = '', code = 0 } = {}) {
   let call = null;
   const launch = (binary, args, options) => {
-    call = { binary, args, options };
+    call ??= { binary, args, options };
     const child = new EventEmitter();
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
@@ -29,6 +29,83 @@ function fixtureLaunch({ output = '', stderr = '', code = 0 } = {}) {
   };
   return { launch, getCall: () => call };
 }
+
+function controlFixture({ reject = false, hang = false, models } = {}) {
+  const requests = [], calls = [];
+  const launch = (binary, args, options) => {
+    calls.push({ args, options });
+    if (args.includes('--list-models')) return fixtureLaunch({ output: 'MODEL\nQwen3.8-Max\nQwen3.8-Flash\n' }).launch(binary, args, options);
+    const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough();
+    child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0)));
+    child.stdin.on('data', data => {
+      const request = JSON.parse(data.toString()); requests.push(request);
+      if (hang || request.type !== 'control_request') return;
+      const init = request.request.subtype === 'initialize';
+      const response = init ? { account: { apiKey: 'never-expose-account-key' } } : { models: models ?? [
+        { value: 'qmodel_38max', displayName: 'Qwen3.8-Max', isEnabled: true, efforts: ['low', 'high'], defaultEffort: 'high' },
+        { value: 'qfmodel', displayName: 'Qwen3.8-Flash', isEnabled: true, efforts: ['xhigh', 'low', 'medium', 'low'], defaultEffort: 'medium', apiKey: 'never-expose-model-key', serverModel: { secret: 'never-expose-server-key' } },
+        { value: 'hidden-model', displayName: 'Hidden model', isEnabled: false, efforts: ['max'] },
+        null,
+      ] };
+      if (init) child.stdout.write('null\n[]\n123\n');
+      if (!init && !reject) child.stdout.write(JSON.stringify({ type: 'control_request', request_id: 'denied-action', request: { subtype: 'hook_callback' } }) + '\n');
+      child.stdout.write(JSON.stringify({ type: 'control_response', response: { subtype: !init && reject ? 'error' : 'success', request_id: request.request_id, response } }) + '\n');
+    });
+    return child;
+  };
+  return { launch, calls, requests };
+}
+
+test('Qoder native control metadata supplies exact per-model efforts/defaults without a prompt or client action', async () => {
+  const fx = controlFixture();
+  const catalog = await queryQoderCatalog({ env: { ...process.env, QODER_BIN: process.execPath }, launch: fx.launch });
+  assert.equal(catalog.status, 'ready');
+  assert.equal(catalog.model_source, 'Qoder native --list-models + get_models capabilities');
+  assert.deepEqual(catalog.models.map(m => [m.id, m.reasoning_efforts, m.default_effort]), [
+    ['Qwen3.8-Max', ['low', 'high'], 'high'], ['Qwen3.8-Flash', ['low', 'medium', 'xhigh'], 'medium'],
+  ]);
+  assert.ok(catalog.models.every(m => m.reasoning_status === 'verified'));
+  assert.doesNotMatch(JSON.stringify(catalog), /never-expose|apiKey|serverModel|hidden-model/);
+  assert.deepEqual(fx.requests.filter(r => r.type === 'control_request').map(r => r.request.subtype), ['initialize', 'get_models']);
+  assert.equal(fx.requests.find(r => r.type === 'control_response').response.subtype, 'error');
+  assert.equal(fx.calls[1].options.stdio[0], 'pipe');
+  assert.ok(fx.calls[1].args.includes('--no-session-persistence'));
+  assert.ok(fx.calls[1].args.includes('--strict-mcp-config'));
+  assert.deepEqual(fx.requests[0].request.allowedTools, []);
+});
+
+test('Qoder falls back to real names and unknown efforts if native capability metadata fails', async () => {
+  const fx = controlFixture({ reject: true });
+  const catalog = await queryQoderCatalog({ env: { ...process.env, QODER_BIN: process.execPath }, launch: fx.launch });
+  assert.equal(catalog.status, 'ready');
+  assert.ok(catalog.models.every(m => m.reasoning_status === 'unverified' && m.reasoning_efforts.length === 0));
+});
+
+test('Qoder never guesses grades from ambiguous names, unsupported values, disabled models or thinking budgets', async () => {
+  for (const models of [
+    [
+      { value: 'max-internal', displayName: 'Qwen3.8-Max', efforts: ['low', 'future-grade'] },
+      { value: 'flash-one', displayName: 'Qwen3.8-Flash', efforts: ['low'] },
+      { value: 'flash-two', displayName: 'Qwen3.8-Flash', efforts: ['xhigh'] },
+    ],
+    [
+      { value: 'max-internal', displayName: 'Qwen3.8-Max', isReasoning: true, thinking_config: { budget_tokens: 16384 } },
+      { value: 'flash-internal', displayName: 'Qwen3.8-Flash', isEnabled: false, efforts: ['low', 'medium'], defaultEffort: 'medium' },
+    ],
+  ]) {
+    const fx = controlFixture({ models });
+    const catalog = await queryQoderCatalog({ env: { ...process.env, QODER_BIN: process.execPath }, launch: fx.launch });
+    assert.equal(catalog.status, 'ready');
+    assert.ok(catalog.models.every(m => m.reasoning_status === 'unverified' && m.reasoning_efforts.length === 0 && !m.default_effort));
+  }
+});
+
+test('a stalled Qoder capability query is bounded and keeps the model-name fallback', async () => {
+  const fx = controlFixture({ hang: true }), start = Date.now();
+  const catalog = await queryQoderCatalog({ env: { ...process.env, QODER_BIN: process.execPath }, timeoutMs: 250, launch: fx.launch });
+  assert.equal(catalog.status, 'ready'); assert.ok(Date.now() - start < 1800);
+  assert.ok(catalog.models.every(m => m.reasoning_status === 'unverified'));
+});
 
 test('Qoder catalog parses native model IDs without inventing effort metadata', async () => {
   const fixture = fixtureLaunch({ output: 'MODEL\nQwen3.8-Max\nQwen3.8-Flash\n' });

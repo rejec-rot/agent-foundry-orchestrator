@@ -24,11 +24,11 @@ const env={QODER_BIN:stub,PI_BIN:stub,AF_CANONICAL_AGENTS_MD:canonical,AF_STUB_N
 test('bundled Qoder and Pi adapters support independent Planner/reviewer sessions',()=>{
   for(const id of ['qoder','pi']){assert.equal(ADAPTERS[id].type,id);assert.equal(supportsPlanner(id,ADAPTERS),true);for(const method of ['run','resume','cancel','health'])assert.equal(typeof ADAPTERS[id][method],'function');}
 });
-test('Qoder executes through the supervised adapter and forwards an exact session and model',async()=>environment(env,async()=>{
-  const result=await QoderAdapter.resume('explicit-session',{task_id:'native-qoder',prompt:'Return the required JSON.',model:'Qwen3.8-Max',cwd:root,response_schema:{},timeout_ms:10000});
+test('Qoder executes through the supervised adapter and forwards an exact session, model and verified effort',async()=>environment(env,async()=>{
+  const result=await QoderAdapter.resume('explicit-session',{task_id:'native-qoder',prompt:'Return the required JSON.',model:'Qwen3.8-Max',effort:'xhigh',supported_reasoning_efforts:['low','medium','xhigh'],cwd:root,response_schema:{},timeout_ms:10000});
   assert.equal(result.status,'completed',result.error);assert.equal(result.session_ref,'explicit-session');assert.equal(result.writer_termination?.process_started,true);assert.equal(typeof result.writer_termination?.termination_confirmed,'boolean');
   assert.equal(JSON.parse(result.structured_result.result).summary,'Qoder result');
-  const args=JSON.parse(readFileSync(log));assert.equal(args[args.indexOf('--resume')+1],'explicit-session');assert.equal(args[args.indexOf('--model')+1],'Qwen3.8-Max');assert.ok(args.includes('--append-system-prompt'));
+  const args=JSON.parse(readFileSync(log));assert.equal(args[args.indexOf('--resume')+1],'explicit-session');assert.equal(args[args.indexOf('--model')+1],'Qwen3.8-Max');assert.equal(args[args.indexOf('--reasoning-effort')+1],'xhigh');assert.ok(args.includes('--append-system-prompt'));
 }));
 test('Pi forwards provider/model and verified effort while using a fresh scratch session',async()=>environment(env,async()=>{
   const result=await PiAdapter.run({task_id:'native-pi',prompt:'Return JSON.',model:'provider/nested/model',effort:'off',supported_reasoning_efforts:['off'],cwd:root,response_schema:{},timeout_ms:10000});
@@ -50,9 +50,9 @@ test('Pi resumes the exact previous session inside the new isolated run scratch 
     const args=JSON.parse(readFileSync(log));assert.equal(args[args.indexOf('--session')+1],next.session_ref);
   }finally{for(const result of [first,next])if(result?.session_ref)rmSync(join(result.session_ref,'..'),{recursive:true,force:true});}
 }));
-test('a Qoder reviewer starts a fresh explicit session with the same requested model',async()=>environment(env,async()=>{
-  const result=await QoderAdapter.run({task_id:'native-qoder-review',assigned_role:'reviewer',prompt:'Return the required review JSON.',model:'Qwen3.8-Max',cwd:root,response_schema:{},timeout_ms:10000});
-  assert.equal(result.status,'completed',result.error);const args=JSON.parse(readFileSync(log));assert.equal(args[args.indexOf('--session-id')+1],result.session_ref);assert.equal(args.includes('--resume'),false);assert.equal(args[args.indexOf('--model')+1],'Qwen3.8-Max');
+test('a Qoder reviewer starts a fresh explicit session with the same requested model and effort',async()=>environment(env,async()=>{
+  const result=await QoderAdapter.run({task_id:'native-qoder-review',assigned_role:'reviewer',prompt:'Return the required review JSON.',model:'Qwen3.8-Max',effort:'xhigh',supported_reasoning_efforts:['low','medium','xhigh'],cwd:root,response_schema:{},timeout_ms:10000});
+  assert.equal(result.status,'completed',result.error);const args=JSON.parse(readFileSync(log));assert.equal(args[args.indexOf('--session-id')+1],result.session_ref);assert.equal(args.includes('--resume'),false);assert.equal(args[args.indexOf('--model')+1],'Qwen3.8-Max');assert.equal(args[args.indexOf('--reasoning-effort')+1],'xhigh');
 }));
 test('Qoder cancellation stops the exact supervised process',async()=>environment({...env,AF_STUB_NATIVE_HANG:'1'},async()=>{
   const runId='RUN-native-connector-cancel',taskId='native-cancel';
