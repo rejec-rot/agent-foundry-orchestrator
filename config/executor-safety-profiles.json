@@ -27,5 +27,13 @@
   "dsh": {
     "max_parallel": 1,
     "min_interval_ms": 2000
+  },
+  "qoder": {
+    "max_parallel": 1,
+    "min_interval_ms": 1000
+  },
+  "pi": {
+    "max_parallel": 1,
+    "min_interval_ms": 1000
   }
 }

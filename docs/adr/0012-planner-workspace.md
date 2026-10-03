@@ -29,6 +29,8 @@
 
 `GET /api/v2/executors` 投影 `models`、`reasoning_efforts`、`default_model`、`default_effort`、安装与接入状态及目录来源。无 `scan` 参数时仅读取元数据；`?scan=1` 扫描当前本机客户端目录。协作页打开、手动重扫或重新进入前台时请求扫描；日常团队轮询不重复扫描。并发扫描共享正在执行的查询，下一次重扫重新获取。目录存于进程内投影，不建立第二份持久执行器注册表。
 
+安装发现独立于 Planner 能力过滤：枚举命令与全局包，返回 `adapter_status`、`protocol` 与公开来源；未知适配器显示 `UNSUPPORTED`，已匹配但未注册显示 `UNREGISTERED`。Qoder/Pi 自动匹配内置适配器，原生目录分别走版本已验证的 CLI 和离线 RPC；Pi 等级由已安装 SDK 的公开逐模型函数给出。注册是显式 `executor connect` 写入 canonical registry 的动作，GET 扫描不授予派工资格、不覆盖既有记录或停用策略，未做真实模型调用的能力保持 `UNVERIFIED`。
+
 Codex 使用已安装 CLI 的原生 `app-server`，初始化后分页请求 `model/list`，逐模型读取 `supportedReasoningEfforts`；本地 `models_cache.json` 提供配置预览。Cline 使用原生 ACP 的空会话查询并显式选中当前 provider，执行适配器使用同一 provider；不发送 `session/prompt`。目录查询有超时、输出大小限制及进程树清理，不启动推理回合。读取时只投影白名单字段，绝不返回 provider key 或账户身份。扫描失败显示部分完成；未注册或被禁用的客户端不能因为发现了模型就成为可运行 Agent。准入仍由 canonical 注册表、操作员限制和运行时健康状态决定。
 
 Command Code 的页面名称为 `cmd`，执行器 ID 保持 `command-code`。扫描解析本机原生 `--no-auto-update --list-models` 输出，验证目录头、行数、唯一 ID 与结束标记，拒绝截断或格式变化后的结果；同时支持 `cmd`、`cmdc`、`commandcode` 别名及显式 `COMMAND_CODE_BIN`。目录进程禁用遥测，查询模型列表与版本后退出，不传入 prompt、不打开会话。默认模型优先读取用户 `settings.json` / `config.json`，未配置时采用原生目录默认值。可通过 `COMMAND_CODE_CONFIG_PATH` 指定用户配置路径；来源只投影模型字段。

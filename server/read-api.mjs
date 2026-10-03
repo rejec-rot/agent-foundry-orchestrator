@@ -41,7 +41,8 @@ import { disabledExecutors } from '../lib/operator-control.mjs';
 import { createCollaborationTeam, commandTeam } from '../lib/team/service.mjs';
 import { supportsModel, supportsPlanner } from '../lib/team/planner.mjs';
 import { agentOptions, setDiscoveredModels } from '../lib/team/agent-options.mjs';
-import { queryNativeCatalog, isClientInstalled } from '../lib/team/native-catalog.mjs';
+import { queryNativeCatalog } from '../lib/team/native-catalog.mjs';
+import { discoverInstalledAgents, hasNativeCatalog, AGENT_CLIENTS } from '../lib/agent-discovery.mjs';
 import { executorEligibility } from '../lib/executor-eligibility.mjs';
 import { runtimeGuard } from '../lib/executor-runtime-guard.mjs';
 import { loadCapabilityMap } from '../lib/executor-router.mjs';
@@ -164,6 +165,7 @@ export function createReadApi({
   spawnWorker = null,
   ensureController = undefined,
   catalogScanner = queryNativeCatalog,
+  agentDiscoverer = discoverInstalledAgents,
 } = {}) {
   const writeToken = token ?? resolveWriteToken(env);
   const writeAuth = (req) => authorizeWrite({ req, token: writeToken, expectedHosts: [req.headers?.host ?? ''] });
@@ -389,35 +391,43 @@ export function createReadApi({
         const operatorDisabled = new Set(disabledExecutors());
         const definitions = loadCapabilityMap();
         const entries = new Map(status);
-        for (const id of Object.keys(ADAPTERS).filter(id => supportsPlanner(id))) {
+        const installations = new Map(agentDiscoverer({env}).map(agent=>[agent.id,agent]));
+        for (const id of new Set([...Object.keys(ADAPTERS).filter(id => supportsPlanner(id,ADAPTERS)),...installations.keys()])) {
           if (!entries.has(id)) entries.set(id, { executor_id:id, availability_status:'UNREGISTERED', capability_status:'UNKNOWN', reason:'executor registry entry missing; model choices are configuration only' });
         }
         if(url.searchParams.get('scan')==='1') {
           if(!scanPromise) {
-            scanPromise=Promise.allSettled(['codex','cline','command-code'].filter(id=>entries.has(id)&&!operatorDisabled.has(id)).map(async id=>{
-              try {const discovery=await catalogScanner(id,{env,timeoutMs:8000});if(discovery)setDiscoveredModels(id,discovery);}
+            scanPromise=Promise.allSettled([...entries.keys()].filter(id=>hasNativeCatalog(id)&&installations.has(id)&&!operatorDisabled.has(id)).map(async id=>{
+              try {const discovery=await catalogScanner(id,{env,timeoutMs:12000});if(discovery)setDiscoveredModels(id,discovery);}
               catch(err){setDiscoveredModels(id,{status:'unavailable',checked_at:new Date().toISOString(),client_version:null,model_source:'local configuration; native catalog unavailable'});}
             })).finally(()=>{scanCompletedAt=Date.now();scanPromise=null;});
           }
           if(scanPromise)await scanPromise;
         }
         const executors = [...entries.values()].map((entry) => {
+          const matched=Boolean(ADAPTERS[entry.executor_id]),installation=installations.get(entry.executor_id);
           const eligibility=executorEligibility(entry.executor_id,{}, {adapters:ADAPTERS,capabilityMap:definitions,availabilityMap:status,runtimeGuard,requireHealth:true});
           const options=agentOptions(entry.executor_id,{definition:definitions.get(entry.executor_id)??{}});
+          const missingModels=ADAPTERS[entry.executor_id]?.requiresModel===true&&!options.models.some(m=>!m.configured_only);
           return {
           id: entry.executor_id,
-          installed:isClientInstalled(entry.executor_id,env)||options.discovery_status==='ready',
-          availability: operatorDisabled.has(entry.executor_id) ? 'DISABLED_BY_OPERATOR' : entry.availability_status==='AVAILABLE'&&!eligibility.ok?'UNAVAILABLE':entry.availability_status,
+          installed:Boolean(installation)||options.discovery_status==='ready',
+          adapter_status:matched?'matched':'unsupported',
+          protocol:installation?.protocol??AGENT_CLIENTS[entry.executor_id]?.protocol??null,
+          discovery_source:installation?.discovery_source??'platform adapter definition',
+          availability: operatorDisabled.has(entry.executor_id) ? 'DISABLED_BY_OPERATOR' : !matched?'UNSUPPORTED':ADAPTERS[entry.executor_id]?.schedulable===false?'UNAVAILABLE':entry.availability_status==='AVAILABLE'&&(!eligibility.ok||missingModels)?'UNAVAILABLE':entry.availability_status,
           capability: entry.capability_status,
-          supports_model: supportsModel(entry.executor_id),
-          supports_planner: supportsPlanner(entry.executor_id),
+          supports_model: supportsModel(entry.executor_id,ADAPTERS),
+          requires_model:ADAPTERS[entry.executor_id]?.requiresModel===true,
+          supports_planner: supportsPlanner(entry.executor_id,ADAPTERS),
           ...options,
           reason: operatorDisabled.has(entry.executor_id)
             ? 'disabled by the operator (config/operator-executors.json); the platform will refuse to bind or run it'
-            : (entry.availability_status==='AVAILABLE'&&!eligibility.ok?eligibility.reason:entry.reason??null),
+            : (!matched?'local client discovered; no compatible adapter is bundled':ADAPTERS[entry.executor_id]?.schedulable===false?ADAPTERS[entry.executor_id].blocked_reason??'executor is not schedulable':entry.availability_status==='AVAILABLE'&&missingModels?'Pi has no configured provider models; configure Pi and rescan':entry.availability_status==='AVAILABLE'&&!eligibility.ok?eligibility.reason:entry.reason??null),
         };});
         return sendJson(res, 200, shape({ schema: 'af-v2-executors-v1', generated_at: new Date().toISOString(), executors, registry_configured:status.size > 0,
           scan:url.searchParams.get('scan')==='1'?{status:executors.some(e=>e.discovery_status==='unavailable')?'partial':'complete',completed_at:new Date(scanCompletedAt||Date.now()).toISOString(),
+            installed_agents:executors.filter(e=>e.installed).length,matched_agents:executors.filter(e=>e.installed&&e.adapter_status==='matched').length,unmatched_agents:executors.filter(e=>e.installed&&e.adapter_status==='unsupported').length,
             available_agents:executors.filter(e=>e.availability==='AVAILABLE').length,model_count:executors.reduce((n,e)=>n+e.models.filter(m=>!m.configured_only).length,0)}:null,
           source: 'canonical executor registry, local configuration and metadata-only native catalogs' }));
       }

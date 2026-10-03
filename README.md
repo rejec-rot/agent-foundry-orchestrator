@@ -157,6 +157,19 @@ node af-admin.mjs team adjust --team TEAM-your-task-id --work-item your-work-ite
 
 `cmd` 的默认模型读取用户 `settings.json` 和 `config.json`；Planner 与 Worker 都可从扫描目录独立选择模型。原生文本目录没有逐模型强度表，因此只有明确的 BYOK `reasoningEfforts` 或注册表模型元数据能启用强度覆盖；不根据模型名称、`reasoning: true` 或 CLI 示例猜测等级。参考 [Command Code 模型目录](https://commandcode.ai/docs/reference/cli/models)及 [BYOK 模型配置](https://commandcode.ai/docs/byok)。
 
+本机发现还会枚举用户命令目录、其他 Node 安装的全局包与包入口，按实际安装匹配内置适配器，并对别名去重。Qoder CLI 和 Pi 已提供内置适配器，可用于 Planner、Worker 和独立 Reviewer；DSH 显示为 Worker 执行器，未匹配客户端（例如 Kiro）显示“待适配”。页面分别显示已安装、已匹配和可派工的数量，扫描 GET 请求不写注册表。
+
+匹配后可通过显式注册命令接入 canonical 执行器目录，无需再手工安装这两个适配器：
+
+```bash
+node af-admin.mjs executor connect qoder --json
+node af-admin.mjs executor connect pi --json
+# 批量匹配已安装客户端，跳过停用/未匹配项，保留已有注册记录：
+node af-admin.mjs executor connect --installed --json
+```
+
+注册只记录安装与目录观察，不把模型调用或会话续接标成已验证。Qoder 使用本机 `--list-models`、JSON 输出和显式会话 ID；版本 1.1.57 的目录没有逐模型强度，因此只提供默认强度。Pi 使用离线 RPC 读取已配置 provider 的可用模型，并从当前安装 SDK 的公开 `getSupportedThinkingLevels(model)` 获取准确等级；保留其原生 `off` 值，模型 ID 使用 `provider/model`。Pi 未配置 provider 时返回空目录并显示不可派工，不虚构模型。执行共用现有隔离、取消、超时和终止证据链路；真实认证及模型调用仍由本机客户端负责。
+
 首次操作会启动持有全局团队租约的本地控制器；也可用 `node af-admin.mjs team serve` 在前台运行。前台服务收到 SIGINT/SIGTERM 时停止派发并等待受控执行范围退出。运行目录与任务目录通过 `AF_RUNTIME_DIR`、`AF_TASKS_DIR`、`AF_LOCKS_DIR` 或对应 CLI 参数配置，所有入口应使用同一组目录。自动启动的进程 PID 和 owner token 在 `locks/team-controller.lock`，日志在 `runtime/team-controller.log`。
 
 Web 使用现有令牌鉴权启动：`node af-admin.mjs web serve --allow-write --root /path/to/registered-project`，打开 `/teams.html`。页面支持创建、启动、查看分工、成员消息、定向调整、暂停和继续交付。消息在下一轮执行中领取；不会显示未经控制器确认的“已落实”。额度允许时独立工作项并行执行，单项调整保留无关产物；已完成目标再次调整会采用最新 canonical 基线进入新目标版本。

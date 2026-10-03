@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TeamController } from '../lib/team/controller.mjs';
-import { sameModelTeamReview } from '../lib/team/planner.mjs';
+import { sameModelTeamReview, agentProfile } from '../lib/team/planner.mjs';
 import { plannerFixture } from './helpers/planner-team-fixture.mjs';
 import { drive, output, plan } from './helpers/team-fixture.mjs';
 
@@ -14,6 +14,24 @@ const settings = (c, fx, extra = {}) => {
 };
 const confirm = (c,fx) => {const t=c.read(fx.team.team_id);fx.send({type:'approve_plan',expected_goal_revision:t.goal_revision,expected_plan_revision:t.plan_revision,expected_agent_config_revision:t.planning.agent_config_revision??0});};
 const controller = fx => new TeamController({...fx.options,...fx.io,select:id=>fx.io.adapters[id]});
+
+test('Pi requires an explicit provider model and rejects models absent from a fresh catalog',()=>{
+  const adapters={pi:{supportsModel:true,requiresModel:true}},catalog=[{executor_type:'pi',discovery_status:'ready',models:[{id:'provider/model',reasoning_efforts:['off']}]}];
+  assert.throws(()=>agentProfile({executor_type:'pi',model:null},{adapters,catalog}),/requires an explicitly configured provider model/);
+  assert.throws(()=>agentProfile({executor_type:'pi',model:'provider/missing'},{adapters,catalog}),/not available in the current native catalog/);
+  assert.equal(agentProfile({executor_type:'pi',model:'provider/model',effort:'off'},{adapters,catalog}).effort,'off');
+});
+
+test('Pi with no available models is rejected before saved team configuration or a run changes',async()=>{
+  const fx=plannerFixture();fx.io.adapters.pi={...fx.io.adapters.writer,type:'pi',requiresModel:true};
+  const c=new TeamController({...fx.options,...fx.io,select:id=>fx.io.adapters[id],autoDeliver:false,discoverCatalog:async()=>({status:'ready',models:[]})});
+  try {
+    c.update(fx.team.team_id,'pi-catalog-fixture',null,t=>t.planning.eligible_executors.push({executor_type:'pi',models:[]}));
+    fx.send(settings(c,fx,{planner:{executor_type:'pi',model:'provider/model'}}),'CMD-pi-empty');await c.tick();
+    const result=c.read(fx.team.team_id);assert.equal(result.commands['CMD-pi-empty'].status,'rejected');assert.match(result.commands['CMD-pi-empty'].reason,/no available provider models/);
+    assert.equal(result.planning.planner.executor_type,'writer');assert.equal(fx.calls.length,0);
+  }finally{await c.close();fx.cleanup();}
+});
 
 test('saved Planner/Worker choices reach execution, and the latest Planner configuration binds the fresh Reviewer',async()=>{
   const fx=plannerFixture({effort:'low'}),c=controller(fx);

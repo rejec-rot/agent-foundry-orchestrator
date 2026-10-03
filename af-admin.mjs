@@ -17,6 +17,7 @@ import {
   formatLogRotationResult,
 } from './lib/executor-ops.mjs';
 import { reapOrphans, formatReclaimResult } from './lib/orphan-reaper.mjs';
+import { connectInstalledAgents } from './lib/agent-registration.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,6 +85,8 @@ function argValue(flag) {
 function printUsage() {
   console.log(`usage:
   af-admin executor status [executor]
+  af-admin executor connect <id> [--json]                    (match an installed client and register its bundled adapter)
+  af-admin executor connect --installed [--json]             (connect installed clients; keep existing entries and disable policy)
   af-admin executor recovery probe <executor>
   af-admin executor recovery admit <executor> --evidence <id> --reason "<reason>" [--admitted-by "<name>"]
   af-admin circuit list
@@ -136,6 +139,12 @@ async function main() {
   }
 
   if (mainCmd === 'executor') {
+    if(subCmd==='connect') {
+      const target=args[2]&&!args[2].startsWith('-')?args[2]:null;
+      if(!target&&!args.includes('--installed')){console.error('error: choose an executor ID or --installed');process.exit(1);}
+      try{const result=await connectInstalledAgents({ids:target?[target]:null});console.log(JSON.stringify(result,null,2));process.exit(result.results.some(r=>['catalog_unavailable','unhealthy','invalid_existing_registration'].includes(r.status))?1:0);}
+      catch(err){console.error(`error: ${err.message}`);process.exit(1);}
+    }
     if (subCmd === 'status') {
       const target = args[2] && !args[2].startsWith('-') ? args[2] : argValue('--executor');
       if (target) {
