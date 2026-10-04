@@ -1,5 +1,47 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Direct Planner Conversation — 2026-10-04
+
+| Attribute | Verification |
+| :--- | :--- |
+| Code commit | [`27d687e7c8d8df5f88de9553d3c4af5f822ea481`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/27d687e7c8d8df5f88de9553d3c4af5f822ea481) — full-row Planner and direct conversation |
+| Full regression verified at | 2026-10-03T15:28:29Z, Node v24.21.0 |
+| Full regression | 896 tests: 891 passed, 0 failed, 5 skipped by existing environment/opt-in gates |
+| Architecture invariants | 6 passed, 0 failed, 0 skipped; rechecked 2026-10-04 |
+| Browser verification | 51 Planner workflow checks, 46 first-chat/recovery checks, 32 discovery checks, 23 real local visual/access checks; all passed |
+| Browser verified at | 2026-10-04T00:53:53Z for Planner; first-chat 2026-10-04T00:51:43Z; local preview 2026-10-04T00:53:38Z |
+| Independent review | Non-author reviewer rechecked the final diff and independently passed all 51 Planner and 46 first-chat checks; no blocking findings |
+
+Planner occupies one full row, with larger text, conversation space and send
+controls; the plan follows below. An empty workspace can select a registered
+project and acceptance profile, then send its first message directly. Existing
+teams apply a changed Planner profile and wait for its confirmed receipt before
+sending the message. The separate save action is optional. Direct first chat
+uses human-controlled dispatch, so Workers wait for plan approval.
+
+The project read API returns canonical IDs only. Registry-scoped creation binds
+the trusted path and acceptance profile on the server through existing intake,
+authorization and allowed-root checks. Optional goal/configuration versions on
+Planner messages reject stale choices, and queued Planner messages prevent
+configuration changes before consumption.
+
+Uncertain creation, configuration or message responses keep their original
+payload and submission ID. Explicit retries preserve that identity; no POST is
+silently retried. Input and shortcut suggestions stay locked until the result
+is confirmed, while rejected configuration retains the draft for a deliberate
+retry. Browser fixtures cover response loss, real failed detail reads, receipt
+GET 403 after an accepted POST, authentication failure during an uncertain
+configuration retry and concurrent version changes.
+
+Browser workflow tests use controlled model adapters; first-chat intake
+responses are controlled, with trusted creation independently covered by API
+tests. The live preview uses an independently registered local playground and
+authenticated writes scoped to that project. Visual verification sent zero
+model prompts. Private tokens, the local project registry and runtime state
+are outside the repository. Cached page opening and the explicit rescan button
+remain unchanged; exact verified model reasoning grades still gate selection.
+The five existing regression skips retain their original gates.
+
 ## V2 Agent Card Motion — 2026-10-03
 
 | Attribute | Verification |
