@@ -1,5 +1,41 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+
+## V2 Unified Workspace and Project Picker — 2026-10-04
+
+| Field | Verified value |
+|---|---|
+| Code commit | [`16fcfd70df91f3635059917f97f601ff5b7d2d4f`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/16fcfd70df91f3635059917f97f601ff5b7d2d4f) — one Planner creation surface, visible Worker task changes and authenticated host directories |
+| Full regression | 901 tests: 896 passed, 0 failed, 5 existing environment-gated skips |
+| Regression completed at | 2026-10-04T01:35:20Z |
+| Architecture invariants | 6/6 passed at 2026-10-04T01:34:28Z |
+| Browser verification | Planner 57/57; first-chat 46/46; Agent discovery 35/35; project picker 19/19; actual local visual/access checks 25/25 |
+| Browser verified at | Planner 2026-10-04T01:36:27Z; first-chat 2026-10-04T01:36:55Z; discovery 2026-10-04T01:39:18Z; picker 2026-10-04T01:34:32Z; local preview 2026-10-04T01:33:27Z |
+| Independent review | Non-author PASS; independently passed directory API 5/5, architecture 6/6, first-chat 46 checks and Planner 56 checks. The final discovery report separately covers the sidebar new-goal entry. |
+
+New goals enter the full-row Planner workspace. The duplicate modal and its free
+path, acceptance command, JSON arguments and submission-key fields are removed.
+Empty task, delivery, member and history surfaces stay hidden until relevant;
+actual work graphs and approval remain available. Worker cards locate their tasks,
+and task cards expose the existing pause → Planner revision → redispatch flow.
+Direct Planner conversation messages are not repeated in member history.
+
+Authenticated directory browsing stays inside explicit `AF_PROJECT_BROWSE_ROOT`.
+New directories use a selected trusted profile from the existing canonical project
+registry. Registration checks required files and exact acceptance assets, inherits
+configured policy/tier, and never executes acceptance or Agents. Canonical registry
+realpath, shared exclusive locks and atomic replacement preserve symlink aliases.
+Stale-response retries return existing registrations only when project, template,
+profile and policy are equivalent; stale or conflicting updates cannot overwrite.
+Only registry-identity team creation admits registered projects in the browse root.
+
+Browser fixtures exercise real HTTP, filesystem/registry writes and the durable
+team controller with controlled model outputs. The actual host preview uses the
+private playground registry and token file; it validates directory selection,
+accurate model grades and cache-only page openings, without team creation or model
+prompts. The five gated deployment/live-model tests are unchanged.
+
+
 ## V2 Direct Planner Conversation — 2026-10-04
 
 | Attribute | Verification |
