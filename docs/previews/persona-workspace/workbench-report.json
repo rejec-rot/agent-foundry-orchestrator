@@ -1,7 +1,7 @@
 {
   "ok": true,
   "browser": "Chromium",
-  "state_source": "temporary filesystem fixtures; controlled worker dispatch",
+  "state_source": "controlled temporary filesystem fixtures and stubbed worker dispatch; live preview was read-only GET-only",
   "read_checks": [
     "chrome devtools endpoint reachable",
     "page loaded the workbench",
@@ -13,6 +13,7 @@
     "an explicitly chosen identity survives draft edits",
     "the task list rendered from the API",
     "the read-only badge is visible",
+    "the paper/ink/red palette and connected badge/status colors remain readable",
     "the footer states there are no write actions",
     "task detail renders the stage strip and evidence",
     "the column gutter is a scale step (24px)",
@@ -28,6 +29,9 @@
     "long task statuses stay inside their cards at 390px",
     "no horizontal overflow at 320px",
     "long task statuses stay inside their cards at 320px",
+    "a browser token cannot override a server with write routes disabled",
+    "a lost read request shows an explicit interruption label with a visible status mark",
+    "forced-colors keeps the badge and connection readable with system colors",
     "no console errors",
     "the read-only recovery plan renders",
     "the submit form reaches a PASSING preflight in the browser",
@@ -39,10 +43,12 @@
     "the workbench loaded",
     "the create button is disabled until a token is saved",
     "the page states that writes are enabled by the server",
+    "server write capability keeps the badge read-only until this browser has a token",
     "an unauthenticated write is refused by the server (401)",
     "no task was created by the refused write",
     "saving the token enables the create button",
     "the token input is cleared and never left in the DOM",
+    "saving the token changes the badge to writable",
     "the page reports the created task",
     "the task exists on disk after the browser created it",
     "the start button enables for a selected task",
@@ -54,6 +60,8 @@
     "the page never claims the message was carried out",
     "the token is not in the URL",
     "the token is not in the rendered DOM",
+    "clearing the browser token returns the badge to read-only and disables writes",
+    "palette screenshots contain no fixture path or token",
     "no horizontal overflow at 1440px",
     "no horizontal overflow at 390px",
     "no console errors beyond the deliberate auth-refusal probe"
@@ -70,5 +78,24 @@
   ],
   "desktop": "workbench-desktop.png",
   "mobile": "workbench-mobile.png",
-  "verified_at": "2026-10-02T11:49:52.183Z"
+  "live_preview": {
+    "url": "http://127.0.0.1:8787/workbench.html",
+    "verified_at": "2026-10-04T03:14:38.609Z",
+    "checks": {
+      "readonlyBadge": true,
+      "noStoredToken": true,
+      "noTaskSelected": true,
+      "noVisibleLocalPaths": true,
+      "safeHttpMethodsOnly": true,
+      "connection": "live",
+      "badgeContrast": 16.761288776131927,
+      "connectionContrast": 16.761288776131927,
+      "paperBackground": true,
+      "inkHeader": true,
+      "noHorizontalOverflow": true
+    }
+  },
+  "read_verified_at": "2026-10-04T03:12:44.899Z",
+  "write_verified_at": "2026-10-04T03:11:43.056Z",
+  "verified_at": "2026-10-04T03:14:38.609Z"
 }

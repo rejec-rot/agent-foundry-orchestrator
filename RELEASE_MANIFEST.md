@@ -1,5 +1,31 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Delivery Persona Palette — 2026-10-04
+
+| Field | Verified value |
+|---|---|
+| Code commit | [`8ce80dc2e4e3ac04e30d0a830b964f9ad9193f14`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/8ce80dc2e4e3ac04e30d0a830b964f9ad9193f14) |
+| Full regression | 901 tests: 896 passed, 0 failed, 5 existing environment-gated skips |
+| Regression completed at | 2026-10-04T02:59:13Z |
+| Architecture invariants | 6/6 passed at 2026-10-04T02:58:10Z |
+| Browser verification | Read-only workbench 34/34; authenticated write fixture 26/26 |
+| Browser verified at | Read-only 2026-10-04T03:12:44Z; write fixture 2026-10-04T03:11:43Z |
+| Actual local preview | Read-only Chromium checks and desktop/mobile screenshots passed at 2026-10-04T03:14:38Z; no POSTs, model prompts or native scans |
+| Independent review | Non-author PASS; architecture/read/write/style checks 25/25, final browser-probe and CSS diff independently reviewed |
+
+The workbench status palette now uses red, ink, warm neutrals and paper, including
+permission badges, connection indicators, completed stages and message receipts.
+The permission badge uses its writable style only when the server enables writes
+and this browser has a session token, matching the existing button condition.
+Status labels, server authorization and capability checks remain authoritative.
+Small warning text uses deep red; forced colors uses system colors and removes
+badge shadows. No scheduler, adapter, model-scan or credential-storage changes.
+
+Browser checks use real Chromium and HTTP with temporary filesystem fixtures and
+controlled Worker dispatch; no real model prompts or native discovery. Verification
+covers saved/absent/cleared tokens, disabled server writes, readable connection
+failures and 320–1440px layouts. The existing five regression gates remain intact.
+
 
 ## V2 Unified Workspace and Project Picker — 2026-10-04
 
