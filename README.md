@@ -10,9 +10,9 @@
 
 ## 新人先看：一个目标怎样完成
 
-Planner 使用整行聊天面板。选择 Agent、模型、思考强度及已接入项目后，直接发送第一条消息建立商讨会话；无需点击“使用此 Planner”或再填一遍目标。单一项目和单一验收标准自动选中，多项时由你选择。缺少操作权限、项目或可用模型的原因显示在输入框旁。现有团队切换模型后，下一条消息会先等待配置生效，再发送给所选 Planner；断网或版本冲突保留消息，显式重试复用提交标识。
+Planner 使用整行聊天面板。空的计划、交付和成员动态不再重复占位，生成后在「Worker 任务」显示真实任务与分工。选择 Agent、模型、思考强度及已接入项目后，直接发送第一条消息建立商讨会话；无需点击“使用此 Planner”或再填一遍目标。单一项目和单一验收标准自动选中，多项时由你选择。缺少操作权限、项目或可用模型的原因显示在输入框旁。现有团队切换模型后，下一条消息会先等待配置生效，再发送给所选 Planner；断网或版本冲突保留消息，显式重试复用提交标识。
 
-“选择 Worker Agents”可预设每位 Worker 的配置。先与 Planner 商讨边界和验收，再生成行动提案。直接聊天默认由你确认计划和编组后开工；独立的新建目标表单仍可授权 Planner 自动开工。未预设时由 Planner 推荐编组。同配置 Reviewer 通过独立会话复检，交付服务继续授权、验收和正式提升。
+“选择 Worker Agents”可预设每位 Worker 的配置。先与 Planner 商讨边界和验收，再生成行动提案。「新建协作目标」统一进入 Planner 工作区，默认由你确认计划和编组后开工；也可在工作区明确授权 Planner 自动编组开工。未预设时由 Planner 推荐编组。同配置 Reviewer 通过独立会话复检，交付服务继续授权、验收和正式提升。
 
 下面的 Mermaid 流程图可在 GitHub README 中直接查看。主线按从上到下阅读，虚线表示用户介入与成员通信。不支持 Mermaid 的阅读器可打开[协作流程 SVG](docs/diagrams/team-workflow.svg)。
 
@@ -63,6 +63,8 @@ flowchart TD
 商讨阶段修改配置并保存不会启动任务。已开工的团队先暂停并确认运行范围停止，再修改成员配置；新配置用于后续尝试，保留其他成员已接受的成果。派工后不能通过配置入口改变人数。每次保存和确认均校验配置版本，Reviewer 在交付时读取最新 Planner 配置并建立独立会话。
 
 ## 中途改需求会怎样
+
+在「你的团队」点击“调整 Worker 任务”，或点选 Worker 定位它的任务，再点击任务卡上的“通过 Planner 调整”。填写新方向并选择执行成员，提交“暂停并交给 Planner”。这与“选择 Worker Agents”的模型配置入口分开。
 
 例如，Planner 把登录功能分成接口、独立的页面框架和集成测试。这里假定页面框架不依赖接口实现，集成测试依赖二者。你提交接口改向后，先停止旧接口尝试并挂起受影响的测试，再通知 Planner。Planner 改写任务后重新派工，页面框架成果保留。
 
@@ -120,6 +122,8 @@ Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图�
 
 [直接聊天桌面预览](docs/previews/persona-workspace/planner-ready-desktop.png) · [直接聊天手机预览](docs/previews/persona-workspace/planner-ready-mobile.png)
 
+[本机目录选择](docs/previews/persona-workspace/project-picker-desktop.png) · [手机目录选择](docs/previews/persona-workspace/project-picker-mobile.png) · [Worker 改向入口](docs/previews/persona-workspace/planner-rework-desktop.png)
+
 [交付工作台桌面预览](docs/previews/persona-workspace/workbench-desktop.png) · [交付工作台手机预览](docs/previews/persona-workspace/workbench-mobile.png)
 
 启动只读浏览：
@@ -134,6 +138,16 @@ node af-admin.mjs web serve --port 8787
 先按既有部署要求配置项目注册表、验收 profile 和执行器隔离。目标 spec 保留 V2 的 `goal`、`target_path`、`acceptance`、`idempotency_key`。Planner/Worker 的选择属于鉴权后的团队配置，服务端仍检查执行器是否可用；验收 profile 与项目权限仍由受信注册表绑定。可选模型使用执行器支持的模型 ID，留空沿用其 CLI 默认配置。
 
 直接聊天读取 `GET /api/v2/projects` 的项目 ID 与验收标准 ID。创建时提交顶层 `project_id`、`profile_id` 和 `spec: {goal, idempotency_key}`，由服务端从同一受信注册表解析路径与验收命令；此模式拒绝调用方同时提供路径或验收覆盖。配置 `AF_PROJECTS_FILE`、`AF_WEB_TOKEN_FILE` 后以 `--allow-write --root` 启动服务，在页面连接一次操作令牌即可发送。只读启动仍可浏览。
+
+工作项目旁的“浏览目录”打开本机目录选择器，可选已有项目，也可将兼容既有验收标准的新目录接入同一项目注册表。目录浏览要求操作令牌和显式配置的 `AF_PROJECT_BROWSE_ROOT`，只列当前层的文件夹；不上传项目文件，也不调用模型。新增项目需要选择已有的可信验收标准，服务端检查命令允许列表、所需文件与验收资产摘要；不从页面接收自由验收命令。建议将浏览范围配置为项目父目录，例如：
+
+```bash
+AF_PROJECT_BROWSE_ROOT=/absolute/path/to/projects \
+  node af-admin.mjs web serve --port 8787 --allow-write --root /absolute/path/to/registered-project
+# 同时沿用已有 AF_PROJECTS_FILE 与 AF_WEB_TOKEN_FILE 配置
+```
+
+项目注册使用原子写入和注册表版本校验；过期选择需要刷新确认。读取目录和接入目录不会启动 Planner 或 Workers。项目位于服务所在电脑；远程浏览器选择的是服务主机目录。
 
 将下面的示例保存为 `team-goal.json`，并替换项目路径、目标与验收命令。验收命令必须与项目已登记的受信 profile 一致；`idempotency_key` 用于识别同一提交的重试。
 
@@ -211,6 +225,7 @@ Web 使用现有令牌鉴权启动：`node af-admin.mjs web serve --allow-write 
 
 | 范围 | 记录结果 | 说明 |
 |---|---|---|
+| 统一创建与项目选择（2026-10-04） | 全量 901 项：896 通过、5 个既有门控跳过、0 失败；架构 6/6、Planner 57 项、首次聊天 46 项、目录选择 19 项、发现目录 35 项通过 | 覆盖唯一创建入口、真实 Worker 局部改向、鉴权本机目录、可信验收模板、注册幂等与符号链接；模型工作流使用受控适配器，实际本机页面另有 25 项检查且不发送模型请求 |
 | Planner 工作台（2026-10-02） | 本地全量 819 项：816 通过、3 跳过、0 失败；Planner 浏览器 27 项、既有界面 23 项通过 | 覆盖简洁创建、模型与思考强度选择、聊天、计划确认、局部暂停与改向、同配置新会话复检、重启恢复；使用受控模型适配器 |
 | 统一 P5 边框（2026-10-02） | 前端相关测试 13 项、浏览器回归 102 项、边框专项检查 75 项、部署静态预检 46 项通过 | 覆盖两页、7 个弹窗、320–1920px 布局、长状态卡片、焦点与高对比模式；专项检查使用只读服务与 DOM 样例 |
 | 协作核心与全量回归（2026-10-01） | 802 项：799 通过、3 跳过、0 失败、0 取消 | 模型输出使用受控适配器；文件投影、CAS、锁、验收和 Git 晋升使用实际实现；见[实施记录](docs/reviews/2026-10-01-team-core-implementation.md) |

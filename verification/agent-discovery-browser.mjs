@@ -89,6 +89,10 @@ try{
   await browser.send('Page.navigate',{url:origin+'/teams.html'});
   await browser.waitFor("document.getElementById('agent-scan-status')?.textContent.includes('已加载目录')&&document.getElementById('connection')?.dataset.status==='connected'",3000);
   check('opening the page reads the existing catalog without a native scan',catalogReads===1&&scanReads===0);
+  check('new workspace has one Planner composer and no legacy create fields',await browser.evaluate("(()=>{const removed=['create-dialog','create-form','planner-executor','planner-model-select','planner-model-input','planner-effort','goal','target','command','args','key','create'];return removed.every(id=>!document.getElementById(id))&&Boolean(document.getElementById('console-planner-form'))&&Boolean(document.querySelector('[data-new-goal]'))})()"));
+  await browser.click('#sidebar [data-new-goal]');
+  check('sidebar new-goal entry opens the full-row Planner workspace without a modal',await browser.evaluate("(()=>{const planner=document.querySelector('.planner-console'),board=document.querySelector('.board-columns');return !document.querySelector('dialog[open]')&&document.getElementById('work-area').hidden&&Boolean(planner&&board)&&Math.abs(planner.getBoundingClientRect().width-board.getBoundingClientRect().width)<2&&Boolean(document.getElementById('console-project'))&&Boolean(document.getElementById('console-acceptance'))&&Boolean(document.getElementById('console-dispatch-mode'))})()"));
+  check('an empty workspace hides Worker tasks until a plan exists',await browser.evaluate("document.getElementById('work-area').hidden&&document.getElementById('show-worker-tasks').hidden"));
   check('cached metadata keeps its real scan date instead of the page opening time',await browser.evaluate("document.getElementById('agent-scan-details').textContent.includes('2020')"));
   check('the explicit rescan button remains visible and enabled',await browser.evaluate("document.getElementById('scan-agents').textContent.includes('重新扫描')&&!document.getElementById('scan-agents').disabled"));
   await browser.send('Page.reload');
@@ -116,9 +120,9 @@ try{
   check('a queued manual scan takes priority over a queued cache read',catalogReads===6&&scanReads===1);
   check('scan summary distinguishes installed, matched, and dispatchable counts',await browser.evaluate("document.getElementById('agent-scan-status').textContent.includes('7 个已安装客户端 / 8 个已匹配适配器 / 5 个当前可派工')"));
   check('discovery details show protocol, adapter status, and public source',await browser.evaluate("(()=>{const cards=[...document.querySelectorAll('.agent-inventory-card')];return cards.length===9&&document.querySelector('.agent-inventory-card[data-adapter=unsupported]')?.textContent.includes('Kiro client detected')&&document.querySelector('.agent-inventory-card[data-adapter=matched] .agent-inventory-heading span')?.textContent==='RPC'})()"));
-  check('Planner marks DSH as Worker-only and Kiro as pending adaptation',await browser.evaluate("(()=>{const options=[...document.getElementById('planner-executor').options];return options.find(o=>o.value==='dsh')?.disabled&&options.find(o=>o.value==='dsh')?.textContent.includes('仅 Worker')&&options.find(o=>o.value==='kiro')?.disabled&&options.find(o=>o.value==='kiro')?.textContent.includes('待适配')})()"));
-  await browser.click('#configure-workers');await browser.waitFor("document.getElementById('dispatch-dialog').open && document.querySelector('[data-profile-executor]')");
-  check('new-team Worker options include DSH and exclude unsupported Kiro',await browser.evaluate("(()=>{const options=[...document.querySelectorAll('[data-profile-executor]')[0].options];return options.some(o=>o.value==='dsh'&&!o.disabled)&&!options.some(o=>o.value==='kiro')})()"));
+  check('Planner marks DSH as Worker-only and Kiro as pending adaptation',await browser.evaluate("(()=>{const options=[...document.getElementById('console-planner-executor').options];return options.find(o=>o.value==='dsh')?.disabled&&options.find(o=>o.value==='dsh')?.textContent.includes('仅 Worker')&&options.find(o=>o.value==='kiro')?.disabled&&options.find(o=>o.value==='kiro')?.textContent.includes('待适配')})()"));
+  await browser.click('#configure-workers');await browser.waitFor("document.getElementById('dispatch-dialog').open&&document.querySelector('[data-profile-executor]')");
+  check('Worker profile options include DSH and exclude unsupported Kiro',await browser.evaluate("(()=>{const options=[...document.querySelectorAll('[data-profile-executor]')[0].options];return options.some(o=>o.value==='dsh'&&!o.disabled)&&!options.some(o=>o.value==='kiro')})()"));
   await browser.evaluate("(()=>{const s=document.querySelectorAll('[data-profile-executor]')[0];s.value='dsh';s.dispatchEvent(new Event('change',{bubbles:true}))})()");
   check('DSH Worker selection uses the default model and effort only',await browser.evaluate("document.querySelectorAll('[data-profile-model-select]')[0].disabled&&document.querySelectorAll('[data-profile-effort]')[0].disabled"));
   await browser.evaluate("(()=>{const s=document.querySelector('[data-profile-executor]');s.value='cline';s.dispatchEvent(new Event('change',{bubbles:true}))})()");
@@ -137,18 +141,20 @@ try{
   check('unverified Qoder model keeps reasoning at the default',await browser.evaluate("document.querySelectorAll('[data-profile-effort]')[0].disabled&&document.querySelectorAll('[data-profile-effort]')[0].value===''"));
   await browser.evaluate("document.getElementById('dispatch-dialog').close()");
   await browser.evaluate("(()=>{const s=document.getElementById('console-planner-executor');s.value='cline';s.dispatchEvent(new Event('change',{bubbles:true}))})()");
-  check('Cline Planner uses the same exact grades as its Worker',await browser.evaluate("(()=>{const e=document.getElementById('console-planner-effort');return !e.disabled&&[...e.options].map(o=>o.value).filter(Boolean).join(',')==='low,high'&&!document.getElementById('planner-effort').disabled})()"));
+  check('Cline Planner exposes only its exact verified grades',await browser.evaluate("(()=>{const e=document.getElementById('console-planner-effort');return !e.disabled&&[...e.options].map(o=>o.value).filter(Boolean).join(',')==='low,high'})()"));
   await browser.evaluate("(()=>{const s=document.getElementById('console-planner-executor');s.value='command-code';s.dispatchEvent(new Event('change',{bubbles:true}))})()");
-  check('cmd Planner uses its model grades in both configuration forms',await browser.evaluate("(()=>{const e=document.getElementById('console-planner-effort');return !e.disabled&&[...e.options].map(o=>o.value).filter(Boolean).join(',')==='low,medium,high'&&!document.getElementById('planner-effort').disabled})()"));
+  check('cmd Planner exposes its exact verified grades',await browser.evaluate("(()=>{const e=document.getElementById('console-planner-effort');return !e.disabled&&[...e.options].map(o=>o.value).filter(Boolean).join(',')==='low,medium,high'})()"));
   await browser.evaluate("(()=>{const s=document.getElementById('console-planner-executor');s.value='qoder';s.dispatchEvent(new Event('change',{bubbles:true}));const m=document.getElementById('console-planner-model-select');m.value='qoder/fast';m.dispatchEvent(new Event('change',{bubbles:true}));const e=document.getElementById('console-planner-effort');e.value='xhigh';e.dispatchEvent(new Event('change',{bubbles:true}))})()");
-  check('Qoder Planner choice preserves the exact effort in the new-goal dialog',await browser.evaluate("(()=>{const e=document.getElementById('planner-effort');return !e.disabled&&e.value==='xhigh'&&[...e.options].map(o=>o.value).filter(Boolean).join(',')==='low,medium,xhigh'&&e.options[0].textContent.includes('medium')})()"));
+  check('Qoder Planner preserves the selected exact effort in the new-session controls',await browser.evaluate("(()=>{const e=document.getElementById('console-planner-effort');return !e.disabled&&e.value==='xhigh'&&[...e.options].map(o=>o.value).filter(Boolean).join(',')==='low,medium,xhigh'&&e.options[0].textContent.includes('medium')})()"));
   await browser.evaluate("(()=>{const s=document.getElementById('console-planner-executor');s.value='pi';s.dispatchEvent(new Event('change',{bubbles:true}))})()");
-  check('Pi requires a provider model before saving the Planner configuration',await browser.evaluate("document.getElementById('console-planner-model-select').options[0].disabled&&document.getElementById('console-planner-model-select').options[0].textContent==='请选择模型'&&document.getElementById('save-console-planner').disabled"));
+  check('Pi requires a provider model before the first Planner message can create a team',await browser.evaluate("document.getElementById('console-planner-model-select').options[0].disabled&&document.getElementById('console-planner-model-select').options[0].textContent==='请选择模型'&&document.getElementById('planner-send').disabled"));
   await browser.evaluate("(()=>{const m=document.getElementById('console-planner-model-select');m.value='pi/default';m.dispatchEvent(new Event('change',{bubbles:true}))})()");
   check('Pi Planner model and verified effort levels are selectable without translating off',await browser.evaluate("(()=>{const m=document.getElementById('console-planner-model-select'),e=document.getElementById('console-planner-effort');return m.value==='pi/default'&&!e.disabled&&[...e.options].some(o=>o.value==='minimal')&&[...e.options].some(o=>o.value==='high')&&[...e.options].some(o=>o.value==='off')&&![...e.options].some(o=>o.value==='none')})()"));
-  check('unregistered Planner remains configurable but cannot create a team',await browser.evaluate("document.getElementById('create').disabled&&document.getElementById('model-selection-hint').textContent.includes('注册后才能派工')"));
+  check('unregistered Planner cannot start a new session',await browser.evaluate("document.getElementById('planner-send').disabled&&document.getElementById('console-profile-hint').textContent.includes('待接入')"));
   showTeam=true;
   await browser.send('Page.reload');
+  await browser.waitFor("document.getElementById('teams')?.querySelector('[data-team=team-discovery]')&&document.getElementById('team-state')?.textContent==='等待确认计划'");
+  await browser.click('#teams [data-team="team-discovery"]');
   await browser.waitFor("document.getElementById('team-state')?.textContent==='等待确认计划'");
   check('reopening after a manual scan still does not trigger another scan',scanReads===1);
   await browser.click('#configure-dispatch');
@@ -163,4 +169,4 @@ try{
   await new Promise(resolve=>server.close(resolve));
   rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});
 }
-console.log(JSON.stringify({ok:true,browser:'Chromium',checks},null,2));
+console.log(JSON.stringify({ok:true,browser:'Chromium',checks,check_count:checks.length,verified_at:new Date().toISOString()},null,2));

@@ -8,10 +8,10 @@
 
 默认地址 `/` 进入 `/teams.html`。深色侧栏承载团队切换，纸白工作区承载真实状态。海报标题、斜切红色底块、网点、原创几何面具与 AF 标记构成视觉重点。业务卡片使用稳定网格，避免装饰影响阅读。
 
-主流程是“选择 Planner 模型 → 聊天商讨 → 生成行动计划 → 确认 Worker 数量、模型与分工 → 开工 → 同模型独立会话复检”。创建时也可选择由 Planner 推荐编组后自动开工。左侧常驻真实 Planner 对话，右侧是提案、派工确认与工作项；动态和回执收在下方。已选择团队时缩小顶部海报，手机成员采用横向滚动。漫画对话气泡、斜切面具徽章、calling card、四步行动条与返工条加强 P5 视觉，也标记真实阶段。
+主流程是“选择 Planner 模型 → 聊天商讨 → 生成行动计划 → 确认 Worker 数量、模型与分工 → 开工 → 同模型独立会话复检”。创建时也可选择由 Planner 推荐编组后自动开工。Planner 对话独占整行，下面在有计划时显示提案、派工确认与 Worker 任务；动态和回执收在下方。已选择团队时缩小顶部海报，手机成员采用横向滚动。漫画对话气泡、斜切面具徽章、calling card、四步行动条与返工条加强 P5 视觉，也标记真实阶段。
 
-- 点击 Planner 聚焦常驻对话框；点击 Worker，选择真实接收者并发送消息。
-- Planner 面板常驻 Agent、模型与思考强度选单；“你的团队”旁的“选择 Worker Agents”逐位配置 Worker，创建前和商讨阶段即可预设。目录模型用下拉选单，自定义模型显示额外输入框；保存配置不会开工，未保存的 Planner 修改会阻止继续聊天或请求提案。
+- 点击 Planner 聚焦常驻对话框；点击 Worker 定位它的任务，再通过 Planner 调整。成员消息保留独立入口。
+- Planner 面板常驻 Agent、模型与思考强度选单；“你的团队”旁的“选择 Worker Agents”逐位配置 Worker，创建前和商讨阶段即可预设。目录模型用下拉选单，自定义模型显示额外输入框；保存配置不会开工，直接发送消息或请求提案会先应用所选 Planner 配置，待回执确认后继续。
 - 打开页面自动扫描 Agent 和原生模型目录，团队上方显示安装数、接入数、模型数及扫描时间，可手动重扫。强度选单只展示所选模型确认的等级，并显示具体值；没有元数据则禁用覆盖、沿用默认。重扫保留配置草稿并清除失效等级，不触发派工。
 - Command Code 在 Agent 选单中显示为 `cmd`，通过原生 `--list-models` 读取目录，Planner 与每位 Worker 都能独立选择；默认项显示用户当前配置的模型。它的文本模型目录不携带每模型等级，只有明确的 BYOK 或注册表等级元数据才启用强度覆盖。
 - 已开工的团队先暂停，全部执行范围停止后才能换配置；保留已接受成果，配置用于后续尝试。确认同时绑定配置版本，Reviewer 在交付时继承最新 Planner 配置并建立独立会话。
@@ -47,21 +47,21 @@
 
 ## 预览
 
-协作流程截图来自真实 Chromium、HTTP 服务与协作控制器，模型输出使用受控测试适配器。新增空态与手机创建视口截图来自当前只读本地预览。
+协作流程截图来自真实 Chromium、HTTP 服务与协作控制器，模型输出使用受控测试适配器。新建工作区和目录选择截图来自相同的受控 Chromium 测试；直接聊天截图来自实际本机服务，未发送模型消息。
 
 ![Planner 桌面协作空间](../previews/persona-workspace/planner-desktop.png)
 
 [查看手机长图](../previews/persona-workspace/planner-mobile.png) · [手机编组窗口](../previews/persona-workspace/planner-dispatch-mobile.png) · [暂停并通知 Planner](../previews/persona-workspace/planner-rework-desktop.png)
 
-[简化后的创建页](../previews/persona-workspace/planner-create-desktop.png) · [手机模型与思考强度选择](../previews/persona-workspace/planner-create-mobile.png)
+[统一新建工作区](../previews/persona-workspace/planner-new-session-desktop.png) · [手机新建工作区](../previews/persona-workspace/planner-new-session-mobile.png)
 
 [常驻 Planner 配置](../previews/persona-workspace/planner-config-desktop.png) · [逐位 Worker 配置](../previews/persona-workspace/worker-config-desktop.png) · [手机 Worker 配置](../previews/persona-workspace/worker-config-mobile.png)
 
-[尚未创建团队时的完整边框](../previews/persona-workspace/teams-empty-desktop.png) · [手机创建弹窗视口](../previews/persona-workspace/create-dialog-viewport.png)
+[本机目录选择](../previews/persona-workspace/project-picker-desktop.png) · [手机目录选择](../previews/persona-workspace/project-picker-mobile.png)
 
 [Command Code Planner 模型选择](../previews/persona-workspace/command-code-planner-desktop.png) · [Command Code Worker 模型选择](../previews/persona-workspace/command-code-workers-desktop.png) · [手机 Command Code 编组](../previews/persona-workspace/command-code-workers-mobile.png)
 
-创建入口只保留目标、项目和 Planner 的 Agent / 模型 / 思考强度。Worker 人数默认在计划确认时选择，也可提前通过独立配置入口预设；开工授权、验收参数与提交标识收进“更多设置”。模型和强度联动：切换 Agent 清除不兼容覆盖，没有思考等级的模型禁用强度覆盖。Cline 的模型名称目录不作为强度证据，开关和 token 预算不转换成等级；自定义模型也不继承其他模型的强度。手机端底部主按钮保持可见。Reviewer 沿用 Planner 配置并开启独立会话。
+创建入口统一聚焦 Planner 的项目、验收标准、Agent / 模型 / 思考强度与第一条消息。Worker 人数默认在计划确认时选择，也可提前通过独立配置入口预设；开工授权由工作区明确选择；验收标准绑定注册项目，提交标识由内部幂等逻辑管理，不再要求手填命令或 JSON 参数。模型和强度联动：切换 Agent 清除不兼容覆盖，没有思考等级的模型禁用强度覆盖。Cline 的模型名称目录不作为强度证据，开关和 token 预算不转换成等级；自定义模型也不继承其他模型的强度。手机端底部主按钮保持可见。Reviewer 沿用 Planner 配置并开启独立会话。
 
 ![交付工作台](../previews/persona-workspace/workbench-desktop.png)
 
@@ -79,6 +79,10 @@ node verification/web-write-browser.mjs
 node verification/deploy-preflight.mjs
 node --test tests/team-agent-configuration.test.mjs tests/team-planner.test.mjs tests/team-api.test.mjs tests/web-api-readonly.test.mjs tests/web-api-write-auth.test.mjs tests/web-style-scale.test.mjs
 ```
+
+2026-10-04：全量 901 项（896 通过、5 个既有门控跳过、0 失败）、架构 6/6；Planner Chromium 57 项、首次聊天 46 项、项目目录 19 项、Agent 发现目录 35 项通过。目录测试使用实际文件系统、HTTP 与 canonical 注册表，包含响应丢失、可信验收资产和符号链接；真实本机视觉及目录选择 25 项通过，无模型请求。
+
+以下保留早期阶段检查记录：
 
 - 协作页 Chromium 验证 23 项行为：默认入口、历史任务书签、鉴权操作、成员和依赖、消息回执与转义、定向调整、无关产物保留、旧结果拒绝、刷新恢复、桌面网格、手机导航与焦点、新建弹窗、错误草稿保留、键盘标签、本地字体、中文标题与正文排版、斜切按钮、响应式与减少动画，以及浏览器创建时 Planner 配置落库与 Reviewer 配置绑定。
 - Planner 页 Chromium 验证 40 项行为，覆盖真实聊天、消息转义、确认前不派工、计划后修改人数、不同执行器与模型、逐项分配、暂停、Planner 改写、下游挂起、旧结果拒绝、无关成果保留、重载与手机编组窗口；包括简洁创建、常驻 Planner 配置保存、商讨阶段的 Worker 配置、模型下拉与自定义、执行器和模型的强度限制，以及真实执行请求中的 Planner / Worker 强度。新增自动扫描、重扫保留草稿、未知 Planner 和 Worker 模型清除强度覆盖。

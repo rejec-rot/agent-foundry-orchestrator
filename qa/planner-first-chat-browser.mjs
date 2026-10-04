@@ -297,7 +297,7 @@ try {
   await browser.click('#refresh');await browser.waitFor('window.blockedTeamReads>0');
   check('an actual detail read fails while the message response is uncertain',await browser.evaluate('window.blockedTeamReads>0'));
   await browser.click('#planner-send');
-  await browser.waitFor("document.getElementById('planner-conversation')?.textContent.includes('建议先明确目标与验收') && !document.getElementById('planner-input').value");
+  await browser.waitFor("document.getElementById('planner-conversation')?.textContent.includes('建议先明确目标与验收') && !document.getElementById('planner-input').value && !document.getElementById('planner-input').readOnly");
   const messageRequests=await browser.evaluate('window.messageRequests');
   equal('message response-loss retry uses the identical command ID and payload',messageRequests[1],messageRequests[0]);
   equal('message response loss and retry launch only one Planner discussion',fx.calls.length,1);

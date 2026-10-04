@@ -13,8 +13,8 @@
 
 import { createServer } from 'node:http';
 import { spawnManaged } from '../lib/child-process.mjs';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { extname, join, normalize, sep } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -34,7 +34,10 @@ import { createV2Task, dispatchV2Task } from '../lib/v2-service.mjs';
 import { requestCancel, readCancelRequest } from '../lib/trusted-import/cancel.mjs';
 import { eventsDirFor, readTaskEvents } from '../lib/v2-events.mjs';
 import { contentIndex, readTaskBlob } from '../lib/content.mjs';
-import { describeRegistry, loadProjectRegistry, resolveAcceptanceProfile, resolveProject } from '../lib/projects.mjs';
+import {
+  browseProjectDirectories, describeRegistry, loadProjectRegistry, registerProjectFromProfile,
+  resolveAcceptanceProfile, resolveProject, resolveProjectBrowseRoot,
+} from '../lib/projects.mjs';
 import { collaborationView, queueMessage } from '../lib/collaboration.mjs';
 import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 import { disabledExecutors } from '../lib/operator-control.mjs';
@@ -87,10 +90,11 @@ export function readTaskJson(tasksDir, taskId) {
   try { return JSON.parse(readFileSync(join(tasksDir, `${taskId}.json`), 'utf8')); } catch { return null; }
 }
 
-export function capabilities({ allowRecord = false, writesAuthenticated = false } = {}) {
+export function capabilities({ allowRecord = false, writesAuthenticated = false, projectBrowsingConfigured = false } = {}) {
   return {
     schema: 'af-v2-capabilities-v1',
-    read: { task_list: true, task_detail: true, task_evidence: true, task_events: true, task_content: true, collaboration: true, exceptions: true, executors: true, environment: true, recovery_plan: true, submit_preflight: true },
+    read: { task_list: true, task_detail: true, task_evidence: true, task_events: true, task_content: true, collaboration: true, exceptions: true, executors: true, environment: true, recovery_plan: true, submit_preflight: true,
+      project_directory_browse: projectBrowsingConfigured === true && writesAuthenticated === true },
     // Writes are advertised only when the operator started the server with --allow-write AND a
     // write token is configured: an unauthenticated mutating route is never exposed (§7.3).
     // Recovering/approving/promoting stay unavailable in both cases.
@@ -101,6 +105,7 @@ export function capabilities({ allowRecord = false, writesAuthenticated = false 
       cancel_task: allowRecord === true && writesAuthenticated === true,
       queue_message: allowRecord === true && writesAuthenticated === true,
       create_team: allowRecord === true && writesAuthenticated === true,
+      register_project: allowRecord === true && writesAuthenticated === true && projectBrowsingConfigured === true,
       team_command: allowRecord === true && writesAuthenticated === true,
       recover_task: false,
       approve_human_gate: false,
@@ -170,6 +175,10 @@ export function createReadApi({
   const writeToken = token ?? resolveWriteToken(env);
   const writeAuth = (req) => authorizeWrite({ req, token: writeToken, expectedHosts: [req.headers?.host ?? ''] });
   const shape = (model) => redactModel(model, { redact, hash: hashPaths });
+  // Directory browsing and registration are token-authenticated and intentionally return the
+  // selected canonical path so the browser can use it in the next request. Other read models keep
+  // the configured host-path redaction policy.
+  const fullPathShape = (model) => redactModel(model, { redact: false, hash: false });
   let scanPromise=null,scanCompletedAt=0;
 
   const readBody = (req) => new Promise((resolve, reject) => {
@@ -189,9 +198,9 @@ export function createReadApi({
     const path = decodeURIComponent(url.pathname);
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      // Only the two explicitly-designed POST routes are accepted; everything else keeps the
+      // Only explicitly-designed POST routes are accepted; everything else keeps the
       // read-only refusal, and none of them can start, cancel, approve or promote.
-      const postRoutes = new Set(['/api/v2/tasks/preflight', '/api/v2/tasks/record', '/api/v2/tasks/create']);
+      const postRoutes = new Set(['/api/v2/tasks/preflight', '/api/v2/tasks/record', '/api/v2/tasks/create', '/api/v2/projects/register']);
       const recoveryMatch = /^\/api\/v2\/tasks\/([^/]+)\/recovery-plan$/.exec(path);
       const actionMatch = /^\/api\/v2\/tasks\/([^/]+)\/(start|cancel)$/.exec(path);
       const messageMatch = /^\/api\/v2\/tasks\/([^/]+)\/messages$/.exec(path);
@@ -199,7 +208,7 @@ export function createReadApi({
       const teamWrite = path==='/api/teams' || Boolean(teamCommandMatch);
       if (req.method !== 'POST' || (!postRoutes.has(path) && !recoveryMatch && !actionMatch && !messageMatch && !teamWrite)) {
         res.setHeader('allow', 'GET');
-        sendJson(res, 405, { error: 'method_not_allowed', reason: 'this API is read-only apart from the two designed POST routes; it never starts, cancels, approves or promotes anything' });
+        sendJson(res, 405, { error: 'method_not_allowed', reason: 'this API is read-only apart from its designed POST routes; it never approves or promotes anything' });
         return;
       }
       let body;
@@ -220,7 +229,7 @@ export function createReadApi({
 
       // Read-only POSTs (preflight, recovery-plan) stay open; everything that mutates requires the
       // operator token + CSRF header + a matching Origin.
-      const mutating = path === '/api/v2/tasks/record' || path === '/api/v2/tasks/create' || Boolean(actionMatch) || Boolean(messageMatch) || teamWrite;
+      const mutating = path === '/api/v2/tasks/record' || path === '/api/v2/tasks/create' || path === '/api/v2/projects/register' || Boolean(actionMatch) || Boolean(messageMatch) || teamWrite;
       if (mutating) {
         const auth = writeAuth(req);
         if (!auth.ok) { sendJson(res, auth.status, shape({ error: 'unauthorized', reason: auth.reason })); return; }
@@ -231,6 +240,34 @@ export function createReadApi({
       }
 
       try {
+        if (path === '/api/v2/projects/register') {
+          const allowedFields = new Set(['root', 'project_id', 'template_project_id', 'template_profile_id', 'expected_registry_digest']);
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).some((key) => !allowedFields.has(key))) {
+            sendJson(res, 422, shape({ ok: false, reason: 'project registration accepts root, project_id, template_project_id, template_profile_id and expected_registry_digest only' }));
+            return;
+          }
+          const browseRoot = resolveProjectBrowseRoot(env);
+          if (!browseRoot.ok) {
+            sendJson(res, browseRoot.configured ? 503 : 403, shape({ ok: false, reason: browseRoot.reason }));
+            return;
+          }
+          const registryFile = env.AF_PROJECTS_FILE ?? join(process.cwd(), 'config', 'projects.json');
+          const allowlist = loadAcceptanceAllowlist({ file: acceptanceAllowlistFile(env) });
+          const model = registerProjectFromProfile({
+            file: registryFile,
+            expectedRegistryDigest: payload.expected_registry_digest,
+            browseRoot: browseRoot.root,
+            root: payload.root,
+            projectId: payload.project_id,
+            templateProjectId: payload.template_project_id,
+            templateProfileId: payload.template_profile_id,
+            workspaceRoot: env.AF_V2_WORKSPACE_ROOT || join(roots.tasks, '..', 'v2-workspaces'),
+            allowlist,
+            acceptanceCommandAllowed,
+          });
+          sendJson(res, model.ok ? (model.created === false ? 200 : 201) : (model.status ?? 422), model.ok ? fullPathShape(model) : shape(model));
+          return;
+        }
         if(teamCommandMatch) {
           const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,
             teamId:teamCommandMatch[1],command:payload.command,commandId:payload.command_id,ensure:ensureController});
@@ -241,7 +278,7 @@ export function createReadApi({
           const loaded=loadProjectRegistry({file:registryFile});
           if(!loaded.ok){sendJson(res,422,shape({ok:false,reason:loaded.reason}));return;}
           const registryScoped=Object.hasOwn(payload,'project_id')||Object.hasOwn(payload,'profile_id');
-          let spec=payload.spec,profileId=null;
+          let spec=payload.spec,profileId=null,projectAllowedRoots=allowedRoots;
           const allowlist=loadAcceptanceAllowlist({file:acceptanceAllowlistFile(env)});
           if(registryScoped) {
             const invalid=(reason)=>{sendJson(res,422,shape({ok:false,reason}));return;};
@@ -254,6 +291,14 @@ export function createReadApi({
             }
             const resolvedProject=resolveProject({registry:loaded.registry,projectId:payload.project_id});
             if(!resolvedProject.ok){invalid(resolvedProject.reason);return;}
+            const browseRoot=resolveProjectBrowseRoot(env);
+            if(browseRoot.ok) {
+              try {
+                const targetRoot=realpathSync(resolvedProject.project.root);
+                const rel=relative(resolve(browseRoot.root),resolve(targetRoot));
+                if(rel===''||(!rel.startsWith('..')&&!isAbsolute(rel))) projectAllowedRoots=[...new Set([...allowedRoots,browseRoot.root])];
+              } catch { /* createV2Task will refuse a project root it cannot resolve */ }
+            }
             const profileMatches=(resolvedProject.project.acceptance_profiles??[]).filter(profile=>profile.profile_id===payload.profile_id);
             if(profileMatches.length!==1){
               invalid(profileMatches.length?'the requested acceptance profile id is ambiguous':'no such acceptance profile for the registered project');return;
@@ -264,7 +309,7 @@ export function createReadApi({
             spec={...spec,target_path:resolvedProject.project.root,acceptance:trusted.identity.acceptance};
             profileId=payload.profile_id;
           }
-          const result=createCollaborationTeam({spec,workerCount:payload.worker_count??3,planning:payload.planning??null,allowedRoots,
+          const result=createCollaborationTeam({spec,workerCount:payload.worker_count??3,planning:payload.planning??null,allowedRoots:registryScoped?projectAllowedRoots:allowedRoots,
             tasksDir:roots.tasks,runtimeDir:roots.runtime,locksDir:locksDir??roots.locks,env,
             submissionsDir:env.AF_SUBMISSION_DIR??join(roots.runtime,'submissions'),
             projectRegistry:loaded.registry,registryFile,registryDigest:loaded.digest,
@@ -385,6 +430,17 @@ export function createReadApi({
 
     const at = now();
     try {
+      if(path==='/api/v2/project-directories') {
+        const auth=writeAuth(req);
+        if(!auth.ok) return sendJson(res,auth.status,shape({error:'unauthorized',reason:auth.reason}));
+        const browseRoot=resolveProjectBrowseRoot(env);
+        if(!browseRoot.ok) return sendJson(res,browseRoot.configured?503:403,shape({error:'project_browsing_unavailable',reason:browseRoot.reason}));
+        const registryFile=env.AF_PROJECTS_FILE??join(process.cwd(),'config','projects.json');
+        const loaded=loadProjectRegistry({file:registryFile});
+        const model=browseProjectDirectories({browseRoot:browseRoot.root,path:url.searchParams.has('path')?url.searchParams.get('path'):null,
+          registry:loaded.ok?loaded.registry:null});
+        return sendJson(res,model.ok?200:(model.status??422),model.ok?fullPathShape(model):shape({error:'directory_browse_refused',reason:model.reason}));
+      }
       if(path==='/api/teams') return sendJson(res,200,shape({teams:listTeams(roots.runtime).map(t=>teamView(roots.runtime,t.team_id))}));
       const teamMatch=/^\/api\/teams\/([^/]+)$/.exec(path);
       if(teamMatch){const model=teamView(roots.runtime,teamMatch[1]);return sendJson(res,model?200:404,shape(model??{error:'not_found'}));}
@@ -394,14 +450,14 @@ export function createReadApi({
           const configured=registry.configured===true;
           return sendJson(res,configured?503:200,shape({schema:'af-v2-projects-v1',configured,projects:[],...(configured?{reason:'the project registry is unreadable or invalid'}:{})}));
         }
-        return sendJson(res,200,shape({schema:'af-v2-projects-v1',configured:true,projects:registry.registry.projects.map(project=>({
+        return sendJson(res,200,shape({schema:'af-v2-projects-v1',configured:true,registry_digest:registry.digest,projects:registry.registry.projects.map(project=>({
           project_id:project.project_id,profiles:(project.acceptance_profiles??[]).map(profile=>({profile_id:profile.profile_id})),
         }))}));
       }
       if (path === '/api/v2/capabilities') {
         const registry = loadProjectRegistry({ file: env.AF_PROJECTS_FILE ?? join(process.cwd(), 'config', 'projects.json') });
         return sendJson(res, 200, shape({
-          ...capabilities({ allowRecord, writesAuthenticated: writeToken.configured === true }),
+          ...capabilities({ allowRecord, writesAuthenticated: writeToken.configured === true, projectBrowsingConfigured: resolveProjectBrowseRoot(env).ok }),
           projects: registry.ok
             ? { configured: true, digest: registry.digest, count: registry.registry.projects.length }
             : { configured: registry.configured === true, digest: null, count: 0, reason: registry.reason },

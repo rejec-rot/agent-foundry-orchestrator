@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "browser": "Chromium",
+  "checks": [
+    "empty workspace has one creation surface and no empty work/delivery/history board",
+    "directory browsing asks for operator access before sending a filesystem request",
+    "picker starts at the configured host root",
+    "host root itself cannot be registered",
+    "outside symlinks are hidden and directory names are escaped",
+    "registered directory offers selection without repeating profile registration",
+    "selecting an existing project performs no registration",
+    "existing project and acceptance remain selected in the Planner",
+    "incompatible acceptance template is refused without adding a project",
+    "refused registration keeps the selected folder and editable settings",
+    "new project requires an explicit trusted template rather than a free command",
+    "directory picker fits mobile and keeps its selection action visible",
+    "lost registration response preserves a committed project and freezes the original selection",
+    "closing an uncertain picker leaves a visible recovery entrance",
+    "retry confirms the durable registration without a duplicate write",
+    "new project and its trusted acceptance become the Planner selection",
+    "registration binds the selected canonical path and exact acceptance assets",
+    "ordinary navigation and directory registration never trigger an Agent scan",
+    "no frontend JavaScript errors"
+  ],
+  "check_count": 19,
+  "verified_at": "2026-10-04T01:34:32.927Z"
+}

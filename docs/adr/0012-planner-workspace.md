@@ -25,7 +25,7 @@
 
 `workers` 可省略，使用 `worker_count` 作为初始参考编组；显式提供时持久化为操作员的 `planning.worker_preferences`，Planner 必须保留人数和配置。模型填执行器支持的 ID，`null` 沿用 CLI 默认值。每个 Worker 可以使用相同或不同的配置。服务端仍拒绝未知、不可用、被操作员禁用的执行器，以及适配器不支持的模型覆盖；Planner/Reviewer 要求支持独立会话身份。
 
-`effort` 可省略或设为 `null`，沿用执行器默认思考强度；显式等级须通过服务端执行器和模型元数据校验。创建页直接展示 Planner 的 Agent、模型与思考强度，默认折叠开工授权与验收参数，不提前要求 Worker 人数。Planner 的编组提案可选择每位 Worker 的模型与 `effort`，手动确认时可调整。Planner 配置持久化到成员、任务的 `author_effort` / `reviewer_effort` 和同模型复检策略，每次执行会传入 capsule；运行记录也保存强度。
+`effort` 可省略或设为 `null`，沿用执行器默认思考强度；显式等级须通过服务端执行器和模型元数据校验。创建入口统一到 Planner 工作区，直接展示 Agent、模型、思考强度、注册项目、验收标准与开工授权，不提前要求 Worker 人数。旧的重复创建弹窗及任意路径、验收命令、JSON 参数、提交标识输入已删除；内部仍保留提交幂等性。Planner 的编组提案可选择每位 Worker 的模型与 `effort`，手动确认时可调整。Planner 配置持久化到成员、任务的 `author_effort` / `reviewer_effort` 和同模型复检策略，每次执行会传入 capsule；运行记录也保存强度。
 
 `GET /api/v2/executors` 投影 `models`、`reasoning_efforts`、`default_model`、`default_effort`、安装与接入状态及目录来源。逐模型统一返回 `reasoning_status`、`reasoning_control`（`effort / toggle / budget / none / unknown`）和 `reasoning_source`，执行器与扫描结果统计已确认、可调档位及待确认的模型数。无 `scan` 参数时仅读取元数据；`?scan=1` 扫描当前本机客户端目录。协作页打开、普通刷新或重新进入前台时读取已有目录，只有点击“重新扫描”才请求原生客户端扫描；日常团队轮询不重复读取目录。并发扫描共享正在执行的查询，下一次重扫重新获取。目录存于进程内投影，不建立第二份持久执行器注册表；服务重启后可手动扫描补齐。缓存读取时间不作为扫描时间，界面显示目录内实际的最近扫描时间。
 
@@ -103,3 +103,11 @@ Planner 回合不能修改工作文件。版本或工作图变化后，旧 Plann
 成果仍经过既有停止证明、快照密封、候选绑定、授权、受信验收与最终提升。选择同模型不会跳过这些交付检查。
 
 验证入口：`tests/native-catalog.test.mjs`、`tests/agent-options.test.mjs`、`tests/executor-catalog-api.test.mjs`、`tests/team-agent-configuration.test.mjs`、`tests/team-planner.test.mjs`、`tests/team-api.test.mjs`、`qa/planner-browser.mjs`、`qa/planner-first-chat-browser.mjs`。目录协议验证使用受控子进程，覆盖分页、provider 选择、准确等级、超时和无推理调用。首次聊天的浏览器场景控制创建响应，真实 Team HTTP、持久消息与控制器参与执行；可信项目创建由 API 测试独立验证。配置及创建响应丢失、明确拒绝和版本冲突均有恢复检查，模型输出使用受控适配器。
+
+## 2026-10-04：统一创建入口与本机项目选择
+
+无任务时隐藏空计划图、交付条、成员卡与成员动态。计划和实际任务出现后保留图、审批和改向状态，标题改为「Worker 任务」。任务卡直接提示“通过 Planner 调整”，成员卡可定位所属任务；仍使用已有 `adjust` 事务停止受影响尝试，通知 Planner 改写并重新派工。
+
+`GET /api/v2/project-directories?path=...` 使用操作令牌、CSRF 头及同源校验，只允许显式 `AF_PROJECT_BROWSE_ROOT` 内的 canonical 目录，返回当前层文件夹和已登记项目身份。该鉴权投影可返回真实路径，其余公开读模型继续脱敏。`POST /api/v2/projects/register` 还要求启用写操作，仅接收选定目录、项目 ID、可信模板项目/profile ID 和注册表摘要。可信验收、资产及项目策略来自 canonical 项目注册表；新项目不能上传任意验收命令或策略。服务端校验模板与新目录的兼容性、允许命令及文件摘要，以独占锁和原子替换写入同一注册表，拒绝过期摘要与目录越界。
+
+显式配置的浏览根是操作员授予目录接入的边界。只有注册表身份模式的团队创建可在该边界内选已登记项目；旧的路径提交不扩展允许根。目录接入不启动模型或验收。接入响应丢失时，浏览器保留原目录与提交，显式查询接入结果或重用原请求，禁止后台创建或更换目标。

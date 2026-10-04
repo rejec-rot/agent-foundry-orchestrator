@@ -17,7 +17,6 @@ const effortLabels = { none:'关闭', off:'关闭', minimal:'极低', low:'轻�
 const effortLabel = value => effortLabels[value] ?? value;
 const htmlCache = new Map();
 const emptyMembers = $('members').innerHTML;
-const emptyBoard = $('work-items').innerHTML;
 const emptyActivity = $('messages').innerHTML;
 let token = '';
 try { token = sessionStorage.getItem('af-write-token') ?? ''; } catch {}
@@ -26,6 +25,8 @@ let pending = 0, editBase = null, goalBase = null, noticeTimer = null, lastConne
 let executorCatalog = null, dispatchBase = null, profileDraft = [], agentScan = null, pendingCatalogRefresh = null;
 let createWorkersDraft = null, consoleProfileBase = null, consoleProfileDirty = false, consoleProfileKey = '', consoleProfileEditable = null, configCommand = null;
 let projectsCatalog = null, projectsError = null, firstChatAttempt = null, chatAttempt = null;
+let newGoalMode = false, newPlannerProfile = null;
+let registryDigest = null, directory = null, directoryLoading = false, projectRegisterAttempt = null;
 const emptyConversation = $('planner-conversation').innerHTML;
 
 function operationId(prefix) {
@@ -38,11 +39,11 @@ function setHTML(id, html) {
     htmlCache.set(id, html);
   }
 }
-async function request(path, body = null, { timeoutMs = 12000 } = {}) {
+async function request(path, body = null, { timeoutMs = 12000, authenticated = false } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const options = body === null ? { cache: 'no-store' } : {
+    const options = body === null ? { cache: 'no-store', ...(authenticated?{headers:{authorization:'Bearer '+token,'x-af-csrf':'1'}}:{}) } : {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token, 'x-af-csrf': '1' },
       body: JSON.stringify(body),
     };
@@ -85,8 +86,7 @@ function navigation(open) {
   if (mobile && open) $('sidebar').querySelector('.nav-item').focus();
 }
 function openDialog(id, configureWorkers=false) {
-  if(id==='create-dialog'&&(firstChatAttempt?.uncertain||chatAttempt?.uncertain)){notice('先确认上一条目标或消息的回执，再开始新的目标。');return;}
-  if (!['create-dialog', 'token-dialog', 'dispatch-dialog'].includes(id) && !team) {
+  if (!['token-dialog', 'dispatch-dialog', 'project-dialog'].includes(id) && !team) {
     notice('先选择或创建一个团队。');
     return;
   }
@@ -94,7 +94,6 @@ function openDialog(id, configureWorkers=false) {
   const dialog = $(id);
   const feedback = dialog.querySelector('.dialog-feedback');
   if (feedback) feedback.hidden = true;
-  if (id === 'create-dialog' && !$('key').value) $('key').value = operationId('goal-');
   if (id === 'token-dialog') $('token').value = token;
   if (id === 'replan-dialog') {
     $('new-goal').value = team.goal;
@@ -118,7 +117,7 @@ function openDialog(id, configureWorkers=false) {
   }
   navigation(false);
   dialog.showModal();
-  const input = { 'create-dialog': 'goal', 'token-dialog': 'token', 'message-dialog': 'message',
+  const input = { 'token-dialog': 'token', 'message-dialog': 'message',
     'work-dialog': 'direction', 'replan-dialog': 'new-goal', 'dispatch-dialog':'dispatch-workers' }[id];
   if (input) $(input).focus();
 }
@@ -129,8 +128,6 @@ function writes() {
     button.disabled = !enabled || (button.id !== 'create' && !team) ||
       (terminal && !['create', 'adjust', 'replan'].includes(button.id));
   }
-  const plannerEntry=executorCatalog?.find(e=>e.id===$('planner-executor').value);
-  $('create').disabled ||= !plannerEntry || plannerEntry.availability!=='AVAILABLE' || !plannerEntry.supports_planner || !profileModelReady(plannerEntry,$('planner-model-input').value.trim());
   $('adjust').disabled = !enabled || !workId || editBase?.teamId !== team?.team_id ||
     ['CANCELLED', 'RECOVERY_REQUIRED'].includes(team?.state);
   $('retry').disabled = !enabled || !workId || editBase?.teamId !== team?.team_id || terminal;
@@ -160,12 +157,18 @@ function writes() {
   $('console-planner-model-select').disabled=profileLocked||!consoleEntry?.supports_model;
   $('console-planner-model-input').disabled=profileLocked||!consoleEntry?.supports_model||$('console-planner-model-input').hidden;
   $('console-planner-effort').disabled=profileLocked||![...$('console-planner-effort').options].some(o=>o.value);
-  $('console-project').disabled=pending>0||Boolean(firstChatAttempt?.uncertain)||Boolean(team);
+  $('console-project').disabled=pending>0||Boolean(projectRegisterAttempt)||Boolean(firstChatAttempt?.uncertain)||Boolean(team);
+  $('console-dispatch-mode').disabled=$('console-project').disabled;
+  $('browse-projects').disabled=pending>0||Boolean(firstChatAttempt?.uncertain)||Boolean(team);
+  $('browse-projects').innerHTML=(projectRegisterAttempt?.uncertain?'确认项目接入':'浏览目录')+' '+icon('file');
+  updateDirectoryControls();
+  for(const button of document.querySelectorAll('[data-new-goal]'))button.disabled=pending>0||Boolean(configCommand)||Boolean(projectRegisterAttempt)||Boolean(firstChatAttempt?.uncertain||chatAttempt?.uncertain);
   $('console-acceptance').disabled=pending>0||Boolean(firstChatAttempt?.uncertain)||Boolean(team)||!$('console-project').value;
   const messageLocked=pending>0||Boolean(firstChatAttempt?.uncertain||chatAttempt?.uncertain);
   $('planner-input').readOnly=messageLocked;
   for(const suggestion of document.querySelectorAll('[data-prompt]'))suggestion.disabled=messageLocked;
   $('configure-workers').disabled=pending>0||Boolean(configCommand)||Boolean(firstChatAttempt?.uncertain||chatAttempt?.uncertain);
+  $('start').hidden=Boolean(team?.planning&&['DISCUSSING','PLAN_READY'].includes(team.state));
   $('pause').disabled ||= ['CREATED', 'PAUSED'].includes(team?.state);
   $('deliver').disabled ||= !team?.integration || ['CREATED', 'PLANNING', 'WORKING', 'INTEGRATING', 'PAUSED'].includes(team?.state);
   $('start').disabled ||= ['PLANNING', 'WORKING', 'INTEGRATING', 'DELIVERING', 'PAUSING'].includes(team?.state);
@@ -181,8 +184,6 @@ function writes() {
   $('access-hint').textContent = writable ? '你的团队状态会自动更新，操作结果可在回执中查看。' :
     capabilities && !capabilities.write?.team_command ? '当前空间为只读模式，可查看团队状态与交付记录。' :
     '连接操作令牌后，即可启动和调整团队。';
-  $('create-auth-hint').textContent = writable ? '创建后先进入 Planner 商讨；开工方式以你的选择为准。' : $('access-hint').textContent;
-  $('create-auth-hint').hidden=Boolean(writable);
 }
 function memberName(id) {
   const member = team?.members.find(m => m.agent_id === id);
@@ -224,7 +225,7 @@ function renderPlanner() {
   document.querySelector('.chat-suggestions').hidden=legacy;
   const planner=team?.planning?.planner??team?.members.find(m=>m.role==='lead');
   $('planner-model').textContent=planner?planner.executor_type+' / '+(planner.model??'默认模型')+' · '+(planner.effort?effortLabel(planner.effort)+'思考':'默认强度'):'选择模型与思考强度，建立你的行动小队。';
-  $('dispatch-mode-label').textContent=legacy?'此团队保留原有启动流程。':team?.planning?.dispatch_mode==='planner'?'Planner 推荐编组后自动开工。':'由你确认，团队才开工。';
+  $('dispatch-mode-label').textContent=legacy?'此团队保留原有启动流程。':(team?.planning?.dispatch_mode??$('console-dispatch-mode').value)==='planner'?'你已授权 Planner 编组并开工。':'由你确认，团队才开工。';
   $('propose-plan').innerHTML=(team?.state==='PLAN_READY'?'重新生成计划':team?.planning?.dispatch_mode==='planner'?'生成计划并开工':'生成行动计划')+' '+icon('arrow');
   $('adjust').innerHTML=(legacy?'更新方向':'暂停并交给 Planner')+' '+icon('arrow');
   $('work-change-hint').textContent=legacy?'停止旧尝试并更新受影响的依赖，保留其他成员已接受的成果。':'先停止当前项及依赖它的旧尝试 → 通知 Planner → Planner 改写任务 → 重新派工。其他成员的已接受成果继续保留。';
@@ -234,7 +235,7 @@ function renderPlanner() {
   for(const item of document.querySelectorAll('[data-phase]'))item.dataset.current=String(item.dataset.phase===phase);
   const conversation=team?.messages.filter(m=>m.goal_revision===team.goal_revision && ((m.from_agent_id==='operator'&&m.to_agent_id==='lead') || (m.from_agent_id==='lead'&&m.to_agent_id==='operator')))??[];
   const log=$('planner-conversation'),atBottom=log.scrollHeight-log.scrollTop-log.clientHeight<48;
-  const html=legacy?'<div class="chat-empty"><span class="calling-card" aria-hidden="true">YOUR NEXT<br><b>MOVE AWAITS.</b><i>✦</i></span><h4>开启新的 Planner 协作。</h4><p>当前团队使用原有启动流程。<br>新建目标，即可先聊天、确认编组后开工。</p><button class="text-button" type="button" data-open="create-dialog">新建 Planner 目标 '+icon('arrow')+'</button></div>':conversation.slice(-60).map(m=>'<article class="chat-bubble '+(m.from_agent_id==='operator'?'from-operator':'from-planner')+'"><strong>'+esc(memberName(m.from_agent_id))+'<small>'+esc(label(m.status))+'</small></strong><p>'+esc(m.message)+'</p></article>').join('') || emptyConversation;
+  const html=legacy?'<div class="chat-empty"><span class="calling-card" aria-hidden="true">YOUR NEXT<br><b>MOVE AWAITS.</b><i>✦</i></span><h4>开启新的 Planner 协作。</h4><p>当前团队使用原有启动流程。<br>新建目标，即可先聊天、确认编组后开工。</p><button class="text-button" type="button" data-new-goal>新建 Planner 目标 '+icon('arrow')+'</button></div>':conversation.slice(-60).map(m=>'<article class="chat-bubble '+(m.from_agent_id==='operator'?'from-operator':'from-planner')+'"><strong>'+esc(memberName(m.from_agent_id))+'<small>'+esc(label(m.status))+'</small></strong><p>'+esc(m.message)+'</p></article>').join('') || emptyConversation;
   const active=team?.runs.findLast(r=>r.agent_id==='lead'&&r.status==='RUNNING');
   const next=html+(active?'<p class="planner-thinking" role="status">✦ '+(active.kind==='revise'?'Planner 正在改写任务方向…':active.kind==='plan'?'Planner 正在拟定行动计划…':'Planner 正在思考…')+'</p>':'');
   const changed=htmlCache.get('planner-conversation')!==next;setHTML('planner-conversation',next);
@@ -303,12 +304,10 @@ function renderAgentInventory() {
       '<small>发现来源：'+esc(discovery)+'</small></article>';
   }).join('')||'<p class="agent-inventory-empty">未发现可显示的 Agent。</p>');
 }
-function renderExecutorSelect() {
-  const chosen=$('planner-executor').value;
-  setHTML('planner-executor',executorOptions(chosen,'planner'));
-  if(chosen && [...$('planner-executor').options].some(o=>o.value===chosen))$('planner-executor').value=chosen;
-  else {const entries=executorCatalog?.filter(e=>e.supports_planner!==false&&!unsupportedAdapter(e))??[];const option=entries.find(e=>e.availability==='AVAILABLE')??entries.find(e=>e.availability==='UNREGISTERED'&&e.models?.length)??entries.find(e=>e.availability==='UNREGISTERED')??entries[0];$('planner-executor').value=option?.id??'';}
-  updatePlannerControls();
+function defaultPlannerProfile() {
+  const entries=executorCatalog?.filter(e=>e.supports_planner!==false&&!unsupportedAdapter(e))??[];
+  const entry=entries.find(e=>e.availability==='AVAILABLE')??entries.find(e=>e.availability==='UNREGISTERED'&&e.models?.length)??entries[0];
+  return {executor_type:entry?.id??'',model:null,effort:null};
 }
 function entryFor(id,forTeam=false) {
   const live=executorCatalog?.find(e=>e.id===id);
@@ -344,20 +343,6 @@ function updateEffort(select,entry,model) {
   const hint=select.closest('.field')?.querySelector('[data-effort-hint]');
   if(hint)hint.textContent=reason??'支持 '+levels.join(' / ')+(entry?.default_effort_status==='unverified'&&(!model||model===entry.default_model)?' · Agent 默认强度未确认，建议明确选择。':'');
 }
-function updatePlannerControls(reset=false) {
-  const entry=entryFor($('planner-executor').value),input=$('planner-model-input'),select=$('planner-model-select');
-  if(reset){input.value='';$('planner-effort').value='';}
-  const chosen=input.value.trim();
-  select.innerHTML=modelChoices(entry);
-  select.value=chosen?entry?.models?.some(m=>m.id===chosen)?chosen:'__custom':'';
-  select.disabled=!entry?.supports_model;
-  input.hidden=select.value!=='__custom';input.disabled=!entry?.supports_model||input.hidden;
-  updateEffort($('planner-effort'),entry,chosen);
-  $('model-selection-hint').textContent=!entry?'没有可用的 Agent。':unsupportedAdapter(entry)?'此 Agent 尚无适配器，暂不能选择。':entry.availability==='UNREGISTERED'?'适配器已匹配但尚未注册；可配置模型，注册后才能派工。':entry.availability==='DISABLED_BY_OPERATOR'?'此 Agent 已停用，切换已接入的 Agent 后开始。':entry.availability==='UNAVAILABLE'?'此 Agent 当前不可派工，请选择其他 Agent。':!entry.supports_model?'此 Agent 仅使用默认模型，不提供模型覆盖。':entry.models?.length?'从扫描目录选择模型；思考等级与所选模型联动。':'输入自定义模型 ID，或沿用 Agent 默认模型。';
-  $('model-selection-hint').dataset.ready=String(entry?.availability==='AVAILABLE');
-  if(!team){consoleProfileKey='';renderConsoleProfile();}
-  writes();
-}
 function canConfigureAgents() {
   return Boolean(team?.planning && (['DISCUSSING','PLAN_READY'].includes(team.state) ||
     (team.state==='PAUSED' && ['DISCUSSING','PLAN_READY','PLANNING','WORKING','BLOCKED'].includes(team.paused_from_state))) &&
@@ -369,6 +354,7 @@ function plannerChatBlock() {
   if(!capabilities)return '正在连接工作空间…';
   if(!capabilities.write?.team_command||(!team&&!capabilities.write?.create_team))return '当前空间为只读模式，启用写操作后才能商讨。';
   if(!token)return '连接操作权限后，即可直接发送消息。';
+  if(projectRegisterAttempt)return '工作目录接入尚未确认，请点击「确认项目接入」继续。';
   if(configCommand&&!configCommand.retryable)return 'Agent 配置正在保存，等待确认后继续。';
   if(team&&(!team.planning||!['DISCUSSING','PLAN_READY','WORKING','BLOCKED'].includes(team.state)))return '当前阶段不能商讨；暂停的团队需要先恢复。';
   if(consoleProfileDirty&&team&&!canConfigureAgents())return '等待当前执行结束，再应用新的 Planner 配置。';
@@ -417,7 +403,7 @@ function renderConsoleProfile() {
   const key=(team?.team_id??'new')+':'+(team?.planning?.agent_config_revision??0);
   if(consoleProfileBase?.teamId!==(team?.team_id??null)){consoleProfileDirty=false;consoleProfileKey='';}
   if(!consoleProfileDirty && (key!==consoleProfileKey || !consoleProfileBase)) {
-    const p=team?.planning?.planner??{executor_type:$('planner-executor').value,model:$('planner-model-input').value||null,effort:$('planner-effort').value||null};
+    const p=team?.planning?.planner??newPlannerProfile??defaultPlannerProfile();
     $('console-planner-executor').innerHTML=executorOptions(p.executor_type,'planner',Boolean(team?.planning));
     $('console-planner-executor').value=p.executor_type;
     $('console-planner-model-select').value='';
@@ -434,12 +420,6 @@ function renderConsoleProfile() {
   const entry=entryFor($('console-planner-executor').value,Boolean(team?.planning));
   $('console-profile-hint').textContent=configCommand?(configCommand.retryable?'配置回执未确认；再次发送或保存会重用原请求，消息已保留。':'配置正在保存，请等待回执。'):!team?(entry?.availability==='AVAILABLE'?'选好 Planner 与工作项目后，直接发送第一条消息。':entry?.availability==='DISABLED_BY_OPERATOR'?'此 Agent 已停用；请选择其他 Agent 开始。':entry?.availability==='UNAVAILABLE'?'此 Agent 当前不可用；请选择其他 Agent 开始。':'此 Agent 待接入；可先选择模型与思考强度。'):!editable?'当前会话或任务正在执行，结束后可修改配置。':consoleProfileDirty?'下一条消息将自动应用所选配置；也可单独保存。':'选择模型与强度后直接发送，Reviewer 保持一致。';
   $('save-console-planner').hidden=!team;
-}
-function syncConsoleToCreate() {
-  const p=consoleProfile();$('planner-executor').value=p.executor_type;
-  $('planner-model-input').value=p.model??'';
-  $('planner-effort').innerHTML='<option value="'+esc(p.effort??'')+'">'+esc(p.effort??'默认')+'</option>';
-  updatePlannerControls();
 }
 function updateWorkerControls(row,reset=false) {
   const executor=row.querySelector('[data-profile-executor]'),input=row.querySelector('[data-profile-model]'),effort=row.querySelector('[data-profile-effort]'),select=row.querySelector('[data-profile-model-select]');
@@ -471,12 +451,22 @@ function renderDispatch() {
 }
 function render() {
   renderPlanner();
+  const hasTasks=Boolean(team?.work_items.length);
+  $('work-area').hidden=!hasTasks&&!team?.rework_requests?.some(q=>q.status==='queued')&&!team?.integration&&team?.state!=='PLAN_READY';
+  $('show-worker-tasks').hidden=!hasTasks;
+  $('worker-task-hint').hidden=!hasTasks;
+  $('delivery-strip').hidden=!team?.integration&&!team?.delivery;
+  $('members').hidden=!team;
+  document.querySelector('.signal-shelf').hidden=!team;
+  document.querySelector('.mission-toolbar .actions').hidden=!team;
+  document.querySelector('[data-open="records-dialog"]').hidden=!team;
+  document.querySelector('.mission-bottom').hidden=!team;
   if (!team) {
     $('team-goal').textContent = '你的下一次协作，从这里开始。';
-    $('team-meta').textContent = '新建一个目标，或从左侧选择你的团队。';
+    $('team-meta').textContent = '选好 Planner 与工作项目，直接发送第一条消息。';
     $('team-state').hidden = true;
     $('team-version').textContent = '';
-    setHTML('members', emptyMembers); setHTML('work-items', emptyBoard);
+    setHTML('members', emptyMembers); setHTML('work-items', '');
     setHTML('messages', emptyActivity); setHTML('receipts', emptyActivity);
     setHTML('runs', '<p class="hint">团队启动后，会在这里记录每次执行。</p>');
     setHTML('artifacts', '<p class="hint">成员提交的成果会保留在这里。</p>');
@@ -500,7 +490,7 @@ function render() {
       active?.process_state === 'RUNNING' ? '进程运行中' : label(member.status);
     return '<button type="button" class="member-card ' + (member.role === 'lead' ? 'lead' : '') +
       '" data-member="' + esc(member.agent_id) + '" data-running="' + Boolean(active) +
-      '" aria-label="与' + esc(memberName(member.agent_id)) + '对话"><span class="member-avatar" aria-hidden="true">' +
+      '" aria-label="'+(member.role==='lead'?'与 Planner 对话':'查看 '+esc(memberName(member.agent_id))+' 的任务')+'"><span class="member-avatar" aria-hidden="true">' +
       (member.role === 'lead' ? 'P' : String(index).padStart(2, '0')) + '</span><span class="member-detail"><strong>' +
       esc(memberName(member.agent_id)) + '</strong><small>' + esc(member.executor_type) + (member.model?' / '+esc(member.model):' / 默认模型') +
       (member.effort?' · '+esc(effortLabel(member.effort)):'')+'</small><span class="member-status">' + esc(status) + '</span></span>' + icon('arrow', 'member-cta') + '</button>';
@@ -514,7 +504,7 @@ function render() {
   if (team.members.some(m => m.role === 'worker' && m.agent_id === chosenWorker)) $('worker-target').value = chosenWorker;
   setHTML('work-items', team.work_items.length ? team.work_items.map((item, index) => {
     return '<button type="button" class="work-card ' + (item.work_item_id === workId ? 'selected' : '') +
-      '" data-work="' + esc(item.work_item_id) + '" data-state="' + esc(item.status) +
+      '" data-work="' + esc(item.work_item_id) + '" data-worker="'+esc(item.agent_id)+'" data-state="' + esc(item.status) +
       '" aria-label="查看并调整工作项：' + esc(item.goal) +
       '"><span class="work-card-top"><span class="work-number" aria-hidden="true">' + String(index + 1).padStart(2, '0') +
       '</span><span class="work-status">' + esc(label(item.status)) + '</span></span><strong>' +
@@ -523,10 +513,8 @@ function render() {
         '依赖 ' + esc(item.depends_on.join(' + ')) : '↗ 可独立执行') +
       '</span><span class="work-assignment"><span>' + esc(memberName(item.agent_id)) +
       ' · v' + esc(item.revision) + '</span>' + icon('arrow') + '</span>' +
-      (item.blocked_reason ? '<span class="work-error">' + esc(item.blocked_reason) + '</span>' : '') + '</button>';
-  }).join('') : '<div class="empty-board"><span aria-hidden="true">↗</span><h4>' +
-    (['CREATED','DISCUSSING'].includes(team.state) ? '先聊想法，再决定行动。' : 'Planner 正在组织行动计划。') +
-    '</h4><p>商讨目标、约束与验收要求。<br>生成计划后，确认 Worker 的数量与模型。</p></div>');
+      (item.blocked_reason ? '<span class="work-error">' + esc(item.blocked_reason) + '</span>' : '') + '<span class="work-adjust-cta">'+icon('pause')+(item.status==='DRAFT'?'确认后可调整':item.status==='HELD'?'查看 Planner 改写进度':'通过 Planner 调整')+icon('arrow')+'</span></button>';
+  }).join('') : '');
   const current = team.work_items.find(item => item.work_item_id === workId);
   if (!current) {
     workId = null; editBase = null;
@@ -543,9 +531,10 @@ function render() {
   setHTML('delivery', team.delivery ? esc(label(team.delivery.status)) + ' · ' +
     esc(team.delivery.phase ?? '') + ' · <a href="/workbench.html#' + encodeURIComponent(team.delivery.task_id) +
     '">查看交付证据 ↗</a>' : team.integration ? '候选已整合，可继续独立评审与验收。' : '整合成果后，继续独立评审与验收。');
-  $('message-count').textContent = String(team.messages.length);
+  const memberMessages=team.messages.filter(m=>!((m.from_agent_id==='operator'&&m.to_agent_id==='lead')||(m.from_agent_id==='lead'&&m.to_agent_id==='operator')));
+  $('message-count').textContent = String(memberMessages.length);
   $('receipt-count').textContent = String(team.commands.length);
-  setHTML('messages', team.messages.slice(-30).reverse().map(message => '<article class="history-card"><strong>' +
+  setHTML('messages', memberMessages.slice(-30).reverse().map(message => '<article class="history-card"><strong>' +
     esc(memberName(message.from_agent_id)) + ' → ' + esc(memberName(message.to_agent_id)) +
     '</strong><span class="history-state">' + esc(label(message.status)) + '</span><p>' +
     esc(message.message) + '</p>' + (message.reply_to ? '<small>回复 ' + esc(message.reply_to) + '</small>' : '') +
@@ -579,7 +568,7 @@ async function refresh({ reloadCatalog=false, scan=false }={}) {
       try {
         const registry=await request('/api/v2/projects');
         if(registry.schema!=='af-v2-projects-v1'||!Array.isArray(registry.projects)||registry.projects.some(p=>typeof p.project_id!=='string'||!Array.isArray(p.profiles)||p.profiles.some(a=>typeof a.profile_id!=='string')))throw new Error('项目目录格式无效。');
-        projectsCatalog=registry.projects;projectsError=null;
+        projectsCatalog=registry.projects;registryDigest=registry.registry_digest??null;projectsError=null;
       } catch {projectsCatalog=[];projectsError='无法读取已接入项目，请刷新后重试。';}
       renderProjects();
     }
@@ -588,7 +577,10 @@ async function refresh({ reloadCatalog=false, scan=false }={}) {
       $('agent-scan-status').textContent=scan?'正在扫描 Agents 与模型…':'正在读取已有目录…';$('scan-agents').disabled=true;
       // Only an explicit rescan launches native clients, which can take over 12 seconds.
       const inventory=await request(scan?'/api/v2/executors?scan=1':'/api/v2/executors',null,{timeoutMs:scan?30000:12000});executorCatalog=inventory.executors;agentScan=inventory.scan;
-      renderExecutorSelect();consoleProfileKey='';
+      const profile=consoleProfile();
+      $('console-planner-executor').innerHTML=executorOptions(profile.executor_type,'planner',Boolean(team?.planning));
+      $('console-planner-executor').value=profile.executor_type;
+      consoleProfileKey='';
       renderAgentInventory();
       if(consoleProfileDirty)updateConsoleControls();
       if($('dispatch-dialog').open)for(const row of document.querySelectorAll('.worker-profile'))updateWorkerControls(row);
@@ -607,7 +599,7 @@ async function refresh({ reloadCatalog=false, scan=false }={}) {
     }
     const listing = await request('/api/teams');
     if (selected && !listing.teams.some(item => item.team_id === selected)) { selected = null; team = null; workId = null; }
-    if (!selected && listing.teams.length && !firstChatAttempt?.uncertain) selected = listing.teams[0].team_id;
+    if (!selected && !newGoalMode && listing.teams.length && !firstChatAttempt?.uncertain) selected = listing.teams[0].team_id;
     $('team-count').textContent = String(listing.teams.length).padStart(2, '0');
     const id = selected;
     if (id) {
@@ -648,7 +640,7 @@ async function command(payload, baseTeam = team?.team_id) {
 }
 async function applyConsoleProfile() {
   if($('console-planner-model-select').value==='__custom'&&!$('console-planner-model-input').value.trim())throw new Error('填写自定义模型 ID，或选择默认模型。');
-  if(!team){syncConsoleToCreate();return;}
+  if(!team){newPlannerProfile=consoleProfile();return;}
   if(!consoleProfileDirty&&!configCommand)return;
   if(!consoleProfileBase || consoleProfileBase.teamId!==team.team_id)throw new Error('重新选择当前团队后再配置 Planner。');
   const wanted=configCommand?.planner??consoleProfile(),base={...(configCommand?.base??consoleProfileBase)},teamId=base.teamId;
@@ -696,13 +688,14 @@ async function applyConsoleProfile() {
 }
 async function startPlannerChat(message) {
   const planner=consoleProfile(),projectId=$('console-project').value,profileId=$('console-acceptance').value;
-  const spec={project_id:projectId,profile_id:profileId,goal:message,planner,workers:createWorkersDraft};
+  const mode=$('console-dispatch-mode').value;
+  const spec={project_id:projectId,profile_id:profileId,goal:message,planner,workers:createWorkersDraft,dispatch_mode:mode};
   const fingerprint=JSON.stringify(spec);
   if(!firstChatAttempt||(!firstChatAttempt.uncertain&&firstChatAttempt.fingerprint!==fingerprint)) {
     const key=operationId('chat-');
     firstChatAttempt={fingerprint,key,message,payload:{
       project_id:projectId,profile_id:profileId,spec:{goal:message,idempotency_key:key},
-      planning:{dispatch_mode:'human',planner,...(createWorkersDraft?{workers:structuredClone(createWorkersDraft)}:{})},
+      planning:{dispatch_mode:mode,planner,...(createWorkersDraft?{workers:structuredClone(createWorkersDraft)}:{})},
     }};
   }
   const attempt=firstChatAttempt;
@@ -710,7 +703,7 @@ async function startPlannerChat(message) {
   try {
     const result=await request('/api/teams',attempt.payload);
     attempt.teamId=result.team_id;
-    selected=result.team_id;workId=null;editBase=null;consoleProfileDirty=false;consoleProfileKey='';
+    selected=result.team_id;newGoalMode=false;workId=null;editBase=null;consoleProfileDirty=false;consoleProfileKey='';
     team=await request('/api/teams/'+encodeURIComponent(selected));
     attempt.uncertain=false;createWorkersDraft=null;render();await refresh();
   } catch(error) {
@@ -746,8 +739,113 @@ const handle = (fn, write = true) => async event => {
   try { await fn(event); } catch (error) { notice(error.name === 'AbortError' ? '操作请求超时，请查看回执后再重试。' : error.message, 'error'); }
   finally { if (write) { pending--; button?.removeAttribute('aria-busy'); writes(); } }
 };
+function updateDirectoryControls() {
+  const locked=directoryLoading||pending>0||Boolean(projectRegisterAttempt?.uncertain);
+  $('directory-up').disabled=locked||!directory?.parent_path;
+  for(const button of $('directory-list').querySelectorAll('button'))button.disabled=locked;
+  $('project-name').disabled=locked;$('project-template').disabled=locked;
+  const existing=Boolean(directory?.current_project_id),ambiguous=(directory?.current_registered_project_ids?.length??0)>1;
+  $('project-name').required=Boolean(directory&&!existing);
+  $('project-template').required=Boolean(directory&&!existing);
+  $('select-directory').disabled=directoryLoading||pending>0||!directory||ambiguous||(!existing&&directory.current_path===directory.browse_root)||(!existing&&(!token||!capabilities?.write?.register_project||!registryDigest||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test($('project-name').value.trim())||!$('project-template').value));
+  $('select-directory').innerHTML=(projectRegisterAttempt?.uncertain?'确认接入结果':existing?'使用此目录':'添加并使用此目录')+' '+icon('arrow');
+}
+function renderDirectory() {
+  $('directory-path').textContent=directory?.current_path??'正在读取目录…';
+  const existing=Boolean(directory?.current_project_id);
+  $('project-register-fields').hidden=!directory||existing;
+  const basename=directory?.current_path.split('/').filter(Boolean).at(-1)??'';
+  if(!projectRegisterAttempt)$('project-name').value=basename.replace(/[^A-Za-z0-9._-]/g,'-').replace(/^[^A-Za-z0-9]+|[-.]+$/g,'').slice(0,64);
+  const templates=(projectsCatalog??[]).flatMap(p=>p.profiles.map(a=>({project_id:p.project_id,profile_id:a.profile_id})));
+  const previous=$('project-template').value;
+  $('project-template').innerHTML='<option value="">选择已配置的验收标准</option>'+templates.map(t=>'<option value="'+esc(JSON.stringify(t))+'">'+esc(t.project_id+' / '+t.profile_id)+'</option>').join('');
+  if(templates.some(t=>JSON.stringify(t)===previous))$('project-template').value=previous;
+  $('directory-list').innerHTML=directory?.entries.map(e=>'<button class="directory-entry" type="button" data-directory="'+esc(e.path)+'">'+icon('file')+'<span>'+esc(e.name)+(e.project_id?'<small>已接入 · '+esc(e.project_id)+'</small>':'')+'</span>'+icon('arrow')+'</button>').join('')||'<p class="hint">这个目录没有可浏览的子文件夹。</p>';
+  $('directory-status').textContent=(directory?.current_registered_project_ids?.length??0)>1?'此目录对应多个项目，请使用工作区的项目列表明确选择。':existing?'此目录已接入为 '+directory.current_project_id+'，可直接选择。':directory?.current_path===directory?.browse_root?'请进入下方的项目文件夹，再选择该目录。':directory&&!capabilities?.write?.register_project?'当前空间为只读模式，可选择已接入的目录。':directory&&!projectsCatalog?.some(p=>p.profiles.length)?'尚未配置可复用的验收标准，请先在服务端配置项目验收。':directory?'当前范围：'+directory.browse_root+(directory.truncated?' · 子目录过多，请进入子目录继续选择。':''):'目录尚未读取。';
+  updateDirectoryControls();
+}
+async function loadDirectory(path=null) {
+  directoryLoading=true;updateDirectoryControls();
+  try {
+    directory=await request('/api/v2/project-directories'+(path?'?path='+encodeURIComponent(path):''),null,{authenticated:true});
+    if(directory.schema!=='af-v2-project-directories-v1'||!Array.isArray(directory.entries))throw new Error('目录格式无效。');
+    renderDirectory();
+  } catch(error) {
+    if(error.httpStatus===403&&/AF_PROJECT_BROWSE_ROOT/.test(error.message))error.message='本机目录浏览尚未启用，请在服务端配置可浏览的项目父目录。';
+    $('directory-status').textContent=error.httpStatus===401?'操作权限尚未连接或令牌无效，请重新连接。':error.message;
+    throw error;
+  } finally {directoryLoading=false;updateDirectoryControls();}
+}
+async function useProject(projectId,profileId=null) {
+  const registry=await request('/api/v2/projects');
+  projectsCatalog=registry.projects;registryDigest=registry.registry_digest??null;projectsError=null;
+  renderProjects();
+  if(!projectsCatalog.some(p=>p.project_id===projectId))throw new Error('项目接入尚未确认，请刷新后重试。');
+  $('console-project').value=projectId;renderAcceptanceProfiles();
+  if(profileId&&projectsCatalog.find(p=>p.project_id===projectId)?.profiles.some(a=>a.profile_id===profileId))$('console-acceptance').value=profileId;
+  projectRegisterAttempt=null;$('project-dialog').close();writes();$('planner-input').focus();notice('已选择工作项目 '+projectId+'。');
+}
+$('browse-projects').onclick=handle(async()=>{
+  if(team||firstChatAttempt?.uncertain||chatAttempt?.uncertain)return;
+  if(!token){openDialog('token-dialog');notice('连接操作权限后，即可浏览本机工作目录。');return;}
+  if(!projectRegisterAttempt)directory=null;renderDirectory();openDialog('project-dialog');await loadDirectory(projectRegisterAttempt?.payload.root??null);
+},false);
+$('directory-up').onclick=handle(()=>loadDirectory(directory?.parent_path),false);
+$('directory-list').onclick=handle(event=>{
+  const path=event.target.closest('[data-directory]')?.dataset.directory;
+  if(path&&!directoryLoading&&!projectRegisterAttempt?.uncertain)return loadDirectory(path);
+},false);
+$('project-name').oninput=updateDirectoryControls;
+$('project-template').onchange=updateDirectoryControls;
+$('project-picker-form').onsubmit=handle(async()=>{
+  if(!directory)throw new Error('先选择工作目录。');
+  if(directory.current_project_id&&!projectRegisterAttempt)return useProject(directory.current_project_id);
+  if(projectRegisterAttempt?.uncertain) {
+    await loadDirectory(projectRegisterAttempt.payload.root);
+    if(directory.current_project_id&&directory.current_project_id!==projectRegisterAttempt.payload.project_id)throw new Error('该目录已被其他项目接入，请刷新确认。');
+  }
+  if(!projectRegisterAttempt) {
+    let template;
+    try{template=JSON.parse($('project-template').value);}catch{throw new Error('为项目选择兼容的验收标准。');}
+    projectRegisterAttempt={payload:{root:directory.current_path,project_id:$('project-name').value.trim(),template_project_id:template.project_id,template_profile_id:template.profile_id,expected_registry_digest:registryDigest}};
+  }
+  const attempt=projectRegisterAttempt;
+  let accepted=false;
+  try {
+    const result=await request('/api/v2/projects/register',attempt.payload);accepted=true;
+    await useProject(result.project.project_id,attempt.payload.template_profile_id);
+  } catch(error) {
+    if(accepted||attempt.uncertain||!(error.httpStatus>=400&&error.httpStatus<500)){attempt.uncertain=true;$('directory-status').textContent='接入结果尚未确认，目录与设置已保留。点击「确认接入结果」查询或重用原请求。';}
+    else {projectRegisterAttempt=null;
+      if(/requires file\(s\) missing/.test(error.message))error.message='当前目录缺少这套验收标准需要的文件，请选择匹配的标准。';
+      else if(/asset .*digest does not match/.test(error.message))error.message='验收文件版本与所选标准不一致，请选择此项目自己的验收标准。';
+      else if(/registry changed/.test(error.message))error.message='项目列表已更新，请重新确认验收标准后再添加。';
+      if(error.httpStatus===409){const registry=await request('/api/v2/projects');projectsCatalog=registry.projects;registryDigest=registry.registry_digest??null;renderProjects();}}
+    throw error;
+  }
+});
+function beginNewGoal() {
+  if(pending||configCommand||projectRegisterAttempt||firstChatAttempt?.uncertain||chatAttempt?.uncertain){notice('先确认上一项操作的回执，再开始新的目标。');return;}
+  if(!team&&!selected){newGoalMode=true;navigation(false);$('planner-input').scrollIntoView({block:'center'});$('planner-input').focus();return;}
+  newPlannerProfile=executorCatalog?consoleProfile():null;
+  selected=null;team=null;newGoalMode=true;workId=null;editBase=null;dispatchBase=null;
+  consoleProfileBase=null;consoleProfileDirty=false;consoleProfileKey='';firstChatAttempt=null;chatAttempt=null;
+  createWorkersDraft=null;$('planner-input').value='';$('console-dispatch-mode').value='human';
+  for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
+  navigation(false);render();$('planner-input').scrollIntoView({block:'center'});$('planner-input').focus();
+}
+function showWorkerTasks(agentId=null) {
+  if(!team?.work_items.length){notice('生成并确认计划后，这里会出现每位 Worker 的任务。');return;}
+  const cards=[...$('work-items').querySelectorAll('[data-work]')];
+  for(const card of cards)card.classList.toggle('worker-highlight',Boolean(agentId&&card.dataset.worker===agentId));
+  const target=cards.find(card=>!agentId||card.dataset.worker===agentId);
+  if(!target){notice('这位 Worker 当前没有分配到任务。');return;}
+  target.scrollIntoView({block:'center'});target.focus();
+}
+$('show-worker-tasks').onclick=()=>showWorkerTasks();
 document.addEventListener('click', event => {
-  const opener = event.target.closest('[data-open]');
+  if(event.target.closest('[data-new-goal]'))beginNewGoal();
+  const opener = event.target.closest('button[data-open]');
   if (opener) openDialog(opener.dataset.open);
   const closer = event.target.closest('[data-close]');
   if (closer) closer.closest('dialog').close();
@@ -764,17 +862,17 @@ syncNavigation();
 $('refresh').onclick = ()=>refresh({reloadCatalog:true});
 $('scan-agents').onclick=()=>refresh({scan:true});
 $('teams').onclick = handle(async event => {
-  if(pending>0||firstChatAttempt?.uncertain||chatAttempt?.uncertain)return;
+  if(pending>0||projectRegisterAttempt||firstChatAttempt?.uncertain||chatAttempt?.uncertain)return;
   const id = event.target.closest('[data-team]')?.dataset.team;
   if (!id || id === selected) return;
-  selected = id; workId = null; editBase = null; team = null; dispatchBase=null; $('planner-input').value='';
+  selected = id; newGoalMode=false; workId = null; editBase = null; team = null; dispatchBase=null; $('planner-input').value='';
   navigation(false); render();
   await refresh();
 }, false);
 $('members').onclick = event => {
   const id = event.target.closest('[data-member]')?.dataset.member;
   if(id==='lead'&&team?.planning){$('planner-input').scrollIntoView({block:'center'});$('planner-input').focus();return;}
-  if (id) { $('member-target').value = id; openDialog('message-dialog'); }
+  if (id) showWorkerTasks(id);
 };
 $('work-items').onclick = event => {
   const id = event.target.closest('[data-work]')?.dataset.work;
@@ -825,19 +923,7 @@ $('replan-form').onsubmit = handle(async () => {
   await command({ type: 'replan', goal, expected_goal_revision: goalBase.revision }, goalBase.teamId);
   $('replan-dialog').close();
 });
-$('planner-executor').onchange=()=>{if(!team)consoleProfileDirty=false;updatePlannerControls(true);};
-$('planner-model-select').onchange=()=>{
-  const select=$('planner-model-select'),input=$('planner-model-input');
-  input.value=select.value==='__custom'?'':select.value;
-  input.hidden=select.value!=='__custom';input.disabled=input.hidden;
-  updateEffort($('planner-effort'),entryFor($('planner-executor').value),input.value);
-  syncCreationProfile();
-  if(!input.hidden)input.focus();
-};
-$('planner-model-input').oninput=()=>{updateEffort($('planner-effort'),entryFor($('planner-executor').value),$('planner-model-input').value.trim());syncCreationProfile();};
-$('planner-effort').onchange=syncCreationProfile;
-function syncCreationProfile(){if(!team){consoleProfileDirty=false;consoleProfileKey='';renderConsoleProfile();writes();}}
-function consoleChanged(reset=false){consoleProfileDirty=true;updateConsoleControls(reset);if(!team)syncConsoleToCreate();renderConsoleProfile();writes();}
+function consoleChanged(reset=false){consoleProfileDirty=true;updateConsoleControls(reset);if(!team)newPlannerProfile=consoleProfile();renderConsoleProfile();writes();}
 $('console-planner-executor').onchange=()=>consoleChanged(true);
 $('console-planner-model-select').onchange=()=>{
   const input=$('console-planner-model-input');input.value=$('console-planner-model-select').value==='__custom'?'':$('console-planner-model-select').value;
@@ -845,7 +931,7 @@ $('console-planner-model-select').onchange=()=>{
   if($('console-planner-model-select').value==='__custom'){input.hidden=false;input.disabled=false;input.focus();consoleProfileDirty=true;updateEffort($('console-planner-effort'),entryFor($('console-planner-executor').value,Boolean(team)),null);writes();}
   else consoleChanged();
 };
-$('console-planner-model-input').oninput=()=>{consoleProfileDirty=true;updateEffort($('console-planner-effort'),entryFor($('console-planner-executor').value,Boolean(team)),$('console-planner-model-input').value.trim());if(!team)syncConsoleToCreate();writes();};
+$('console-planner-model-input').oninput=()=>{consoleProfileDirty=true;updateEffort($('console-planner-effort'),entryFor($('console-planner-executor').value,Boolean(team)),$('console-planner-model-input').value.trim());if(!team)newPlannerProfile=consoleProfile();writes();};
 $('console-planner-effort').onchange=()=>consoleChanged();
 $('console-planner-form').onsubmit=handle(async()=>{
   await applyConsoleProfile();
@@ -853,7 +939,7 @@ $('console-planner-form').onsubmit=handle(async()=>{
 $('configure-workers').onclick=handle(async()=>{await applyConsoleProfile();openDialog('dispatch-dialog',true);});
 $('console-project').onchange=renderAcceptanceProfiles;
 $('console-acceptance').onchange=writes;
-$('dispatch-mode').onchange=()=>{$('create-mode-summary').textContent=$('dispatch-mode').value==='planner'?'Planner 编组并自动开工':'看过计划，再确认开工';};
+$('console-dispatch-mode').onchange=()=>{renderPlanner();writes();};
 $('planner-chat-form').onsubmit=handle(async()=>{
   const message=(chatAttempt?.uncertain?chatAttempt.message:firstChatAttempt?.uncertain?firstChatAttempt.message:$('planner-input').value).trim();if(!message)throw new Error('先写下你想和 Planner 商讨的内容。');
   if(!team||firstChatAttempt?.uncertain)await startPlannerChat(message);
@@ -902,22 +988,6 @@ $('dispatch-form').onsubmit=handle(async()=>{
   await command({type:'approve_plan',expected_plan_revision:dispatchBase.revision,expected_goal_revision:dispatchBase.goalRevision,expected_agent_config_revision:dispatchBase.configRevision,workers:profileDraft,assignments},dispatchBase.teamId);
   $('dispatch-dialog').close();
 });
-$('create-form').onsubmit = handle(async () => {
-  let args;
-  try { args = JSON.parse($('args').value); } catch { throw new Error('验收参数需要有效的 JSON 字符串数组。'); }
-  if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string')) throw new Error('验收参数需要字符串数组。');
-  const result = await request('/api/teams', { spec: {
-    goal: $('goal').value.trim(), target_path: $('target').value.trim(),
-    acceptance: { command: $('command').value.trim(), args }, idempotency_key: $('key').value,
-  }, planning:{dispatch_mode:$('dispatch-mode').value,
-    planner:{executor_type:$('planner-executor').value,model:$('planner-model-input').value.trim()||null,effort:$('planner-effort').value||null},...(createWorkersDraft?{workers:createWorkersDraft}:{})} });
-  selected = result.team_id; workId = null; editBase = null;
-  createWorkersDraft=null;consoleProfileDirty=false;consoleProfileKey='';
-  $('create-dialog').close(); $('create-form').reset(); $('key').value = operationId('goal-');
-  $('create-mode-summary').textContent='看过计划，再确认开工';$('create-settings').open=false;
-  renderExecutorSelect();notice('团队已创建。先与 Planner 商讨你的目标。');
-  await refresh();
-});
 function selectTab(id) {
   for (const button of document.querySelectorAll('[data-tab]')) {
     const active = button.dataset.tab === id;
@@ -935,7 +1005,6 @@ for (const button of document.querySelectorAll('[data-tab]')) {
     selectTab(id); $(id + '-tab').focus();
   };
 }
-$('key').value = operationId('goal-');
 writes();
 await refresh();
 setInterval(() => { if (!document.hidden) refresh(); }, 1500);

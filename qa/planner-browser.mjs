@@ -1,6 +1,6 @@
 // Real Chromium + durable HTTP/controller workflow; model calls are controlled fixtures.
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnManaged, signalTree } from '../lib/child-process.mjs';
@@ -25,11 +25,19 @@ const initial=readTeam(fx.options.runtimeDir,fx.team.team_id);initial.goal='设�
 initial.planning.eligible_executors.push({executor_type:'secondary',supports_model:true,supports_effort:true,reasoning_efforts:['medium','high'],models:[{id:'worker-deep',label:'Worker deep',reasoning_efforts:['high'],reasoning_status:'verified'},{id:'worker-no-thinking',label:'Worker no thinking',reasoning_efforts:[],reasoning_status:'verified'}]});
 commitTeam(fx.options.runtimeDir,initial,'browser-goal',null,()=>{});
 fx.io.adapters.secondary={...fx.io.adapters.writer,type:'secondary'};
+fx.io.adapters.codex={...fx.io.adapters.writer,type:'codex'};
+const projectWorkspace=join(fx.root,'project-workspaces'),projectsFile=join(fx.root,'browser-projects.json');
+mkdirSync(projectWorkspace,{recursive:true});
+writeFileSync(projectsFile,JSON.stringify({schema_version:'af-project-registry-v1',projects:[{
+  project_id:'browser-project',root:fx.repo,workspace_root:projectWorkspace,
+  policy:{allowed_root:['src/**','tests/**'],forbidden:[],protected_paths:[],projection:{exclude:[]},import:{deny:[]}},
+  acceptance_profiles:[{profile_id:'browser-acceptance',acceptance:{command:'node',args:['--test','tests/gate.test.mjs']},assets:[]}],
+}]}));
 const controller=new TeamController({...fx.options,...fx.io,select:id=>fx.io.adapters[id],autoDeliver:false});
 const profile=mkdtempSync(join(tmpdir(),'af-planner-chrome-'));
 const server=await startReadApi({roots:{tasks:fx.options.tasksDir,locks:fx.options.locksDir,runtime:fx.options.runtimeDir,alerts:join(fx.root,'alerts.jsonl')},allowRecord:true,allowedRoots:[fx.repo],ensureController:null,
   catalogScanner:async()=>null,
-  env:{...process.env,AF_WEB_TOKEN:'browser-test-token',AF_WEB_TOKEN_FILE:''}});
+  env:{...process.env,AF_WEB_TOKEN:'browser-test-token',AF_WEB_TOKEN_FILE:'',AF_PROJECTS_FILE:projectsFile}});
 const tickErrors=[],timer=setInterval(()=>controller.tick().catch(e=>tickErrors.push(e.message)),30);
 const chrome=spawnManaged(process.env.AF_BROWSER_BIN??'/usr/bin/google-chrome',['--headless=new','--no-sandbox','--disable-dev-shm-usage','--disable-gpu','--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','ignore','pipe']});
 let chromeLog='';chrome.stderr.on('data',chunk=>{chromeLog+=chunk.toString();});let browser,report;
@@ -46,6 +54,48 @@ try {
   assert.equal(await browser.evaluate("document.getElementById('agent-scan-status').textContent.includes('已加载目录')&&window.agentCatalogRequests===0"),true,'opening the workspace reads metadata without scanning');
   await browser.click('.topbar [data-open=token-dialog]');await browser.evaluate("document.getElementById('token').value='browser-test-token'");await browser.click('#save-token');
   assert.equal(await browser.evaluate("document.querySelector('.planner-console #console-planner-executor')!==null && !document.getElementById('console-planner-form').hidden"),true,'Planner choices are visible in the cockpit');
+
+  const removedCreateIds=['create-dialog','create-form','planner-executor','planner-model-select','planner-model-input','planner-effort','goal','target','command','args','key','create'];
+  assert.equal(await browser.evaluate(`(()=>{const removed=${JSON.stringify(removedCreateIds)};return removed.every(id=>!document.getElementById(id))&&document.querySelectorAll('#console-planner-form').length===1&&Boolean(document.getElementById('console-project'))&&Boolean(document.getElementById('console-acceptance'))&&Boolean(document.getElementById('console-dispatch-mode'))})()`),true,'the old create modal and manual command/JSON/key inputs are removed in favor of one workspace configuration');
+  await browser.click('.hero-cta');
+  assert.equal(await browser.evaluate("!document.querySelector('dialog[open]')&&document.getElementById('work-area').hidden&&document.getElementById('show-worker-tasks').hidden&&document.activeElement.id==='planner-input'"),true,'the hero entry opens one blank full-row Planner session');
+  assert.equal(await browser.evaluate("Math.abs(document.querySelector('.planner-console').getBoundingClientRect().width-document.querySelector('.board-columns').getBoundingClientRect().width)<2"),true,'the new Planner composer spans the workspace row');
+  assert.equal(await browser.evaluate("document.getElementById('console-dispatch-mode').value==='human'&&document.getElementById('console-project').value==='browser-project'&&document.getElementById('console-acceptance').value==='browser-acceptance'"),true,'the registered local project and acceptance profile load with human approval as the default');
+  await browser.evaluate("document.getElementById('console-planner-executor').value='codex';document.getElementById('console-planner-executor').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-model-select').value='__custom';document.getElementById('console-planner-model-select').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-model-input').value='custom/planning-model';document.getElementById('console-planner-model-input').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('console-planner-effort').value='high';document.getElementById('console-planner-effort').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-dispatch-mode').value='planner';document.getElementById('console-dispatch-mode').dispatchEvent(new Event('change',{bubbles:true}))");
+  const newProfileState=await browser.evaluate("JSON.stringify({executor:document.getElementById('console-planner-executor').value,modelSelect:document.getElementById('console-planner-model-select').value,inputHidden:document.getElementById('console-planner-model-input').hidden,inputValue:document.getElementById('console-planner-model-input').value,effort:document.getElementById('console-planner-effort').value,effortDisabled:document.getElementById('console-planner-effort').disabled,sendDisabled:document.getElementById('planner-send').disabled,hint:document.getElementById('planner-chat-hint').textContent})");
+  assert.equal(await browser.evaluate("document.getElementById('console-planner-model-select').value==='custom/planning-model'&&document.getElementById('console-planner-model-input').value==='custom/planning-model'&&document.getElementById('console-planner-effort').value==='high'&&!document.getElementById('planner-send').disabled"),true,'a manually entered catalog model keeps its exact verified effort: '+JSON.stringify(newProfileState));
+  assert.equal(await browser.evaluate("[...document.getElementById('console-planner-effort').options].map(o=>o.value).filter(Boolean).join(',')==='low,high'"),true,'custom model effort choices match its catalog metadata');
+  const taskCountBeforeCreate=readdirSync(fx.options.tasksDir).filter(name=>name.endsWith('.json')).length;
+  const plansBeforeCreate=fx.calls.filter(call=>call.work_item_id==='plan').length;
+  await browser.evaluate(`(()=>{window.nativeFetchBeforeCreate=window.fetch;window.createBodies=[];window.failCreateOnce=true;window.fetch=async(url,...options)=>{const opts=options[0]??{};if(String(url).endsWith('/api/teams')&&opts.method==='POST'){window.createBodies.push(JSON.parse(opts.body));if(window.failCreateOnce){window.failCreateOnce=false;throw new TypeError('controlled connection loss before create POST');}}return window.nativeFetchBeforeCreate(url,...options);};document.getElementById('planner-input').value='设计一个能和 Planner 商讨、按项目验收标准派工的协作空间。';const form=document.getElementById('planner-chat-form');for(let i=0;i<2;i++)form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));})()`);
+  await browser.waitFor("document.getElementById('planner-chat-hint').textContent.includes('目标创建回执未确认')&&!document.getElementById('planner-send').disabled");
+  assert.equal(await browser.evaluate("document.getElementById('planner-input').value==='设计一个能和 Planner 商讨、按项目验收标准派工的协作空间。'&&[...document.querySelectorAll('[data-new-goal]')].every(button=>button.disabled)&&window.createBodies.length===1"),true,'an uncertain first create preserves the message, locks new-goal entries, and ignores duplicate submits');
+  assert.equal(readdirSync(fx.options.tasksDir).filter(name=>name.endsWith('.json')).length,taskCountBeforeCreate,'a failed pre-POST create leaves no duplicate task or empty plan');
+  assert.equal(fx.calls.filter(call=>call.work_item_id==='plan').length,plansBeforeCreate,'starting a chat does not create an empty plan');
+  await browser.click('#planner-send');
+  await browser.waitFor("document.getElementById('planner-conversation').textContent.includes('建议先明确')&&!document.getElementById('planner-input').value");
+  const createdTeamId=await browser.evaluate("document.querySelector('#team-goal')?.textContent&&document.querySelector('#team-meta')?.title");
+  assert.ok(createdTeamId?.startsWith('TEAM-'),'the first Planner message creates and selects a team');
+  assert.equal(await browser.evaluate("window.createBodies.length===2&&window.createBodies[0].spec.idempotency_key===window.createBodies[1].spec.idempotency_key&&window.createBodies[1].project_id==='browser-project'&&window.createBodies[1].profile_id==='browser-acceptance'&&window.createBodies[1].planning.dispatch_mode==='planner'"),true,'retry reuses one create key and submits the selected project, acceptance profile, and dispatch mode');
+  const createdTeam=controller.read(createdTeamId),createdTask=JSON.parse(readFileSync(join(fx.options.tasksDir,createdTeam.delivery_task_id+'.json'),'utf8'));
+  assert.equal(createdTeam.planning.dispatch_mode,'planner','the selected dispatch mode is stored with the new team');
+  assert.deepEqual(createdTeam.planning.planner,{executor_type:'codex',model:'custom/planning-model',effort:'high'},'the custom Planner profile and exact effort are stored with the new team');
+  assert.equal(createdTask.fixture_dir,fx.repo,'the team uses the registered local project directory');
+  assert.deepEqual(createdTask.acceptance_cmd,{command:'node',args:['--test','tests/gate.test.mjs']},'the registered acceptance profile supplies the trusted command');
+  assert.equal(createdTeam.work_items.length,0,'a new discussion contains no placeholder Worker tasks');
+  assert.equal(fx.calls.filter(call=>call.work_item_id==='plan').length,plansBeforeCreate,'a first message does not trigger a plan');
+  assert.equal(fx.calls.find(call=>call.team_id===createdTeamId&&call.work_item_id==='discuss')?.model,'custom/planning-model','the selected Planner model reaches the controlled discussion adapter');
+  assert.equal(fx.calls.find(call=>call.team_id===createdTeamId&&call.work_item_id==='discuss')?.effort,'high','the exact effort reaches the controlled discussion adapter');
+  await browser.evaluate('window.fetch=window.nativeFetchBeforeCreate');
+  await browser.click('.team-list-heading [data-new-goal]');
+  await browser.click('#refresh');await browser.waitFor("!document.getElementById('refresh').hasAttribute('aria-busy')");
+  assert.equal(await browser.evaluate("document.getElementById('team-state').hidden&&document.getElementById('work-area').hidden&&![...document.querySelectorAll('[data-team]')].some(button=>button.getAttribute('aria-current')==='true')"),true,'refresh preserves a blank new-goal workspace instead of reselecting an older team');
+  assert.equal(readdirSync(fx.options.tasksDir).filter(name=>name.endsWith('.json')).length,taskCountBeforeCreate+1,'reentering a new-goal workspace does not create another target');
+  await browser.click(`#teams [data-team="${fx.team.team_id}"]`);
+  await browser.waitFor(`document.getElementById('team-meta').title===${JSON.stringify(fx.team.team_id)}&&document.getElementById('team-state')?.textContent==='与 Planner 商讨'`);
+  const restoredProfile=await browser.evaluate("JSON.stringify({teamId:document.getElementById('team-meta').title,executor:document.getElementById('console-planner-executor').value,model:document.getElementById('console-planner-model-input').value,dispatchMode:document.getElementById('console-dispatch-mode').value})");
+  assert.equal(await browser.evaluate(`document.getElementById('team-meta').title===${JSON.stringify(fx.team.team_id)}&&document.getElementById('console-planner-executor').value==='writer'`),true,'restoring the fixture is explicit and retains its original team profile: '+restoredProfile);
+
   await browser.evaluate("document.getElementById('console-planner-executor').value='secondary';document.getElementById('console-planner-executor').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-model-select').value='worker-no-thinking';document.getElementById('console-planner-model-select').dispatchEvent(new Event('change',{bubbles:true}))");
   assert.equal(await browser.evaluate("document.getElementById('console-planner-effort').disabled"),true,'console model choices gate reasoning effort');
   await browser.evaluate("document.getElementById('console-planner-model-select').value='worker-deep';document.getElementById('console-planner-model-select').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-effort').value='high';document.getElementById('console-planner-effort').dispatchEvent(new Event('change',{bubbles:true}))");
@@ -68,9 +118,10 @@ try {
       return nativeFetch(url,...options);
     };
   })()`);
+  const callsBeforeOldChat=fx.calls.length;
   await browser.evaluate("document.getElementById('planner-input').value='先商讨模型选择，暂不规划。'");
   await browser.click('#planner-send');await browser.waitFor("document.getElementById('console-profile-hint').textContent.includes('回执未确认')&&!document.getElementById('planner-send').disabled");
-  assert.equal(fx.calls.length,0,'uncertain configuration does not send the chat to the old model');
+  assert.equal(fx.calls.length,callsBeforeOldChat,'uncertain configuration does not send the chat to the old model');
   assert.equal(await browser.evaluate("document.getElementById('planner-input').value==='先商讨模型选择，暂不规划。'&&document.getElementById('console-planner-executor').disabled"),true,'uncertain configuration keeps the message and frozen profile');
   await browser.evaluate('window.failConfiguration=false');
   await browser.click('#planner-send');await browser.waitFor("document.getElementById('notice').textContent.includes('controlled temporary authentication failure')&&!document.getElementById('planner-send').disabled");
@@ -78,11 +129,11 @@ try {
   await browser.click('#planner-send');await browser.waitFor("document.getElementById('planner-model')?.textContent.includes('secondary / worker-deep') && document.getElementById('planner-conversation').textContent.includes('建议先明确') && !document.getElementById('propose-plan').disabled");
   assert.equal(await browser.evaluate('window.configRequests.length===3&&new Set(window.configRequests).size===1'),true,'an explicit retry reuses the exact configuration command ID');
   assert.equal(controller.read(fx.team.team_id).planning.agent_config_revision,1,'a lost response cannot configure twice');
-  assert.equal(fx.calls[0].model,'worker-deep','direct sending uses the newly selected model');
-  assert.equal(fx.calls[0].effort,'high','direct sending uses the newly selected reasoning grade');
+  assert.equal(fx.calls.find(call=>call.team_id===fx.team.team_id&&call.work_item_id==='discuss').model,'worker-deep','direct sending uses the newly selected model');
+  assert.equal(fx.calls.find(call=>call.team_id===fx.team.team_id&&call.work_item_id==='discuss').effort,'high','direct sending uses the newly selected reasoning grade');
   assert.equal(fx.calls.filter(x=>['a','b','c'].includes(x.work_item_id)).length,0,'direct discussion does not dispatch Workers');
   let callsAfterChat=fx.calls.length;
-  assert.equal(await browser.evaluate("Math.abs(document.querySelector('.planner-console').getBoundingClientRect().width-document.querySelector('.board-columns').getBoundingClientRect().width)<2 && document.querySelector('.work-area').getBoundingClientRect().top>=document.querySelector('.planner-console').getBoundingClientRect().bottom"),true,'Planner occupies a whole row, with the plan underneath');
+  assert.equal(await browser.evaluate("Math.abs(document.querySelector('.planner-console').getBoundingClientRect().width-document.querySelector('.board-columns').getBoundingClientRect().width)<2&&document.getElementById('work-area').hidden"),true,'Planner occupies a whole row while an empty Worker task area stays hidden');
   assert.equal(controller.read(fx.team.team_id).planning.planner.effort,'high');
   await browser.evaluate("document.getElementById('console-planner-executor').value='writer';document.getElementById('console-planner-executor').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-model-select').value='__custom';document.getElementById('console-planner-model-select').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-model-input').value='planning-model';document.getElementById('console-planner-model-input').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('console-planner-effort').value='high';document.getElementById('console-planner-effort').dispatchEvent(new Event('change',{bubbles:true}))");
   await browser.click('#save-console-planner');await browser.waitFor("document.getElementById('planner-model')?.textContent.includes('writer / planning-model') && !document.getElementById('propose-plan').disabled");
@@ -112,28 +163,23 @@ try {
   await browser.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1080,deviceScaleFactor:1,mobile:false});
   await browser.evaluate("document.getElementById('notice').hidden=true;scrollTo({top:0,behavior:'instant'})");
   await browser.screenshot(join(outputDir,'planner-config-desktop.png'));
-  await browser.click('.hero-cta');
-  assert.equal(await browser.evaluate("!document.getElementById('create-settings').open&&!document.getElementById('workers')&&document.activeElement.id==='goal'"),true,'creation asks for a goal and Planner, postponing crew size');
-  await browser.evaluate("document.getElementById('planner-executor').value='codex';document.getElementById('planner-executor').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('planner-model-select').value='__custom';document.getElementById('planner-model-select').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('planner-model-input').value='custom/planning-model';document.getElementById('planner-model-input').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('planner-effort').value='high'");
-  assert.equal(await browser.evaluate("!document.getElementById('planner-model-input').hidden&&document.getElementById('planner-effort').value==='high'"),true);
-  await browser.evaluate("document.getElementById('planner-model-input').value='unverified-planner';document.getElementById('planner-model-input').dispatchEvent(new Event('input',{bubbles:true}))");
-  assert.equal(await browser.evaluate("document.getElementById('planner-effort').disabled&&document.getElementById('planner-effort').value===''"),true,'unknown Planner models cannot inherit an executor grade');
-  await browser.evaluate("document.getElementById('planner-executor').value='cline';document.getElementById('planner-executor').dispatchEvent(new Event('change',{bubbles:true}))");
-  assert.equal(await browser.evaluate("document.getElementById('planner-model-input').value===''&&document.getElementById('planner-effort').value===''&&![...document.getElementById('planner-effort').options].some(o=>o.value==='max')"),true,'changing Agent clears incompatible overrides and constrains effort levels');
-  await browser.evaluate("document.getElementById('planner-executor').value='codex';document.getElementById('planner-executor').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('planner-effort').value='high';document.getElementById('goal').value='设计一个能和 Planner 商讨、按计划派工的协作空间。'");
-  await browser.waitFor("getComputedStyle(document.getElementById('create-dialog')).opacity==='1'");
-  await browser.screenshot(join(outputDir,'planner-create-desktop.png'),{fullPage:false});
+  await browser.click('.team-list-heading [data-new-goal]');
+  assert.equal(await browser.evaluate("!document.querySelector('dialog[open]')&&document.getElementById('work-area').hidden&&document.getElementById('show-worker-tasks').hidden&&document.getElementById('console-dispatch-mode').value==='human'"),true,'the sidebar entry starts a fresh human-gated Planner workspace');
+  await browser.click('#refresh');await browser.waitFor("!document.getElementById('refresh').hasAttribute('aria-busy')");
+  assert.equal(await browser.evaluate("document.getElementById('team-state').hidden&&document.getElementById('work-area').hidden&&![...document.querySelectorAll('[data-team]')].some(button=>button.getAttribute('aria-current')==='true')"),true,'ordinary refresh leaves the new workspace unselected');
+  await browser.screenshot(join(outputDir,'planner-new-session-desktop.png'),{fullPage:false});
   await browser.send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
-  assert.equal(await browser.evaluate("document.getElementById('create-dialog').scrollWidth<=document.getElementById('create-dialog').clientWidth+2"),true);
-  assert.equal(await browser.evaluate("document.getElementById('create').getBoundingClientRect().bottom<=innerHeight"),true,'the primary action remains visible on mobile');
-  await browser.screenshot(join(outputDir,'planner-create-mobile.png'),{fullPage:false});
-  await browser.click('#create-dialog [data-close]');
+  await browser.evaluate("document.getElementById('planner-input').scrollIntoView({block:'center',behavior:'instant'})");
+  assert.equal(await browser.evaluate("document.documentElement.scrollWidth<=innerWidth+2&&[...document.querySelectorAll('#console-project,#console-acceptance,#console-dispatch-mode,#planner-send')].every(e=>e.getBoundingClientRect().right<=innerWidth+2)&&document.getElementById('planner-send').getBoundingClientRect().bottom<=innerHeight"),true,'the unified Planner, project, acceptance, and dispatch controls fit the mobile viewport');
+  await browser.screenshot(join(outputDir,'planner-new-session-mobile.png'),{fullPage:false});
   await browser.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1080,deviceScaleFactor:1,mobile:false});
+  await browser.click(`#teams [data-team="${fx.team.team_id}"]`);
+  await browser.waitFor(`document.getElementById('team-meta').title===${JSON.stringify(fx.team.team_id)}&&document.getElementById('team-state')?.textContent==='与 Planner 商讨'`);
   await browser.click('[data-prompt]');assert.ok(await browser.evaluate("document.getElementById('planner-input').value.includes('边界')"));
   await browser.evaluate(`document.getElementById('planner-input').value='先分析目标与验收要求，再帮我考虑合适的分工。'`);
   await browser.click('#planner-send');await browser.waitFor("!document.getElementById('propose-plan').disabled");
   assert.ok(fx.calls.some(x=>x.work_item_id==='discuss'&&x.model==='planning-model'),'the restored Planner receives subsequent chat');
-  assert.equal(fx.calls.find(x=>x.work_item_id==='discuss').effort,'high');
+  assert.equal(fx.calls.find(x=>x.team_id===fx.team.team_id&&x.work_item_id==='discuss').effort,'high');
   assert.equal(await browser.evaluate("Boolean(window.hacked||document.querySelector('#planner-conversation img'))"),false);
   assert.equal(fx.calls.filter(x=>['a','b','c'].includes(x.work_item_id)).length,0);
   await browser.click('#propose-plan');await browser.waitFor("document.getElementById('team-state')?.textContent==='等待确认计划'&&!document.getElementById('configure-dispatch')?.disabled");
@@ -152,12 +198,15 @@ try {
   await browser.waitFor("getComputedStyle(document.getElementById('dispatch-dialog')).opacity==='1'");
   await browser.screenshot(join(outputDir,'planner-dispatch-mobile.png'),{fullPage:false});
   await browser.click('#approve-plan');await browser.waitFor("document.querySelector('[data-work=b]')?.textContent.includes('产物已接受')");
+  assert.equal(await browser.evaluate("!document.getElementById('work-area').hidden&&!document.getElementById('show-worker-tasks').hidden&&document.getElementById('worker-task-hint').textContent.includes('暂停旧尝试')&&document.querySelector('[data-work=a] .work-adjust-cta')?.textContent.includes('通过 Planner 调整')"),true,'Worker tasks expose the explicit Planner adjustment action and lifecycle hint');
+  await browser.click('#show-worker-tasks');
+  assert.equal(await browser.evaluate("document.activeElement?.dataset.work==='a'"),true,'the Worker task navigation focuses the assigned task card');
   const peer=controller.read(fx.team.team_id).work_items.find(i=>i.work_item_id==='b').artifact_id;
   assert.equal(controller.read(fx.team.team_id).members.filter(m=>m.role==='worker').length,2);
   assert.equal(fx.calls.find(x=>x.work_item_id==='a').model,'worker-fast');assert.equal(fx.calls.find(x=>x.work_item_id==='b').model,'worker-deep');
   assert.equal(fx.calls.find(x=>x.work_item_id==='a').effort,'low');assert.equal(fx.calls.find(x=>x.work_item_id==='b').effort,'high');
   assert.equal(controller.read(fx.team.team_id).runs.find(r=>r.work_item_id==='b').executor_type,'secondary');
-  await browser.click('[data-work=a]');await browser.evaluate("document.getElementById('direction').value='补上错误处理的具体契约，保留已经完成的界面。'");await browser.click('#adjust');
+  await browser.click('[data-work=a]');assert.equal(await browser.evaluate("document.getElementById('work-dialog').open"),true,'clicking the task card opens its adjustment details');await browser.evaluate("document.getElementById('direction').value='补上错误处理的具体契约，保留已经完成的界面。'");await browser.click('#adjust');
   await browser.waitFor("document.querySelector('[data-work=a]')?.textContent.includes('Planner 改向')&&!document.getElementById('rework-status').hidden");
   assert.equal(fx.calls.filter(x=>x.work_item_id==='a').length,1);
   await browser.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1080,deviceScaleFactor:1,mobile:false});
@@ -176,7 +225,7 @@ try {
   await browser.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   assert.equal(await browser.evaluate("getComputedStyle(document.querySelector('.member-card')).transitionDuration==='0s'"),true);
   assert.deepEqual(browser.errors,[]);assert.deepEqual(tickErrors,[]);
-  report={ok:true,browser:'Chromium',model_adapters:'controlled fixtures; real HTTP and controller',checks:['persistent Planner chat','escaped chat messages','manual proposal gate','no dispatch before approval','same Planner/Reviewer model display','worker count changed after planning','distinct executor profiles','per-worker models reach capsules','explicit work assignment','scoped pause before Planner revision','dependent work held','old result discarded','Planner direction receipt','unaffected artifact preserved','conversation survives reload','320–1920px responsive layouts','mobile dispatch dialog','keyboard focus','reduced motion','compact goal creation','custom model selection','executor-specific effort choices','changing Agent clears incompatible overrides','model-specific effort gating','Planner effort reaches execution','per-worker effort reaches execution','mobile create dialog','visible cockpit Agent/model/effort controls','console model-specific effort gating','direct chat automatically saves the selected Planner before messaging','selected model and reasoning grade reach the direct chat capsule','direct chat never dispatches Workers','full-row Planner layout','uncertain configuration preserves the message and frozen profile','uncertain configuration never sends to the old model','explicit configuration retry keeps its command ID','authentication failure on retry preserves an uncertain configuration','lost configuration response cannot apply twice','version conflicts preserve message and profile','rejected configuration never chats through an old model','explicit conflict retry uses a fresh revision and intended model','live Planner configuration persists','Worker settings available before planning','explicit per-Worker model dropdowns','operator Worker presets persist','configuration does not dispatch any agents','sticky mobile Worker configuration action','visible cached Agent/model catalog with explicit rescan','rescan preserves unsaved Planner choices','unknown Planner effort stays disabled','unknown Worker effort stays disabled'],verified_at:new Date().toISOString()};
+  report={ok:true,browser:'Chromium',model_adapters:'controlled fixtures; real HTTP and controller',checks:['persistent Planner chat','escaped chat messages','manual proposal gate','no dispatch before approval','same Planner/Reviewer model display','worker count changed after planning','distinct executor profiles','per-worker models reach capsules','explicit work assignment','scoped pause before Planner revision','dependent work held','old result discarded','Planner direction receipt','unaffected artifact preserved','conversation survives reload','320–1920px responsive layouts','mobile dispatch dialog','keyboard focus','reduced motion','full-row new-goal navigation','one Planner configuration form','legacy command/JSON/key fields removed','registered local project and acceptance profile selected','custom model and exact effort persisted','dispatch mode persisted with the team','uncertain create retry reuses its key','duplicate submit does not create a second target','new discussion has no placeholder tasks or empty plan','refresh preserves the blank new-goal workspace','explicit existing-team restoration by ID','mobile unified session configuration','visible cockpit Agent/model/effort controls','console model-specific effort gating','direct chat automatically saves the selected Planner before messaging','selected model and reasoning grade reach the direct chat capsule','direct chat never dispatches Workers','full-row Planner layout','uncertain configuration preserves the message and frozen profile','uncertain configuration never sends to the old model','explicit configuration retry keeps its command ID','authentication failure on retry preserves an uncertain configuration','lost configuration response cannot apply twice','version conflicts preserve message and profile','rejected configuration never chats through an old model','explicit conflict retry uses a fresh revision and intended model','live Planner configuration persists','Worker settings available before planning','explicit per-Worker model dropdowns','operator Worker presets persist','configuration does not dispatch any agents','sticky mobile Worker configuration action','Worker task card shows explicit Planner adjustment','Worker task navigation focuses the task','visible cached Agent/model catalog with explicit rescan','rescan preserves unsaved Planner choices','unknown Planner effort stays disabled','unknown Worker effort stays disabled'],verified_at:new Date().toISOString()};
 } finally {
   clearInterval(timer);releaseRevision?.();browser?.close();
   if(chrome.exitCode===null&&chrome.signalCode===null)await new Promise(resolve=>{const timeout=setTimeout(()=>signalTree(chrome,'SIGKILL'),5000);chrome.once('close',()=>{clearTimeout(timeout);resolve();});signalTree(chrome,'SIGTERM');});
