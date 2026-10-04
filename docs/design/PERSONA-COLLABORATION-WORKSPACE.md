@@ -12,7 +12,7 @@
 
 - 点击 Planner 聚焦常驻对话框；点击 Worker 定位它的任务，再通过 Planner 调整。成员消息保留独立入口。
 - Planner 面板常驻 Agent、模型与思考强度选单；“你的团队”旁的“选择 Worker Agents”逐位配置 Worker，创建前和商讨阶段即可预设。目录模型用下拉选单，自定义模型显示额外输入框；保存配置不会开工，直接发送消息或请求提案会先应用所选 Planner 配置，待回执确认后继续。
-- 打开页面自动扫描 Agent 和原生模型目录，团队上方显示安装数、接入数、模型数及扫描时间，可手动重扫。强度选单只展示所选模型确认的等级，并显示具体值；没有元数据则禁用覆盖、沿用默认。重扫保留配置草稿并清除失效等级，不触发派工。
+- 打开页面、普通刷新或切回前台时读取已有 Agent 和模型目录；只有点击“重新扫描”才启动原生模型目录查询。团队上方显示安装数、接入数、模型数及实际扫描时间。强度选单只展示所选模型确认的等级，并显示具体值；没有元数据则禁用覆盖、沿用默认。重扫保留配置草稿并清除失效等级，不触发派工；服务重启后可手动扫描补齐进程内缓存。
 - Command Code 在 Agent 选单中显示为 `cmd`，通过原生 `--list-models` 读取目录，Planner 与每位 Worker 都能独立选择；默认项显示用户当前配置的模型。它的文本模型目录不携带每模型等级，只有明确的 BYOK 或注册表等级元数据才启用强度覆盖。
 - 已开工的团队先暂停，全部执行范围停止后才能换配置；保留已接受成果，配置用于后续尝试。确认同时绑定配置版本，Reviewer 在交付时继承最新 Planner 配置并建立独立会话。
 - 点击执行中的工作项，暂停旧尝试与受影响的依赖并提交反馈；Planner 改写后才重新派工。提交绑定打开编辑器时的版本，防止静默覆盖后续修改。
@@ -74,13 +74,17 @@
 运行：
 
 ```bash
-node qa/planner-browser.mjs --output-dir /tmp/af-planner-browser
+AF_EXECUTORS_DIR="$PWD/fixtures/agent-foundry-global/executors" node qa/planner-browser.mjs --output-dir /tmp/af-planner-browser
 node qa/team-browser.mjs --output-dir /tmp/af-persona-browser
 node verification/web-console-smoke.mjs
 node verification/web-write-browser.mjs
 node verification/deploy-preflight.mjs
 node --test tests/team-agent-configuration.test.mjs tests/team-planner.test.mjs tests/team-api.test.mjs tests/web-api-readonly.test.mjs tests/web-api-write-auth.test.mjs tests/web-style-scale.test.mjs
 ```
+
+Planner 浏览器命令使用进程级测试注册表及受控健康检查、模型输出，不依赖本机已安装客户端或账户；不修改部署的执行器注册表。旧团队的浏览器回归也按现有入口操作：Worker 卡片定位任务，消息通过团队动态入口发送，新建目标进入常驻 Planner。
+
+最新系统复检：全量 904 项（899 通过、0 失败、5 个既有门控跳过）、架构 6/6、浏览器 240/240。Pi 重复模型身份拒绝，卸载客户端后的共享扫描缓存正确失效；本机原生元数据已复扫且普通读取保留缓存。完整范围与真实模型验证边界见 [系统复检](../reviews/2026-10-04-final-system-review.md)。
 
 2026-10-04：全量 901 项（896 通过、5 个既有门控跳过、0 失败）、架构 6/6；Planner Chromium 57 项、首次聊天 46 项、项目目录 19 项、Agent 发现目录 35 项通过。目录测试使用实际文件系统、HTTP 与 canonical 注册表，包含响应丢失、可信验收资产和符号链接；真实本机视觉及目录选择 25 项通过，无模型请求。
 

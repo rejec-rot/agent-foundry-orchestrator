@@ -1,0 +1,57 @@
+{
+  "browser": "Chromium",
+  "browser_checks": {
+    "planner": {
+      "passed": 57,
+      "verified_at": "2026-10-04T06:51:39.410Z"
+    },
+    "first_chat": {
+      "passed": 46,
+      "verified_at": "2026-10-04T06:54:35.497Z"
+    },
+    "legacy_team": {
+      "passed": 23,
+      "verified_at": "2026-10-04T06:48:46.012Z"
+    },
+    "agent_discovery": {
+      "passed": 35,
+      "verified_at": "2026-10-04T06:50:42.847Z"
+    },
+    "project_picker": {
+      "passed": 19,
+      "verified_at": "2026-10-04T06:50:27.417Z"
+    },
+    "workbench_read": {
+      "passed": 34,
+      "verified_at": "2026-10-04T03:36:03.172Z"
+    },
+    "workbench_write": {
+      "passed": 26,
+      "verified_at": "2026-10-04T03:36:00.230Z"
+    }
+  },
+  "browser_total": 240,
+  "full_regression": {
+    "tests": 904,
+    "passed": 899,
+    "failed": 0,
+    "existing_skips": 5,
+    "verified_at": "2026-10-04T06:55:16.346602+00:00"
+  },
+  "architecture": {
+    "passed": 6,
+    "verified_at": "2026-10-04T06:54:32.635719+00:00"
+  },
+  "native_catalog": {
+    "verified_at": "2026-10-04T06:57:03.349Z",
+    "installed_clients": 8,
+    "matched_adapters": 7,
+    "available_executors": 4,
+    "models": 114,
+    "adjustable_models": 76,
+    "unverified_model": "cline / cline-pass/qwen3.8-max",
+    "model_prompts_sent": 0
+  },
+  "model_execution": "controlled test adapters; individual real provider runs not performed",
+  "independent_review": "PASS"
+}

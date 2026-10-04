@@ -12,6 +12,21 @@ import {
   queryPiCatalog,
 } from '../lib/agent-connectors/pi.mjs';
 
+test('Pi refuses ambiguous full model identities instead of choosing the last reasoning record', () => {
+  const model = { id: 'shared', provider: 'sample', reasoning: true };
+  const getSupportedThinkingLevels = metadata => metadata.api === 'responses' ? ['low'] : ['high'];
+  assert.throws(() => normalizePiModels([
+    { ...model, api: 'responses' }, { ...model, api: 'chat' },
+  ], { getSupportedThinkingLevels }), /CATALOG_UNAVAILABLE/);
+  assert.throws(() => normalizePiModels([model, model]), /CATALOG_UNAVAILABLE/);
+  const distinct = normalizePiModels([
+    { ...model, api: 'responses' }, { ...model, provider: 'other', api: 'chat' },
+  ], { getSupportedThinkingLevels });
+  assert.deepEqual(distinct.map(m => [m.id, m.reasoning_efforts]), [
+    ['sample/shared', ['low']], ['other/shared', ['high']],
+  ]);
+});
+
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'af-pi-connector-'));
   const script = join(root, 'pi-rpc-fixture.mjs');

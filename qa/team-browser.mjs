@@ -62,7 +62,10 @@ try {
   const initial=controller.read(fx.team.team_id),bArtifact=initial.work_items.find(i=>i.work_item_id==='b').artifact_id;
   assert.equal(initial.work_items.find(i=>i.work_item_id==='a').status,'RUNNING');
   await browser.click('[data-member=worker-2]');
+  assert.equal(await browser.evaluate("document.activeElement.dataset.work==='b'&&!document.getElementById('message-dialog').open"),true,'Worker cards locate their assigned tasks');
+  await browser.click('[data-open=message-dialog]');
   assert.equal(await browser.evaluate("document.getElementById('message-dialog').open&&document.activeElement.id==='message'"),true);
+  await browser.evaluate("document.getElementById('member-target').value='worker-2'");
   await browser.evaluate("document.getElementById('message').value='<img src=x onerror=\"window.hacked=1\"> explain your API'");await browser.click('#send-message');
   await browser.waitFor("document.getElementById('messages')?.textContent.includes('explain your API')&&document.getElementById('receipts')?.textContent.includes('已落实')");
   assert.equal(await browser.evaluate("Boolean(window.hacked||document.querySelector('#messages img'))"),false);
@@ -74,7 +77,7 @@ try {
   assert.equal(adjusted.work_items.find(i=>i.work_item_id==='b').artifact_id,bArtifact);
   assert.ok(adjusted.runs.some(r=>r.work_item_id==='a'&&r.status==='DISCARDED'));
   assert.equal(await browser.evaluate('document.documentElement.scrollWidth<=innerWidth+2'),true);
-  assert.equal(await browser.evaluate("(()=>{const side=document.querySelector('.sidebar').getBoundingClientRect(),work=document.querySelector('.workspace').getBoundingClientRect(),plan=document.querySelector('.work-area').getBoundingClientRect(),planner=document.querySelector('.planner-console').getBoundingClientRect();return side.right<=work.left+1&&planner.right<plan.left&&Math.abs(plan.top-planner.top)<3;})()"),true,'desktop keeps Planner chat and the plan aligned beside a fixed navigation');
+  assert.equal(await browser.evaluate("(()=>{const side=document.querySelector('.sidebar').getBoundingClientRect(),work=document.querySelector('.workspace').getBoundingClientRect(),plan=document.querySelector('.work-area').getBoundingClientRect(),planner=document.querySelector('.planner-console').getBoundingClientRect();return side.right<=work.left+1&&planner.bottom<=plan.top&&Math.abs(plan.left-planner.left)<3&&Math.abs(plan.right-planner.right)<3;})()"),true,'desktop keeps the full-row Planner above Worker tasks beside a fixed navigation');
   await browser.evaluate("document.getElementById('messages-tab').focus()");await browser.send('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowRight',code:'ArrowRight'});
   assert.equal(await browser.evaluate("document.getElementById('receipts-tab').getAttribute('aria-selected')==='true'&&!document.getElementById('receipts').hidden&&document.activeElement.id==='receipts-tab'"),true,'keyboard switches activity tabs');
   await browser.waitFor("document.getElementById('notice').hidden",9000);
@@ -97,29 +100,21 @@ try {
   await browser.evaluate("scrollTo({top:0,behavior:'instant'})");
   await browser.screenshot(join(outputDir,'team-mobile.png'));
   await browser.click('.hero-cta');
-  assert.equal(await browser.evaluate("document.getElementById('create-dialog').open&&document.activeElement.id==='goal'"),true);
-  await browser.evaluate(`document.getElementById('goal').value='browser-created team';document.getElementById('target').value=${JSON.stringify(fx.repo)};document.getElementById('key').value='browser-create';document.getElementById('args').value='not-json';document.getElementById('create-form').requestSubmit()`);
-  await browser.waitFor("document.querySelector('#create-dialog .dialog-feedback')?.textContent.includes('JSON')&&!document.getElementById('create')?.disabled");
-  assert.equal(await browser.evaluate("document.getElementById('create-dialog').open&&document.getElementById('goal').value==='browser-created team'"),true,'invalid input keeps the dialog and user draft');
-  await browser.evaluate('document.getElementById("args").value=JSON.stringify(["--test","tests/gate.test.mjs"])');
-  await browser.evaluate("document.getElementById('planner-executor').value='codex';document.getElementById('planner-executor').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('planner-model-select').value='__custom';document.getElementById('planner-model-select').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('planner-model-input').value='selected/planner-model';document.getElementById('planner-model-input').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('planner-effort').value='high'");
-  await browser.click('#create');
-  await browser.waitFor("document.getElementById('team-goal')?.textContent==='browser-created team'");
-  assert.equal(await browser.evaluate("document.getElementById('create-dialog').open"),false,'successful creation closes the dialog');
-  assert.equal(await browser.evaluate("document.querySelectorAll('[data-member]').length"),4);
-  const created=readTeam(fx.options.runtimeDir,await browser.evaluate("document.getElementById('team-meta').title"));
-  assert.deepEqual(created.planning.planner,{executor_type:'codex',model:'selected/planner-model',effort:'high'});
-  const deliveryTask=JSON.parse(readFileSync(join(fx.options.tasksDir,created.delivery_task_id+'.json'),'utf8'));
-  assert.equal(deliveryTask.reviewer_model,'selected/planner-model');assert.equal(deliveryTask.reviewer_effort,'high');
+  assert.equal(await browser.evaluate("!document.getElementById('create-dialog')&&document.activeElement.id==='planner-input'&&!document.getElementById('console-project-fields').hidden&&!document.getElementById('console-planner-form').hidden&&document.getElementById('work-area').hidden"),true,'the existing-team new-goal entry opens the unified Planner and hides old tasks');
+  await browser.evaluate("document.getElementById('console-project').value='browser-team';document.getElementById('console-project').dispatchEvent(new Event('change',{bubbles:true}))");
+  assert.equal(await browser.evaluate("document.getElementById('console-acceptance').value==='default'"),true,'new goals select an existing registered acceptance profile');
+  // Creation/model persistence is exercised through real first chat in planner-browser and
+  // planner-first-chat-browser; this legacy-team regression does not recreate the removed modal.
+  await browser.evaluate('document.activeElement.blur()');
   for(const width of [360,768,1024,1920]){await browser.send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:width<720});assert.equal(await browser.evaluate('document.documentElement.scrollWidth<=innerWidth+2'),true,`no overflow at ${width}px`);}
   await browser.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
-  assert.equal(await browser.evaluate("getComputedStyle(document.querySelector('.member-card')).transitionDuration==='0s'"),true,'reduced motion is honored');
+  assert.equal(await browser.evaluate("getComputedStyle(document.querySelector('.hero-cta')).transitionDuration==='0s'"),true,'reduced motion is honored');
   await browser.send('Page.navigate',{url:server.url+'/#'+fx.task.task_id});
   await browser.waitFor("location.pathname==='/workbench.html'&&document.title.includes('V2')");
-  await browser.waitFor("document.querySelectorAll('#tasks .row').length>=2");
+  await browser.waitFor("document.querySelectorAll('#tasks .row').length>=1");
   assert.equal(await browser.evaluate('location.hash'),'#'+fx.task.task_id,'historical task bookmarks retain their task identity');
   assert.deepEqual(browser.errors,[]);assert.deepEqual(tickErrors,[]);
-  report={ok:true,browser:'Chromium',model_adapters:'controlled test adapters',checks:['default collaboration entry','historical task bookmark compatibility','authenticated pointer actions','four registered members','dependency graph','member message receipt','message escaping','scoped adjustment','unchanged peer artifact','old result discarded','reload persistence','aligned desktop Planner and plan','mobile navigation and focus restoration','registered-profile creation dialog','inline error feedback preserves user draft','keyboard activity tabs','self-hosted display font','local Chinese heading and body typography','cut action and arrow plate','360–1920px responsive layouts','reduced motion','Planner model and effort persist through browser creation','Reviewer receives the selected configuration'],desktop:'team-desktop.png',mobile:'team-mobile.png',verified_at:new Date().toISOString()};
+  report={ok:true,browser:'Chromium',model_adapters:'controlled test adapters',checks:['default collaboration entry','historical task bookmark compatibility','authenticated pointer actions','four registered members','dependency graph','Worker card locates its assigned task','explicit member message entry','member message receipt','message escaping','scoped adjustment','unchanged peer artifact','old result discarded','reload persistence','full-row Planner above Worker tasks','mobile navigation and focus restoration','unified new-goal Planner entry','registered acceptance profile selection','keyboard activity tabs','self-hosted display font','local Chinese heading and body typography','cut action and arrow plate','360–1920px responsive layouts','reduced motion'],desktop:'team-desktop.png',mobile:'team-mobile.png',verified_at:new Date().toISOString()};
 } finally {
   clearInterval(timer);browser?.close();
   if(chrome.exitCode===null&&chrome.signalCode===null)await new Promise(resolve=>{

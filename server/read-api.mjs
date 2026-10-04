@@ -493,6 +493,12 @@ export function createReadApi({
             })).finally(()=>{scanCompletedAt=Date.now();scanPromise=null;});
           }
           if(scanPromise)await scanPromise;
+          // Clear missing clients after shared queries settle, so an in-flight
+          // query cannot restore the old catalog after another tab sees removal.
+          for(const id of entries.keys())if(hasNativeCatalog(id)&&!installations.has(id))setDiscoveredModels(id,{
+            status:'unavailable',models:[],checked_at:new Date().toISOString(),client_version:null,
+            model_source:'local installation discovery; client unavailable',
+          });
         }
         const executors = [...entries.values()].map((entry) => {
           const matched=Boolean(ADAPTERS[entry.executor_id]),installation=installations.get(entry.executor_id);
@@ -501,7 +507,7 @@ export function createReadApi({
           const missingModels=ADAPTERS[entry.executor_id]?.requiresModel===true&&!options.models.some(m=>!m.configured_only);
           return {
           id: entry.executor_id,
-          installed:Boolean(installation)||options.discovery_status==='ready',
+          installed:Boolean(installation),
           adapter_status:matched?'matched':'unsupported',
           protocol:installation?.protocol??AGENT_CLIENTS[entry.executor_id]?.protocol??null,
           discovery_source:installation?.discovery_source??'platform adapter definition',
@@ -516,7 +522,7 @@ export function createReadApi({
             : (!matched?'local client discovered; no compatible adapter is bundled':ADAPTERS[entry.executor_id]?.schedulable===false?ADAPTERS[entry.executor_id].blocked_reason??'executor is not schedulable':entry.availability_status==='AVAILABLE'&&missingModels?'Pi has no configured provider models; configure Pi and rescan':entry.availability_status==='AVAILABLE'&&!eligibility.ok?eligibility.reason:entry.reason??null),
         };});
         return sendJson(res, 200, shape({ schema: 'af-v2-executors-v1', generated_at: new Date().toISOString(), executors, registry_configured:status.size > 0,
-          scan:url.searchParams.get('scan')==='1'?{status:executors.some(e=>e.discovery_status==='unavailable')?'partial':'complete',completed_at:new Date(scanCompletedAt||Date.now()).toISOString(),
+          scan:url.searchParams.get('scan')==='1'?{status:executors.some(e=>e.installed&&!operatorDisabled.has(e.id)&&e.discovery_status==='unavailable')?'partial':'complete',completed_at:new Date(scanCompletedAt||Date.now()).toISOString(),
             installed_agents:executors.filter(e=>e.installed).length,matched_agents:executors.filter(e=>e.installed&&e.adapter_status==='matched').length,unmatched_agents:executors.filter(e=>e.installed&&e.adapter_status==='unsupported').length,
             available_agents:executors.filter(e=>e.availability==='AVAILABLE').length,model_count:executors.reduce((n,e)=>n+e.models.filter(m=>!m.configured_only).length,0),
             reasoning:reasoningSummary(executors.flatMap(e=>e.models))}:null,

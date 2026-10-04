@@ -1,5 +1,6 @@
 // Real Chromium + durable HTTP/controller workflow; model calls are controlled fixtures.
 import assert from 'node:assert/strict';
+import { mock } from 'node:test';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -8,11 +9,14 @@ import { plannerFixture } from '../tests/helpers/planner-team-fixture.mjs';
 import { output, plan, delay } from '../tests/helpers/team-fixture.mjs';
 import { readTeam, commitTeam } from '../lib/team/store.mjs';
 import { TeamController } from '../lib/team/controller.mjs';
+import { ADAPTERS } from '../lib/adapters.mjs';
 import { startReadApi } from '../server/read-api.mjs';
 import { DevTools } from './browser-client.mjs';
 
 const args=process.argv.slice(2),index=args.indexOf('--output-dir');
 const outputDir=resolve(index<0?join(tmpdir(),'af-planner-browser'):args[index+1]);mkdirSync(outputDir,{recursive:true});
+// Health is controlled just like model output; this browser run needs no model account.
+for(const id of ['codex','cline','command-code'])mock.method(ADAPTERS[id],'health',()=>({ok:true}));
 let held=false,releaseRevision;
 const fx=plannerFixture({
   effort:'high',
@@ -230,5 +234,6 @@ try {
   clearInterval(timer);releaseRevision?.();browser?.close();
   if(chrome.exitCode===null&&chrome.signalCode===null)await new Promise(resolve=>{const timeout=setTimeout(()=>signalTree(chrome,'SIGKILL'),5000);chrome.once('close',()=>{clearTimeout(timeout);resolve();});signalTree(chrome,'SIGTERM');});
   await controller.close();await server.close();fx.cleanup();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  mock.restoreAll();
 }
 writeFileSync(join(outputDir,'planner-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({...report,output_dir:outputDir},null,2));
