@@ -5,9 +5,10 @@
 
 | Field | Verified value |
 |---|---|
+| Portable intake test correction | [`0a5e0349629f0cdd9caec3ae6ea013f0447249af`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/0a5e0349629f0cdd9caec3ae6ea013f0447249af) — test-scoped health checks, no installed CLI required; independently reviewed |
 | Code commit | [`16fcfd70df91f3635059917f97f601ff5b7d2d4f`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/16fcfd70df91f3635059917f97f601ff5b7d2d4f) — one Planner creation surface, visible Worker task changes and authenticated host directories |
 | Full regression | 901 tests: 896 passed, 0 failed, 5 existing environment-gated skips |
-| Regression completed at | 2026-10-04T01:35:20Z |
+| Regression completed at | 2026-10-04T01:51:24Z |
 | Architecture invariants | 6/6 passed at 2026-10-04T01:34:28Z |
 | Browser verification | Planner 57/57; first-chat 46/46; Agent discovery 35/35; project picker 19/19; actual local visual/access checks 25/25 |
 | Browser verified at | Planner 2026-10-04T01:36:27Z; first-chat 2026-10-04T01:36:55Z; discovery 2026-10-04T01:39:18Z; picker 2026-10-04T01:34:32Z; local preview 2026-10-04T01:33:27Z |
@@ -35,6 +36,13 @@ private playground registry and token file; it validates directory selection,
 accurate model grades and cache-only page openings, without team creation or model
 prompts. The five gated deployment/live-model tests are unchanged.
 
+
+The first CI run exposed a test dependency on installed native clients. The
+project-scoped intake test now controls only adapter health with test-local mocks,
+keeps real admission policy checks, and verifies CREATED with no model runs. Both
+raw-path intake and registered projects outside the browser root must fail at the
+allowed-root check. Directory API tests pass 5/5 with a restricted PATH containing
+no Agent CLI; the full local regression was repeated after this correction.
 
 ## V2 Direct Planner Conversation — 2026-10-04
 
