@@ -93,7 +93,8 @@ const api = await startReadApi({
 });
 
 const profileDir = mkdtempSync(join(tmpdir(), 'af-chrome-write-'));
-const artifacts = join(process.cwd(), 'verification', 'artifacts', 'web-write');
+const paletteDir = process.env.AF_WORKBENCH_PALETTE_DIR;
+const artifacts = paletteDir ? join(paletteDir, 'controlled-write') : join(process.cwd(), 'verification', 'artifacts', 'web-write');
 mkdirSync(artifacts, { recursive: true });
 
 const chrome = spawn('/usr/bin/google-chrome', [
@@ -138,6 +139,8 @@ try {
   const disabled = await evaluate("({ create: document.getElementById('s-create').disabled, start: document.getElementById('a-start').disabled, mode: document.getElementById('mode-line').textContent })");
   check('the create button is disabled until a token is saved', disabled?.create === true, JSON.stringify(disabled));
   check('the page states that writes are enabled by the server', /写操作已启用/.test(String(disabled?.mode)), String(disabled?.mode));
+  const badgeWithoutToken = await evaluate("(()=>{const b=document.getElementById('mode-badge');return {readonly:b.classList.contains('readonly'),write:b.classList.contains('write'),text:b.textContent.trim()}})()");
+  check('server write capability keeps the badge read-only until this browser has a token', badgeWithoutToken?.readonly === true && badgeWithoutToken?.write === false, JSON.stringify(badgeWithoutToken));
 
   // 2. The real refusal - not the greyed-out button. A write without a token must be rejected by
   //    the SERVER, in the page's own context.
@@ -153,9 +156,10 @@ try {
   await evaluate("document.getElementById('token-input').value = 'browser-operator-token'");
   await evaluate("document.getElementById('token-save').click()");
   await sleep(300);
-  const afterToken = await evaluate("({ create: document.getElementById('s-create').disabled, input: document.getElementById('token-input').value, stored: sessionStorage.getItem('af-write-token') })");
+  const afterToken = await evaluate("(()=>{const b=document.getElementById('mode-badge');return {create:document.getElementById('s-create').disabled,input:document.getElementById('token-input').value,stored:sessionStorage.getItem('af-write-token')==='browser-operator-token',write:b.classList.contains('write'),text:b.textContent.trim()}})()");
   check('saving the token enables the create button', afterToken?.create === false, JSON.stringify(afterToken));
   check('the token input is cleared and never left in the DOM', afterToken?.input === '', `value=${JSON.stringify(afterToken?.input)}`);
+  check('saving the token changes the badge to writable', afterToken?.stored === true && afterToken?.write === true && afterToken?.text === '可写', JSON.stringify({ stored: afterToken?.stored, write: afterToken?.write, text: afterToken?.text }));
 
   await evaluate("document.getElementById('s-goal').value = 'browser created task'");
   await evaluate(`document.getElementById('s-target').value = ${JSON.stringify(fx.target)}`);
@@ -200,6 +204,12 @@ try {
   check('the token is not in the URL', !String(leak?.url).includes(TOKEN), String(leak?.url));
   check('the token is not in the rendered DOM', leak?.html === false);
 
+  const cleared = await evaluate("(()=>{document.getElementById('token-clear').click();const b=document.getElementById('mode-badge');return {create:document.getElementById('s-create').disabled,readonly:b.classList.contains('readonly'),write:b.classList.contains('write'),stored:sessionStorage.getItem('af-write-token')===null}})()");
+  check('clearing the browser token returns the badge to read-only and disables writes', cleared?.create === true && cleared?.readonly === true && cleared?.write === false && cleared?.stored === true, JSON.stringify(cleared));
+  await evaluate(`(()=>{document.getElementById('s-target').value='';document.getElementById('s-goal').value='';document.getElementById('s-key').value='';document.getElementById('submit-result').hidden=true;document.getElementById('submit-result').textContent='';state.selected=null;document.getElementById('detail').replaceChildren();renderTasks();})()`);
+  const screenshotSafe = await evaluate(`(()=>{const text=document.body.innerText;return !text.includes(${JSON.stringify(fx.target)})&&!document.documentElement.outerHTML.includes(${JSON.stringify(TOKEN)})})()`);
+  check('palette screenshots contain no fixture path or token', screenshotSafe === true);
+
   for (const width of BREAKPOINTS) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 980, deviceScaleFactor: 1, mobile: width <= 480 });
     await sleep(400);
@@ -231,4 +241,8 @@ try {
 
 const failed = checks.filter((c) => !c.ok);
 console.log(`\n${checks.length - failed.length}/${checks.length} checks passed${failed.length ? `; FAILED: ${failed.map((c) => c.name).join(', ')}` : ''}`);
+if (paletteDir) {
+  const report = { ok: failed.length === 0, browser: 'Chromium', mode: 'controlled fixture; real HTTP with a stubbed worker; no model prompts', checks, verified_at: new Date().toISOString(), screenshots: BREAKPOINTS.map((width) => join(artifacts, `write-${width}.png`)) };
+  writeFileSync(join(paletteDir, 'write-report.json'), `${JSON.stringify(report, null, 2)}\n`);
+}
 process.exit(failed.length === 0 ? 0 : 1);

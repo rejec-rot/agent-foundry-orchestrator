@@ -237,7 +237,7 @@
 .team-list > button[aria-current="true"]::before { clip-path: polygon(0 0, 100% 4px, 100% 100%, 0 calc(100% - 4px)); }
 pre.evidence { border: 2px solid var(--ink); border-left-width: 4px; box-shadow: 3px 3px 0 #bcb4a7; }
 :is(.tag, .chip, .badge, .state-badge) { border-width: 2px; box-shadow: 2px 2px 0 var(--ink); }
-.rail .mode { box-shadow: 2px 2px 0 #625b51; }
+.rail .mode { box-shadow: 2px 2px 0 var(--red); }
 .tag::before, .chip::before { border-radius: 0; transform: rotate(45deg); }
 .timeline-list li { border-left: 2px solid var(--ink); }
 .timeline-list li::before { border-radius: 0; transform: rotate(45deg); }
@@ -286,5 +286,5 @@ pre.evidence { border: 2px solid var(--ink); border-left-width: 4px; box-shadow:
   .agent-inventory-heading { clip-path: none; }
   .agent-card-art { display: none; }
   .disclosure > summary::before { border: 1px solid CanvasText; clip-path: none; }
-  .dialog, pre.evidence, .row, .agent-settings { box-shadow: none; }
+  .dialog, pre.evidence, .row, .agent-settings, .rail .mode { box-shadow: none; }
 }

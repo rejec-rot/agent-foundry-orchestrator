@@ -159,7 +159,7 @@ function setModeBadge() {
   const writable = state.capabilities?.write?.create_task === true;
   const hasToken = state.token.length > 0;
   const text = !writable ? '只读' : (hasToken ? '可写' : '仅读（写路由已启用）');
-  el.className = `mode badge ${writable ? 'write' : 'readonly'}`;
+  el.className = `mode badge ${writable && hasToken ? 'write' : 'readonly'}`;
   el.title = writable
     ? (hasToken ? '写操作可用：创建 / 启动 / 取消（审批与提升仍不开放）' : '服务端已启用写路由；保存操作令牌后才能使用')
     : '首版只读：没有任何启动/取消/批准/提升操作';

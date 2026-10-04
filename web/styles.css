@@ -37,16 +37,17 @@
   --fg-dim: #5c574e;
   --fg-faint: #70695f;
 
-  /* Red marks the active stage; green and warning tones retain status meaning. */
+  /* Delivery shares the red, ink and paper palette with collaboration.
+   * Legacy status aliases stay neutral or red; explicit labels identify each state. */
   --amber: #e81932;
   --amber-hi: #bf1025;
   --amber-deep: #a51429;
-  --sage: #34784d;
-  --sage-deep: #afc5b5;
-  --clay: #b52337;
-  --clay-deep: #d8a5ad;
-  --slate: #454e5f;
-  --slate-deep: #b9bdc5;
+  --sage: var(--fg);
+  --sage-deep: var(--line-strong);
+  --clay: var(--amber-hi);
+  --clay-deep: var(--amber-hi);
+  --slate: var(--fg-dim);
+  --slate-deep: var(--line-strong);
   --focus: #e81932;
 
   --ui: system-ui, -apple-system, "Segoe UI", "Noto Sans SC", "PingFang SC", sans-serif;
@@ -139,8 +140,6 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 .workspace-nav a span { margin-left: var(--s1); font: 500 12px var(--ui); }
 .workspace-nav a[aria-current="page"] { background: var(--amber); color: var(--ink-900); clip-path: polygon(2% 5%,100% 0,97% 96%,0 100%); }
 .workspace-nav a:hover { color: #fff; }
-.rail .mode { background: #222; color: #d7d1c6; border-color: #49443c; white-space: nowrap; }
-.rail .mode.write { color: #b7ddc2; }
 
 /* A mode badge states a fact, so it is shaped like a stamp, never like a button. */
 .mode, .badge {
@@ -156,16 +155,24 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   line-height: var(--baseline);
   letter-spacing: 0.06em;
 }
-.mode.readonly, .badge.readonly { color: var(--amber); border-color: var(--amber-deep); background: color-mix(in srgb, var(--amber) 9%, var(--ink-800)); }
-.mode.write, .badge.write { color: var(--sage); border-color: var(--sage-deep); background: color-mix(in srgb, var(--sage) 9%, var(--ink-800)); }
+.mode.readonly, .badge.readonly { color: var(--fg); border-color: var(--line-strong); background: var(--ink-900); }
+.mode.write, .badge.write { color: var(--ink-900); border-color: var(--line-strong); background: var(--fg); }
+.rail .mode {
+  color: var(--paper);
+  background: var(--ink);
+  border-color: var(--paper);
+  border-inline-start: 4px solid var(--red);
+  white-space: nowrap;
+}
+.rail .mode.write { color: var(--ink); background: var(--paper); }
 
 .rail-meta { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; font-size: 12.5px; min-width: 0; }
 .conn { display: inline-flex; align-items: center; gap: var(--s1); color: #c7c2b8; }
 .conn .pip { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-faint); flex: none; }
-.conn.live { color: #b7ddc2; }
-.conn.live .pip { background: var(--sage); }
-.conn.dead { color: var(--clay); }
-.conn.dead .pip { background: var(--clay); }
+.conn.live { color: var(--paper); }
+.conn.live .pip { background: var(--paper); border-radius: 0; transform: rotate(45deg); }
+.conn.dead { color: var(--paper); }
+.conn.dead .pip { background: var(--red); border-radius: 0; }
 .asof { color: #aaa59d; font-family: var(--mono); font-size: 12px; }
 
 /* A compact poster connects delivery to the collaboration workspace. */
@@ -349,9 +356,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 .tag::before { content: ""; width: var(--s1); height: var(--s1); border-radius: 50%; background: currentColor; flex: none; }
 .tag.state-COMPLETED { color: var(--sage); border-color: var(--sage-deep); }
 .tag.state-FAILED, .tag.state-CANCELLED { color: var(--clay); border-color: var(--clay-deep); }
-.tag.state-WAITING_HUMAN, .tag.state-TRUSTED_IMPORT_RUNNING, .tag.state-AUTHOR_RUNNING { color: var(--amber); border-color: var(--amber-deep); }
+.tag.state-WAITING_HUMAN, .tag.state-TRUSTED_IMPORT_RUNNING, .tag.state-AUTHOR_RUNNING { color: var(--amber-hi); border-color: var(--amber-deep); }
 .tag.state-CREATED, .tag.state-REVIEW_RUNNING { color: var(--slate); border-color: var(--slate-deep); }
-.tag.unverifiable { color: var(--amber); border-color: var(--amber-deep); }
+.tag.unverifiable { color: var(--amber-hi); border-color: var(--amber-deep); }
 .tag.unverifiable::before { border-radius: 0; transform: rotate(45deg); }
 .tag.missing { color: var(--clay); border-color: var(--clay-deep); }
 
@@ -492,7 +499,7 @@ pre.evidence.bad, pre.evidence.unverifiable, pre.evidence.missing { border-inlin
 .field input:disabled, .field textarea:disabled { color: var(--fg-faint); background: var(--ink-850); }
 
 .hint { margin: 0; color: var(--fg-faint); font-size: 12.5px; line-height: var(--baseline); }
-.unverifiable { margin: 0; color: var(--amber); font-size: 12.5px; line-height: var(--baseline); }
+.unverifiable { margin: 0; color: var(--amber-hi); font-size: 12.5px; line-height: var(--baseline); }
 .missing { margin: 0; color: var(--clay); font-size: 12.5px; line-height: var(--baseline); }
 .empty { margin: 0; color: var(--fg-faint); font-size: 13px; line-height: var(--baseline); }
 
@@ -578,7 +585,7 @@ pre.evidence.bad, pre.evidence.unverifiable, pre.evidence.missing { border-inlin
   border-inline-start: 2px solid var(--amber);
   border-radius: var(--r-control);
   background: color-mix(in srgb, var(--amber) 8%, var(--ink-850));
-  color: var(--amber);
+  color: var(--amber-hi);
   font-size: 12.5px;
   line-height: var(--baseline);
 }
@@ -598,7 +605,7 @@ pre.evidence.bad, pre.evidence.unverifiable, pre.evidence.missing { border-inlin
 }
 .chip::before { content: ""; width: var(--s1); height: var(--s1); border-radius: 50%; background: currentColor; }
 .chip.queued { color: var(--slate); border-color: var(--slate-deep); }
-.chip.received { color: var(--amber); border-color: var(--amber-deep); }
+.chip.received { color: var(--amber-hi); border-color: var(--amber-deep); }
 .chip.applied { color: var(--sage); border-color: var(--sage-deep); }
 .msg { display: grid; gap: var(--s-half); padding-block: var(--s1); }
 .msg-body { color: var(--fg); font-size: 13.5px; line-height: var(--baseline); overflow-wrap: anywhere; }
@@ -712,4 +719,6 @@ pre.evidence.bad, pre.evidence.unverifiable, pre.evidence.missing { border-inlin
 @media (forced-colors: active) {
   .row[aria-current="true"], .runway .stage.current { outline: 2px solid Highlight; }
   .tag::before, .chip::before, .timeline-list li::before { border: 1px solid CanvasText; }
+  .rail .mode:is(.readonly, .write) { color: CanvasText; background: Canvas; border-color: CanvasText; }
+  .conn:is(.live, .dead) .pip { background: CanvasText; }
 }

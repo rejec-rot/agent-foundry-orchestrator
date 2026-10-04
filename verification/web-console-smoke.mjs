@@ -20,6 +20,7 @@ import { startReadApi } from '../server/read-api.mjs';
 
 const keep = process.argv.includes('--keep');
 const BREAKPOINTS = [1440, 768, 390, 320];
+const paletteDir = process.env.AF_WORKBENCH_PALETTE_DIR;
 const checks = [];
 const check = (name, ok, detail = '') => {
   checks.push({ name, ok: Boolean(ok) });
@@ -77,7 +78,7 @@ async function connectCdp(wsUrl) {
 const fixtureData = fixture();
 const api = await startReadApi({ roots: fixtureData.roots, allowedRoots: [fixtureData.root] });
 const profileDir = mkdtempSync(join(tmpdir(), 'af-chrome-'));
-const artifacts = join(process.cwd(), 'verification', 'artifacts', 'web-console');
+const artifacts = paletteDir ? join(paletteDir, 'controlled-read') : join(process.cwd(), 'verification', 'artifacts', 'web-console');
 mkdirSync(artifacts, { recursive: true });
 
 const chrome = spawn('/usr/bin/google-chrome', [
@@ -144,6 +145,18 @@ try {
   const badge = await evaluate("document.querySelector('.badge.readonly')?.textContent ?? null");
   check('the read-only badge is visible', badge === '只读', `badge=${badge}`);
 
+  const palette = await evaluate(`(()=>{
+    const rgb=value=>{const m=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/.exec(value);return m?[+m[1],+m[2],+m[3]]:null};
+    const luminance=value=>{const c=rgb(value);if(!c)return 0;const f=v=>{v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4};return .2126*f(c[0])+.7152*f(c[1])+.0722*f(c[2])};
+    const contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05)};
+    const rail=document.querySelector('.rail'),badge=document.getElementById('mode-badge'),conn=document.getElementById('conn');
+    const complete=document.querySelector('.tag.state-COMPLETED');
+    const bs=getComputedStyle(badge),cs=getComputedStyle(conn),rs=getComputedStyle(rail),ps=getComputedStyle(conn.querySelector('.pip'));
+    const rgbBadge=rgb(bs.color),rgbPaper=rgb(getComputedStyle(document.body).backgroundColor),rgbRed=rgb(getComputedStyle(document.querySelector('.handoff-poster h2 > span')).backgroundColor),rgbComplete=rgb(getComputedStyle(complete).color);
+    return { badgeContrast:contrast(bs.color,bs.backgroundColor),connContrast:contrast(cs.color,rs.backgroundColor),pipContrast:contrast(ps.backgroundColor,rs.backgroundColor),live:conn.classList.contains('live')&&conn.textContent.trim()==='已连接',paper:rgbPaper?.[0]>220&&rgbPaper?.[1]>215&&rgbPaper?.[2]>200,ink:luminance(rs.backgroundColor)<.03,red:rgbRed?.[0]>180&&rgbRed?.[1]<80&&rgbRed?.[2]<100,noMintStatus:rgbComplete?.[1]<=rgbComplete?.[0]+30&&rgbComplete?.[1]<=rgbComplete?.[2]+30};
+  })()`);
+  check('the paper/ink/red palette and connected badge/status colors remain readable', palette?.paper===true&&palette?.ink===true&&palette?.red===true&&palette?.live===true&&palette?.badgeContrast>=4.5&&palette?.connContrast>=4.5&&palette?.pipContrast>=3&&palette?.noMintStatus===true, JSON.stringify(palette));
+
   const caps = await evaluate("document.getElementById('capabilities')?.textContent ?? ''");
   check('the footer states there are no write actions', /写操作：无/.test(caps), caps);
 
@@ -200,6 +213,25 @@ try {
     console.log(`      screenshot: ${file}`);
   }
 
+  await evaluate("(()=>{document.getElementById('token-input').value='browser-readonly-fixture-token';document.getElementById('token-save').click()})()");
+  const serverReadOnly = await evaluate("(()=>{const b=document.getElementById('mode-badge');return {tokenStored:sessionStorage.getItem('af-write-token')==='browser-readonly-fixture-token',readonly:b.classList.contains('readonly'),write:b.classList.contains('write'),createDisabled:document.getElementById('s-create').disabled,recordsDisabled:document.getElementById('s-record').disabled}})()");
+  check('a browser token cannot override a server with write routes disabled',serverReadOnly?.tokenStored===true&&serverReadOnly?.readonly===true&&serverReadOnly?.write===false&&serverReadOnly?.createDisabled===true&&serverReadOnly?.recordsDisabled===true,JSON.stringify(serverReadOnly));
+
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+  await evaluate(`(()=>{const original=window.fetch;let fail=true;window.fetch=(...args)=>{if(fail&&String(args[0])==='/api/v2/tasks'){fail=false;window.fetch=original;return Promise.reject(new TypeError('controlled disconnect'));}return original(...args);};})()`);
+  let disconnected = null;
+  for (let attempt = 0; attempt < 75; attempt += 1) {
+    disconnected = await evaluate("(()=>{const e=document.getElementById('conn'),s=getComputedStyle(e),rail=getComputedStyle(document.querySelector('.rail')),pip=getComputedStyle(e.querySelector('.pip'));const rgb=v=>{const m=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/.exec(v);return m?[+m[1],+m[2],+m[3]]:null};const lum=v=>{const c=rgb(v);if(!c)return 0;const f=x=>{x/=255;return x<=.04045?x/12.92:((x+.055)/1.055)**2.4};return .2126*f(c[0])+.7152*f(c[1])+.0722*f(c[2])};const ratio=(a,b)=>{const x=lum(a),y=lum(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05)};return {dead:e.classList.contains('dead'),label:e.textContent.trim(),textContrast:ratio(s.color,rail.backgroundColor),pipContrast:ratio(pip.backgroundColor,rail.backgroundColor),shape:pip.borderRadius}})()");
+    if (disconnected?.dead) break;
+    await sleep(100);
+  }
+  check('a lost read request shows an explicit interruption label with a visible status mark',disconnected?.dead===true&&disconnected?.label.includes('连接中断：controlled disconnect')&&disconnected?.textContrast>=4.5&&disconnected?.pipContrast>=3&&disconnected?.shape==='0px',JSON.stringify(disconnected));
+
+  await cdp.send('Emulation.setEmulatedMedia',{features:[{name:'forced-colors',value:'active'}]});
+  const forced = await evaluate("(()=>{const b=getComputedStyle(document.getElementById('mode-badge')),c=getComputedStyle(document.getElementById('conn')),p=getComputedStyle(document.getElementById('conn').querySelector('.pip'));const probe=document.createElement('span');probe.style.cssText='position:fixed;top:-1000px;color:CanvasText;background:Canvas;border-color:CanvasText';document.body.append(probe);const q=getComputedStyle(probe);const result={active:matchMedia('(forced-colors: active)').matches,badgeColor:b.color===q.color,badgeBackground:b.backgroundColor===q.backgroundColor,badgeBorder:b.borderColor===q.borderColor,pipColor:p.backgroundColor===q.color,shadow:b.boxShadow==='none'&&b.textShadow==='none',connColor:c.color===q.color};probe.remove();return result})()");
+  await cdp.send('Emulation.setEmulatedMedia',{features:[{name:'forced-colors',value:'none'}]});
+  check('forced-colors keeps the badge and connection readable with system colors',forced?.active===true&&forced?.badgeColor===true&&forced?.badgeBackground===true&&forced?.badgeBorder===true&&forced?.pipColor===true&&forced?.shadow===true&&forced?.connColor===true,JSON.stringify(forced));
+
   const errors = cdp.events
     .filter((e) => (e.method === 'Runtime.consoleAPICalled' && e.params?.type === 'error')
       || (e.method === 'Log.entryAdded' && e.params?.entry?.level === 'error'))
@@ -251,4 +283,8 @@ try {
 
 const failed = checks.filter((c) => !c.ok);
 console.log(`\n${checks.length - failed.length}/${checks.length} checks passed${failed.length ? `; FAILED: ${failed.map((c) => c.name).join(', ')}` : ''}`);
+if (paletteDir) {
+  const report = { ok: failed.length === 0, browser: 'Chromium', mode: 'controlled fixture; read-only HTTP; no prompt or native scan', checks, verified_at: new Date().toISOString(), screenshots: BREAKPOINTS.map((width) => join(artifacts, `workbench-${width}.png`)) };
+  writeFileSync(join(paletteDir, 'read-report.json'), `${JSON.stringify(report, null, 2)}\n`);
+}
 process.exit(failed.length === 0 ? 0 : 1);
