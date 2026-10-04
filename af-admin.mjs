@@ -18,6 +18,7 @@ import {
 } from './lib/executor-ops.mjs';
 import { reapOrphans, formatReclaimResult } from './lib/orphan-reaper.mjs';
 import { connectInstalledAgents } from './lib/agent-registration.mjs';
+import { resolveDecisionEnv } from './lib/decision-model.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -133,6 +134,7 @@ function readTaskOrNull(taskId, tasksDir) {
 }
 
 async function main() {
+  Object.assign(process.env,resolveDecisionEnv(process.env));
   if (!mainCmd || mainCmd === '--help' || mainCmd === '-h' || mainCmd === 'help') {
     printUsage();
     process.exit(0);

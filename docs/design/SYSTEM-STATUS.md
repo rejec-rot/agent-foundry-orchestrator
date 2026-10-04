@@ -71,17 +71,19 @@
 1. **验收与评审并行**：验收只要 0.3s，省不出时间；而"评审 PASS → 授权 → 验收"是安全顺序，改它属于改设计。
 2. **重试改用会话续跑**：重试目前是全新一次调用（要重新读文件）。改成 `resume` 同一会话能省一些，但只在那 ~30% 会重试的运行里有效，且要确认各执行器的 resume 语义。
 
-### 2.4 这条链路用到 Jev 吗？——**没有**
+### 2.4 上述历史验收使用 Jev 吗？——**没有**
 
-三条独立证据：
+上述七次历史运行未使用 Jev，证据如下：
 
 1. `verification/live-acceptance-cmd.sh` **没有**设置 `AF_DECISION_MODEL`（默认 `off`）；`decide()` 在 `mode === 'off'` 时直接返回，**不发出任何网络请求**。
-2. 没有任何代码自动加载 `~/.config/agent-foundry/decision.env`（只有探针脚本的注释里教手动 `set -a; . …`），所以那份配置不会在运行中被读进来。
-3. 即使打开，**成功路径也不会调用它**：`withErrorAdvisory()` 只挂在执行器的**失败路径**（`child.on('error')` 与 `exit_code !== 0/timedOut` 分支）；这 7 次运行的执行器调用全部 `exit 0`，没有可咨询的失败。
+2. 当时没有配置加载代码，那份私有 `decision.env` 未读入上述运行。2026-10-04 已新增启动时显式 `AF_DECISION_ENV_FILE` 加载，默认不读取文件。
+3. 当时只有执行失败建议消费者，**成功路径不会调用它**：`withErrorAdvisory()` 只挂在执行器的**失败路径**（`child.on('error')` 与 `exit_code !== 0/timedOut` 分支）；这 7 次运行的执行器调用全部 `exit 0`，没有可咨询的失败。
 4. 物证：7 份任务记录里**没有任何 `advisory` 字段**；`tests/decision-model.test.mjs` 的 DM-10（安全内核不得 import 决策模块）仍然通过。
 
-> 什么时候才会用到 Jev：某次执行器**失败**、且 `AF_DECISION_MODEL=jev` 且 `AF_TYPESAFE_API_KEY` 就位时，它只在 `runtimeGuard` 判定**之后**追加一个 `advisory` 字段，
+> 历史失败建议的触发条件：某次执行器**失败**、且 `AF_DECISION_MODEL=jev` 且 `AF_TYPESAFE_API_KEY` 就位时，它只在 `runtimeGuard` 判定**之后**追加一个 `advisory` 字段，
 > **绝不改写** `category/retryable/safety_action`。想验证它，得跑 `verification/typesafe-decision-probe.mjs --confirm`（会联网）。
+
+**2026-10-04 更新：** Jev 已接入 Planner 的计划与编组、固定范围改向重点、成员协调及复检返工建议。建议经过类型/模型/档位校验，保留人工确认、独立 Reviewer 与 Trusted Import；页面显示状态、置信度、耗时及历史。关闭、失败或低置信度时由 Planner 正常处理，单次最多 3 秒、不自动重试。只发送有限脱敏目标/反馈，不读取或上传项目源码文件或完整历史；旧错误建议也已截断脱敏。上述历史测量不因此改写。配置与流程见 [README](../../README.md#jev-怎样帮助-planner)。
 
 **第二次运行（同日，同样执行器）也通过**，证明可重复：
 

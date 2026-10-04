@@ -172,6 +172,25 @@ body[data-has-team="true"] .hero-description { margin:0; font-size:10px; }
 .console-profile-actions .btn { min-height:36px; padding:6px 12px; font-size:10px; flex-shrink:0; }
 .console-review-binding { display:flex; align-items:center; gap:6px; margin-top:9px; color:#635b50; font-size:11px; line-height:1.6; }
 .console-review-binding .icon { width:12px; height:12px; color:var(--red-dark); }
+.planner-decision { margin:12px 20px 0; padding:10px 12px; border:1px solid var(--ink); border-left:4px solid var(--red); background:var(--paper); }
+.planner-decision-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+.planner-decision-heading strong { font-size:12px; }
+.planner-decision-heading strong > span { color:var(--red-dark); margin-right:5px; }
+#planner-decision-status { font-size:11px; padding:3px 6px; color:var(--paper); background:var(--ink); }
+#planner-decision-status:is([data-state="suggested"],[data-state="low_confidence"],[data-state="invalid"]) { background:var(--red-dark); }
+.planner-decision > p,.planner-decision details p { font-size:11px; color:#635b50; line-height:1.7; margin-top:5px; overflow-wrap:anywhere; }
+.planner-decision details { margin-top:8px; padding-top:8px; border-top:1px dashed var(--ink); }
+.planner-decision summary,.decision-history-card summary { cursor:pointer; font-size:11px; font-weight:600; }
+.planner-decision summary:focus-visible,.decision-history-card summary:focus-visible { outline:2px solid var(--red); outline-offset:3px; }
+.decision-workers { margin:7px 0 0; padding-left:22px; font-size:11px; line-height:1.8; overflow-wrap:anywhere; }
+.decision-recommendation strong { color:var(--ink); }
+.decision-metadata,.decision-reason { overflow-wrap:anywhere; line-height:1.7; }
+.planner-decisions-records { margin-top:24px; padding-top:18px; border-top:2px solid var(--ink); }
+.planner-decisions-records h3 { margin-bottom:14px; font-size:13px; }
+.decision-history-card details { margin-top:8px; }
+.decision-history-card .decision-metadata { color:#635b50; }
+@media (max-width:720px) { .planner-decision { margin:10px 12px 0; } .planner-decision-heading { gap:6px; } }
+@media (forced-colors:active) { #planner-decision-status,#planner-decision-status:is([data-state="suggested"],[data-state="low_confidence"],[data-state="invalid"]) { color:CanvasText; background:Canvas; border:1px solid CanvasText; } }
 .crew-config { font-size:11px; font-weight:600; color:var(--red-dark); }
 .crew-config-hint { margin:0 0 10px; font-size:10px; line-height:1.7; color:#70695f; }
 .agent-scan { display:flex; align-items:center; gap:10px; margin:0 0 12px; padding:9px 12px; border:2px solid var(--ink); border-left:5px solid var(--red); background:var(--paper); box-shadow:3px 3px 0 var(--ink); }

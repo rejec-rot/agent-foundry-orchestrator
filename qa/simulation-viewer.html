@@ -125,7 +125,7 @@
 
     .scope-strip {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       margin: 0 0 22px;
       border: 1px solid var(--line);
       background: rgba(25,25,25,.72);
@@ -488,13 +488,15 @@
         termination: "终止过程",
         controller: "控制器",
         acceptance: "验收",
+        decision: "Jev 建议",
         git: "仓库范围"
       };
       const scopeValues = {
         virtual: "虚拟",
         synthetic: "合成",
         real: "真实",
-        "temporary repository only": "仅临时仓库"
+        "temporary repository only": "仅临时仓库",
+        "real Jev advisory validation with virtual typed responses; no provider call": "虚拟响应 · 真实校验"
       };
       let steps = [];
       let activeIndex = 0;

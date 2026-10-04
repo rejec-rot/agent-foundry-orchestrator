@@ -21,6 +21,7 @@ flowchart TD
     USER["操作员提交目标、项目与验收要求"] --> MODEL["选择 Planner Agent、模型与思考强度<br/>Reviewer 沿用配置，独立会话"]
     MODEL --> CHAT["直接发送第一条消息，建立商讨会话<br/>商讨目标、约束与验收"]
     CHAT --> PLAN["Planner 提交行动计划<br/>遵循预设编组，或推荐数量、模型与分工"]
+    JEV["可选 Jev 快速决策<br/>合法配置与局部返工建议、置信度"] -. "供 Planner 参考" .-> PLAN
     PLAN --> MODE{"谁来决定开工？"}
     MODE -- "操作员" --> CONFIRM["确认编组和每项任务分配<br/>未确认时不派工"]
     MODE -- "Planner" --> AUTO["验证推荐编组后自动派工"]
@@ -28,11 +29,13 @@ flowchart TD
     AUTO --> WORK
     USER -. "执行中细化单项任务" .-> HOLD["暂停旧尝试与受影响的依赖<br/>通知 Planner"]
     HOLD --> CHANGE["Planner 改写任务方向<br/>重新下达给对应 Worker"]
+    JEV -. "固定范围内的改向重点" .-> CHANGE
     CHANGE --> WORK
     WORK --> ART["接受当前版本的不可变成果<br/>保留无关成果，拒绝迟到旧结果"]
     ART --> INTEGRATE["Planner 整合成果<br/>确认执行范围停止并密封候选"]
     INTEGRATE --> REVIEW{"同模型 Reviewer<br/>独立会话复检通过？"}
     REVIEW -- "需返工且有预算" --> FIX["Planner 选择相关工作项返工"]
+    JEV -. "局部返工建议" .-> FIX
     FIX --> WORK
     REVIEW -- "通过" --> GATE["授权检查与必要的人工批准<br/>执行受信验收命令"]
     GATE --> PASS{"验收通过？"}
@@ -53,7 +56,7 @@ flowchart TD
 node qa/simulated-workflow.mjs --serve --port 8788
 ```
 
-打开 `http://127.0.0.1:8788/`，按九个阶段回放商讨、确认编组、并行执行、暂停并经 Planner 改向、整合、两轮复检和交付。页面可打开演示团队与对应交付详情。Agent 回复、模型目录和进程退出证明是虚拟数据；控制器、版本与成果记录、两项 Node 验收测试和临时 Git 仓库的 `refs/afr/canonical` 提升实际执行。演示页面只读，不调用真实 Agent 或修改你的项目。需要本机 Chromium（默认 `/usr/bin/google-chrome`，可用 `AF_BROWSER_BIN` 指定）。输出目录在终端显示，包含截图、逐阶段记录和 `report.json`；Ctrl+C 关闭服务。省略 `--serve` 可只生成报告后退出。
+打开 `http://127.0.0.1:8788/`，按九个阶段回放商讨、确认编组、并行执行、暂停并经 Planner 改向、整合、两轮复检和交付。页面可打开演示团队与对应交付详情。Agent 回复、Jev 响应、模型目录和进程退出证明是虚拟数据；Jev 类型校验、控制器、版本与成果记录、两项 Node 验收测试和临时 Git 仓库的 `refs/afr/canonical` 提升实际执行。演示页面只读，不调用真实 Agent 或 Jev 服务，不修改你的项目。需要本机 Chromium（默认 `/usr/bin/google-chrome`，可用 `AF_BROWSER_BIN` 指定）。输出目录在终端显示，包含截图、逐阶段记录和 `report.json`；Ctrl+C 关闭服务。省略 `--serve` 可只生成报告后退出。
 
 ## 谁负责什么
 
@@ -61,6 +64,7 @@ node qa/simulated-workflow.mjs --serve --port 8788
 |---|---|
 | 用户 | 定义目标与验收要求，查看进展，调整工作方向、改派、暂停或取消，处理人工审批 |
 | Planner | 与操作员商讨，规划工作图与编组，接收改向请求，协调成员与整合成果，根据复检反馈选择局部返工 |
+| Jev（可选） | 为 Planner 提供有置信度的 Worker 配置、固定范围改向重点及局部返工建议；不直接派工或验收 |
 | Workers | 完成各自工作项，向成员提问或回复，提交可追踪的成果 |
 | 团队控制器 | 管理调度、消息、版本、运行记录与恢复；这是后台服务，不是模型成员 |
 | Reviewer | 使用 Planner 所选的执行器、模型与思考强度，建立独立会话审查密封候选；复检会话不得复用 Planner 或 Worker 的会话 |
@@ -69,6 +73,27 @@ node qa/simulated-workflow.mjs --serve --port 8788
 创建时内部默认参考编组三位 Worker，页面不要求提前决定人数；可选的 Worker 配置入口允许提前预设 **1–8 位 Worker**，也可等计划形成后再确认。Planner 与 Reviewer 使用同一模型与思考强度配置，承担不同角色。每位 Worker 可独立选择 Agent、模型与思考强度。成员身份与执行器、模型账号、CLI 会话分别记录；成员数量不等于不同账号的数量，也不保证所有成员同时执行。
 
 商讨阶段修改配置并保存不会启动任务。已开工的团队先暂停并确认运行范围停止，再修改成员配置；新配置用于后续尝试，保留其他成员已接受的成果。派工后不能通过配置入口改变人数。每次保存和确认均校验配置版本，Reviewer 在交付时读取最新 Planner 配置并建立独立会话。
+
+## Jev 怎样帮助 Planner
+
+Jev 在生成计划、改写已挂起的任务、协调成员请求或复检返工时提供结构化建议。普通聊天和打开页面不调用 Jev。建议从现有 Agent 目录选择模型及已确认的思考档位；人工预设优先，未确认的强度只能沿用默认。目录较大时最多向单项选择提供 255 组合法配置，页面明确标注限制；完整目录仍可手动选择。
+
+[Jev 建议面板预览（模拟数据）](docs/previews/persona-workspace/jev-planner-desktop.png)。
+
+Planner 面板显示 Jev 是否启用、正在咨询、建议可用或回退；展开可查看人数、逐位配置、改向重点、返工范围、置信度和耗时。「运行记录」保留最近建议及其目标、任务和配置版本。Jev 的建议仍交给 Planner 判断，派工继续遵循人工确认或已选择的自动模式，独立 Reviewer 和 Trusted Import 验收保持原流程。
+
+单次咨询最多 3 秒、不自动重试。失败、格式不合法、未配置或置信度不足时由 Planner 正常处理；暂停会取消咨询，迟到或过期建议无法派工。仅发送有限的目标、当前约束、任务及反馈摘录，先移除已知凭据与私有绝对路径；不读取或上传项目源码文件、完整对话或环境变量。运行记录不保存密钥、原始请求或供应商错误。启用全局 Jev 也保留原有的执行失败分类建议，错误输出同样先截断脱敏，确定性分类仍然有效。
+
+默认关闭。密钥保存在本机私有配置文件，通过显式路径在服务启动时读取；文件必须是当前用户的普通文件、权限 `0600`，只允许字面量赋值，不执行 shell：
+
+```bash
+chmod 600 /absolute/private/decision.env
+AF_DECISION_ENV_FILE=/absolute/private/decision.env \
+  node af-admin.mjs web serve --port 8787 --allow-write --root /absolute/path/to/registered-project
+# 沿用已有项目注册表、操作令牌和执行器隔离配置。
+```
+
+文件允许 `AF_DECISION_MODEL=jev`、`AF_TYPESAFE_API_KEY`，及可选的 `AF_TYPESAFE_ENDPOINT`、`AF_TYPESAFE_MODEL`、`AF_TYPESAFE_TIMEOUT_MS`。进程中显式设置的值优先（包括 `AF_DECISION_MODEL=off`）；密钥文件不能加入 Git。默认模型为 `jev-latest`，使用 [TypeSafe System One](https://docs.typesafe.ai/introduction) 的 [Choice](https://docs.typesafe.ai/primitives/choice) 返回类型。
 
 ## 中途改需求会怎样
 
@@ -106,6 +131,7 @@ flowchart LR
 | 能力 | 当前状态 |
 |---|---|
 | 团队协作 | 常驻控制器、Planner 对话、计划确认与 1–8 个注册 Worker、工作依赖、独立尝试与不可变产物 |
+| Planner 快速决策 | 可选 Jev 编组、改向重点和局部返工建议；置信度、耗时与版本记录；失败回退 |
 | 成员通信与人工调整 | 版本化消息、成员回复、工作项改派、定向失效、queued/received/applied 回执 |
 | 团队恢复 | 租约与提交序号、指令去重、已确认 scope 的中断恢复；未知写者阻止重跑与交付 |
 | V2 主入口 | 显式设置 `trusted_import.enabled: true` 后启用 |

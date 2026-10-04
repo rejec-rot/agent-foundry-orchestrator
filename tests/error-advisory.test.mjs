@@ -69,9 +69,113 @@ test('EA-7: the advisory fans out - one call returns category + retryable + ban 
   assert.strictEqual(out.advisory.retryable_hint, 0.91);
   assert.strictEqual(out.advisory.suspected_account_ban, 0.02);
   assert.strictEqual(out.advisory.severity, 1.15);
+  assert.strictEqual(out.advisory.model, 'jev-latest', 'the configured model is stored, never a provider echo');
   // still never changes the deterministic verdict
   assert.strictEqual(out.retryable, TRANSIENT.retryable);
   assert.strictEqual(out.category, TRANSIENT.category);
+});
+
+test('EA-8: outbound stderr is redacted, path-cleaned and bounded; executor and stored model are fixed-safe', async () => {
+  const key = 'sk-error-advisory-private';
+  const env = { ...envOn, AF_TYPESAFE_API_KEY: key, AF_TYPESAFE_MODEL: 'jev-latest', OTHER_ENV_SECRET: 'must-not-be-sent' };
+  const stderr = `fatal token ${key} at /home/private/work, C:\\Users\\private\\work - ${'x'.repeat(2400)}`;
+  let request;
+  const fetchImpl = async (_url, options) => {
+    request = JSON.parse(options.body);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ model: 'remote-secret-reflection', answers: {
+        suggested_category: { type: 'choice', choice: 'RATE_LIMIT', confidence: 0.9 },
+      } }),
+    };
+  };
+  const out = await withErrorAdvisory({
+    executorType: key,
+    classification: TRANSIENT,
+    evidence: { stderr },
+    deps: { fetchImpl },
+    env,
+  });
+  assert.ok(request.state.output.length <= 2_000);
+  assert.equal(request.state.executor, 'unknown');
+  assert.ok(!JSON.stringify(request.state).includes(key));
+  assert.ok(!JSON.stringify(request.state).includes('/home/private'));
+  assert.ok(!JSON.stringify(request.state).includes('C:\\Users'));
+  assert.ok(!JSON.stringify(request.state).includes('OTHER_ENV_SECRET'));
+  assert.equal(out.advisory.model, 'jev-latest');
+  assert.ok(!JSON.stringify(out).includes('remote-secret-reflection'));
+  assert.ok(!JSON.stringify(out).includes(key));
+});
+
+test('EA-9: a wrong answer type or unknown category leaves the deterministic object untouched', async () => {
+  for (const answer of [
+    { type: 'noul', choice: 'RATE_LIMIT', confidence: 0.9 },
+    { type: 'choice', choice: 'SUCCESS', confidence: 0.9 },
+    { type: 'choice', choice: 'MADE_UP_CATEGORY', confidence: 0.9 },
+  ]) {
+    const out = await withErrorAdvisory({
+      classification: TRANSIENT,
+      evidence: { stderr: 'failure' },
+      deps: { fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ answers: { suggested_category: answer } }) }) },
+      env: envOn,
+    });
+    assert.strictEqual(out, TRANSIENT);
+  }
+});
+
+test('EA-10: invalid confidence, noul and score values are stored as null', async () => {
+  const out = await withErrorAdvisory({
+    classification: TRANSIENT,
+    evidence: { stderr: 'failure' },
+    deps: { fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({
+      answers: {
+        suggested_category: { type: 'choice', choice: 'RATE_LIMIT', confidence: 1.01 },
+        retryable_hint: { type: 'choice', choice: 'yes', noul: 0.9 },
+        suspected_account_ban: { type: 'noul', noul: Number.POSITIVE_INFINITY },
+        severity: { type: 'score', score: 4 },
+      },
+    }) }) },
+    env: envOn,
+  });
+  assert.equal(out.advisory.suggested_category, 'RATE_LIMIT');
+  assert.equal(out.advisory.category_confidence, null);
+  assert.equal(out.advisory.category_band, 'unknown');
+  assert.equal(out.advisory.retryable_hint, null);
+  assert.equal(out.advisory.suspected_account_ban, null);
+  assert.equal(out.advisory.severity, null);
+});
+
+test('EA-11: the advisory caps timeout at three seconds and makes only one provider attempt', async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  let configuredDelay = null;
+  let calls = 0;
+  let sleeps = 0;
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    configuredDelay = delay;
+    return originalSetTimeout(callback, 1, ...args);
+  };
+  try {
+    const out = await withErrorAdvisory({
+      classification: TRANSIENT,
+      evidence: { stderr: 'provider unavailable' },
+      deps: {
+        maxRetries: 4,
+        sleep: async () => { sleeps += 1; },
+        fetchImpl: async (_url, { signal }) => {
+          calls += 1;
+          return new Promise((resolve) => signal.addEventListener('abort', () => resolve({ ok: false, status: 499 }), { once: true }));
+        },
+      },
+      env: { ...envOn, AF_TYPESAFE_TIMEOUT_MS: '12000' },
+    });
+    assert.strictEqual(out, TRANSIENT);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+  assert.equal(configuredDelay, 3_000);
+  assert.equal(calls, 1);
+  assert.equal(sleeps, 0);
 });
 
 test('EA-5: a DANGEROUS disagreement is recorded, never applied (deterministic stays authoritative)', async () => {

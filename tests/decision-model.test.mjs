@@ -3,9 +3,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, chmodSync, rmSync, symlinkSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 
 import {
   decide,
@@ -15,6 +16,7 @@ import {
   confidenceBand,
   MAX_CHOICE_OPTIONS,
   SYSTEMONE_ENDPOINT,
+  resolveDecisionEnv,
 } from '../lib/decision-model.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -214,4 +216,131 @@ test('DM-16: 429/529 are retried with backoff; other statuses are not', async ()
   const res2 = await decide({ state: 'x', questions: OK_QUESTIONS, deps: { fetchImpl: hardFail, sleep: () => {} }, env: { AF_DECISION_MODEL: 'jev', AF_TYPESAFE_API_KEY: 'sk' } });
   assert.strictEqual(res2.ok, false);
   assert.strictEqual(hardCalls, 1, '500 is not retried');
+});
+
+test('DM-17: timeout covers a response body that never settles, even when it ignores abort', { timeout: 1500 }, async () => {
+  let calls = 0, requestSignal;
+  const started = performance.now();
+  const result = await decide({ state: 'x', questions: OK_QUESTIONS,
+    env: { AF_DECISION_MODEL: 'jev', AF_TYPESAFE_API_KEY: 'private-test-key', AF_TYPESAFE_TIMEOUT_MS: '20' },
+    deps: { maxRetries: 0, fetchImpl: async (_url, options) => {
+      calls++; requestSignal = options.signal;
+      return { ok: true, status: 200, json: () => new Promise(() => {}) };
+    } },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'timed out after 20ms');
+  assert.equal(calls, 1);
+  assert.equal(requestSignal.aborted, true);
+  assert.ok(performance.now() - started < 1000, 'a stalled body must release the caller');
+});
+
+test('DM-18: an already cancelled caller does not issue a provider request', async () => {
+  const controller = new AbortController(); controller.abort();
+  let calls = 0;
+  const result = await decide({ state: 'x', questions: OK_QUESTIONS, signal: controller.signal,
+    env: { AF_DECISION_MODEL: 'jev', AF_TYPESAFE_API_KEY: 'private-test-key' },
+    deps: { fetchImpl: async () => { calls++; return jsonResponse(okPayload); } },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'decision request cancelled');
+  assert.equal(calls, 0);
+});
+
+test('DM-19: caller cancellation releases requests stalled before headers or during body parsing', { timeout: 1500 }, async () => {
+  for (const stall of ['headers', 'body']) {
+    const controller = new AbortController();
+    let requestSignal, announceEntered;
+    const entered = new Promise(resolve => { announceEntered = resolve; });
+    const resultPromise = decide({ state: 'x', questions: OK_QUESTIONS, signal: controller.signal,
+      env: { AF_DECISION_MODEL: 'jev', AF_TYPESAFE_API_KEY: 'private-test-key', AF_TYPESAFE_TIMEOUT_MS: '5000' },
+      deps: { maxRetries: 0, fetchImpl: async (_url, options) => {
+        requestSignal = options.signal;
+        if (stall === 'headers') { announceEntered(); return new Promise(() => {}); }
+        return { ok: true, status: 200, json: () => { announceEntered(); return new Promise(() => {}); } };
+      } },
+    });
+    await entered; controller.abort(new Error('private caller reason'));
+    const result = await resultPromise;
+    assert.equal(result.ok, false, stall);
+    assert.equal(result.reason, 'decision request cancelled', stall);
+    assert.equal(requestSignal.aborted, true, stall);
+  }
+});
+
+test('DM-20: provider and body errors cannot echo the API key or raw failure text', async () => {
+  const secret = 'sk-private-provider-error';
+  const failures = [
+    async () => { throw new Error('Bearer ' + secret + ' endpoint detail'); },
+    async () => ({ ok: true, status: 200, json: async () => { throw new Error(secret); } }),
+    async () => ({ ok: false, status: 401, json: async () => ({ error: secret }) }),
+  ];
+  for (const fetchImpl of failures) {
+    const result = await decide({ state: 'x', questions: OK_QUESTIONS,
+      env: { AF_DECISION_MODEL: 'jev', AF_TYPESAFE_API_KEY: secret }, deps: { fetchImpl, maxRetries: 0 },
+    });
+    assert.equal(result.ok, false);
+    assert.doesNotMatch(JSON.stringify(result), /sk-private-provider-error|endpoint detail|Bearer/);
+    assert.ok(['request failed', 'response was not JSON', 'unexpected status 401'].includes(result.reason));
+  }
+});
+
+test('DM-21: explicit private literal environment file loads once without changing process environment', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'af-decision-env-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'decision.env');
+  writeFileSync(file, '# Private configuration\nAF_DECISION_MODEL=jev\nAF_TYPESAFE_API_KEY="file-key"\nAF_TYPESAFE_ENDPOINT=https://api.typesafe.ai/v1/systemone\nAF_TYPESAFE_MODEL=\'jev-file-model\'\nAF_TYPESAFE_TIMEOUT_MS=1200\n', { mode: 0o600 });
+  const env = { AF_DECISION_ENV_FILE: file, AF_TYPESAFE_MODEL: 'explicit-model', AF_TYPESAFE_API_KEY: '', OTHER_ENV: 'preserved' };
+  const resolved = resolveDecisionEnv(env);
+  assert.equal(resolved.AF_DECISION_MODEL, 'jev');
+  assert.equal(resolved.AF_TYPESAFE_MODEL, 'explicit-model');
+  assert.equal(resolved.AF_TYPESAFE_API_KEY, '', 'an explicit empty value intentionally overrides the file');
+  assert.equal(resolved.AF_TYPESAFE_TIMEOUT_MS, '1200');
+  assert.equal(resolved.OTHER_ENV, 'preserved');
+  assert.equal(env.AF_DECISION_MODEL, undefined, 'the input environment is not mutated');
+  assert.equal(resolveDecisionEnv({ AF_DECISION_ENV_FILE: file }).AF_TYPESAFE_API_KEY, 'file-key');
+  assert.equal(decisionModelConfig(resolveDecisionEnv({})).mode, 'off');
+  assert.equal(decisionModelConfig(resolveDecisionEnv({ AF_DECISION_ENV_FILE: file, AF_DECISION_MODEL: 'off' })).mode, 'off');
+});
+
+test('DM-22: the adapter never implicitly reads an environment file or activates Jev', async () => {
+  const env = { AF_DECISION_ENV_FILE: '/does/not/exist/private-decision.env' };
+  let called = 0;
+  const result = await decide({ state: 'x', questions: OK_QUESTIONS, env, deps: { fetchImpl: () => { called++; } } });
+  assert.equal(result.provider, 'off');
+  assert.equal(called, 0);
+  assert.deepEqual(resolveDecisionEnv({}), {});
+});
+
+test('DM-23: environment files reject shell syntax, unknown fields, duplicates, malformed values and unsafe permissions', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'af-decision-env-invalid-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'secret-private-name.env');
+  const invalid = [
+    'export AF_DECISION_MODEL=jev\n',
+    'source /private/secret\n',
+    'AF_TYPESAFE_API_KEY=$(printf private-secret)\n',
+    'AF_TYPESAFE_API_KEY="${PRIVATE_SECRET}"\n',
+    'AF_TYPESAFE_API_KEY=`printf private-secret`\n',
+    'AF_WEB_TOKEN=private-secret\n',
+    'AF_DECISION_ENV_FILE=/private/secret\n',
+    'AF_DECISION_MODEL=off\nAF_DECISION_MODEL=jev\n',
+    'AF_TYPESAFE_API_KEY="private-secret\n',
+    'AF_TYPESAFE_API_KEY=private-secret # extra\n',
+    'AF_TYPESAFE_API_KEY=private\u0000secret\n',
+    'AF_TYPESAFE_API_KEY=' + 'x'.repeat(16 * 1024),
+  ];
+  const assertPrivateError = () => assert.throws(() => resolveDecisionEnv({ AF_DECISION_ENV_FILE: file }), error => {
+    assert.equal(error.code, 'AF_DECISION_ENV_INVALID');
+    assert.equal(error.message, 'decision environment file is invalid or unavailable');
+    assert.doesNotMatch(JSON.stringify(error), /private-secret|secret-private-name|\/private\/secret/);
+    return true;
+  });
+  for (const contents of invalid) { writeFileSync(file, contents, { mode: 0o600 }); chmodSync(file, 0o600); assertPrivateError(); }
+  writeFileSync(file, 'AF_DECISION_MODEL=jev\n'); chmodSync(file, 0o644); assertPrivateError();
+  rmSync(file); mkdirSync(file, { mode: 0o700 }); assertPrivateError();
+  rmSync(file, { recursive: true });
+  const target = join(directory, 'target.env'); writeFileSync(target, 'AF_DECISION_MODEL=jev\n', { mode: 0o600 });
+  symlinkSync(target, file); assertPrivateError();
+  rmSync(file); assertPrivateError();
 });

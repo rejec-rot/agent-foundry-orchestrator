@@ -81,6 +81,11 @@
                 <div class="console-profile-actions"><p id="console-profile-hint" role="status">选好 Planner 后，直接发送消息开始商讨。</p><button id="save-console-planner" class="btn btn-quiet" type="submit" hidden>保存配置 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
                 <small class="console-review-binding"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg> Reviewer 沿用此模型与强度，独立会话复检。</small>
               </form>
+              <section class="planner-decision" aria-label="Jev 快速决策状态">
+                <div class="planner-decision-heading"><strong><span aria-hidden="true">✦</span> Jev 快速决策</strong><span id="planner-decision-status" role="status">正在读取状态…</span></div>
+                <p id="planner-decision-hint">建议供 Planner 参考；开工仍遵循你选择的确认方式。</p>
+                <details id="planner-decision-details" hidden><summary>查看最近决策建议</summary><div id="planner-decision-recommendation"></div></details>
+              </section>
               <div id="planner-conversation" class="planner-conversation" role="log" aria-label="与 Planner 的对话" aria-live="polite"><div class="chat-empty"><span class="calling-card" aria-hidden="true">LET'S<br><b>MAKE A MOVE.</b><i>✦</i></span><h4>好计划，从一次对话开始。</h4><p>讨论目标、边界和验收要求。<br>满意后，再决定让谁开工。</p></div></div>
               <div class="chat-suggestions" aria-label="对话建议"><button type="button" data-prompt="先帮我分析这个目标的边界和约束。">分析目标 <span>↗</span></button><button type="button" data-prompt="你建议分给几个 Worker？解释分工和模型选择的理由。">推荐编组 <span>↗</span></button><button type="button" data-prompt="请帮我明确每一步的输出和验收要求。">明确验收 <span>↗</span></button></div>
               <form id="planner-chat-form" class="planner-composer"><label class="sr-only" for="planner-input">发送给 Planner 的消息</label><textarea id="planner-input" rows="2" maxlength="4000" required aria-describedby="planner-chat-hint" placeholder="告诉 Planner，你想怎样完成这个目标…"></textarea><button id="planner-send" class="chat-send" type="submit" data-write disabled aria-label="发送给 Planner"><svg class="icon"><use href="#i-arrow"/></svg></button></form>
@@ -142,6 +147,7 @@
   <dialog class="dialog records-dialog" id="records-dialog" aria-labelledby="records-heading">
     <div class="dialog-heading"><div><p class="eyebrow">BEHIND THE SCENES</p><h2 id="records-heading">每一步，都有记录。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭运行记录窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
     <div class="records-columns"><section><h3>运行记录</h3><div id="runs" class="records-list"><p class="hint">团队启动后，会在这里记录每次执行。</p></div></section><section><h3>团队产物</h3><div id="artifacts" class="records-list"><p class="hint">成员提交的成果会保留在这里。</p></div></section></div>
+    <section class="planner-decisions-records" aria-labelledby="planner-decisions-heading"><h3 id="planner-decisions-heading">Jev 决策记录</h3><p class="hint">记录仅反映当时的建议；实际计划与派工请查看团队任务和操作回执。</p><div id="planner-decisions" class="records-list"><p class="hint">Planner 请求决策后，在这里查看建议与状态。</p></div></section>
   </dialog>
   <div id="notice" class="toast" role="status" aria-live="polite" hidden></div>
   <script type="module" src="/teams.js"></script>

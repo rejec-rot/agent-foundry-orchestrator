@@ -122,6 +122,7 @@ function openDialog(id, configureWorkers=false) {
   if (input) $(input).focus();
 }
 function writes() {
+  renderPlannerDecisions();
   const enabled = Boolean(token && capabilities?.write?.team_command) && pending === 0;
   const terminal = ['COMPLETED', 'CANCELLED', 'RECOVERY_REQUIRED'].includes(team?.state);
   for (const button of document.querySelectorAll('[data-write]')) {
@@ -191,6 +192,51 @@ function memberName(id) {
   if (['user', 'human', 'operator'].includes(id)) return '你';
   const number = /^worker-(\d+)$/.exec(id ?? '')?.[1];
   return number ? 'Worker ' + number.padStart(2, '0') : String(id ?? '团队');
+}
+const decisionStatusLabels = {consulting:'正在咨询 Jev',off:'未启用',unconfigured:'未配置',unavailable:'当前不可用',invalid:'建议未通过校验',suggested:'建议可用',low_confidence:'低置信度 · 仅供参考',superseded:'建议已过期'};
+const decisionKindLabels = {plan:'计划与编组',revise:'任务改向',coordinate:'协作决策'};
+const decisionFocusLabels={clarify_contract:'明确验收契约',repair_implementation:'修正实现',align_dependencies:'协调依赖接口',clarify_goal:'细化任务目标'};
+function decisionIsCurrent(decision) {
+  return Boolean(team && decision.goal_revision===team.goal_revision && decision.work_revision===team.work_revision &&
+    (decision.agent_config_revision===undefined || decision.agent_config_revision===(team.planning?.agent_config_revision??0)) && decision.status!=='superseded');
+}
+function decisionMetadata(decision) {
+  const confidence=typeof decision.confidence==='number' && Number.isFinite(decision.confidence) && decision.confidence>=0 && decision.confidence<=1 ? Math.round(decision.confidence*100)+'%' : '未提供';
+  const duration=typeof decision.duration_ms==='number' && Number.isFinite(decision.duration_ms) && decision.duration_ms>=0 ? decision.duration_ms+' ms' : decision.status==='consulting'?'计时中':'未提供';
+  return '<p class="decision-metadata">置信度 '+esc(confidence)+' · 耗时 '+esc(duration)+' · '+esc(decision.model??'未提供模型')+'</p>';
+}
+function decisionRecommendation(decision) {
+  const recommendation=decision.recommendation;
+  return (recommendation?'<div class="decision-recommendation">'+
+    (Number.isInteger(recommendation.worker_count)?'<p><strong>建议 '+esc(recommendation.worker_count)+' 位 Worker</strong></p>':'')+
+    (Array.isArray(recommendation.workers)&&recommendation.workers.length?'<ol class="decision-workers">'+recommendation.workers.map(worker=>'<li>'+esc(worker.executor_type)+' / '+esc(worker.model??'默认模型')+' · '+esc(worker.effort?effortLabel(worker.effort)+'思考':'默认强度')+'</li>').join('')+'</ol>':'')+
+    (Array.isArray(recommendation.retry_work_item_ids)&&recommendation.retry_work_item_ids.length?'<p>'+esc(decision.kind==='revise'?'当前改向范围：':'建议返工：')+esc(recommendation.retry_work_item_ids.join('、'))+'</p>':'')+
+    (recommendation.revision_focus?'<p>改向重点：'+esc(decisionFocusLabels[recommendation.revision_focus]??recommendation.revision_focus)+'</p>':'')+'</div>':'')+
+    (decision.reason?'<p class="decision-reason">'+esc(decision.reason)+'</p>':'')+
+    (decision.catalog_limited?'<p class="hint">目录较大，本次仅从最多 255 组合法配置中提供建议；完整目录仍可手动选择。</p>':'')+decisionMetadata(decision);
+}
+function renderPlannerDecisions() {
+  const capability=capabilities?.planner_decision;
+  const records=Array.isArray(team?.planner_decisions)?team.planner_decisions:[];
+  const latest=records.at(-1),current=latest && decisionIsCurrent(latest)?latest:null;
+  const changed=Boolean(consoleProfileDirty||configCommand);
+  let state='loading',status='正在读取状态…',hint='建议供 Planner 参考；开工仍遵循你选择的确认方式。';
+  if(capabilities && !capability?.enabled){state='off';status='未启用';hint='Jev 尚未启用；Planner 继续使用当前配置规划与改向。';}
+  else if(capability && !capability.configured){state='unconfigured';status='未配置';hint='服务端尚未配置 Jev；Planner 继续使用当前配置。';}
+  else if(capability && !capability.available){state='unavailable';status='当前不可用';hint='Jev 当前不可用；Planner 继续使用当前配置。';}
+  else if(team && !team.planning){state='off';status='原有团队流程';hint='此团队使用原有启动流程；新建 Planner 目标可使用决策辅助。';}
+  else if(changed && latest){state='superseded';status='配置待确认';hint='当前配置正在变化；原建议仅保留在运行记录中。';}
+  else if(current){state=current.status;status=decisionStatusLabels[current.status]??'状态待确认';if(current.status==='consulting')hint='Jev 正在提供决策建议；建议返回后，交给 Planner 参考。';}
+  else if(latest){state='superseded';status='建议已过期';hint='目标、任务或 Agent 配置已更新；历史建议可在运行记录中查看。';}
+  else if(capability){state='ready';status='已启用 · 等待决策';}
+  $('planner-decision-status').textContent=status;
+  $('planner-decision-status').dataset.state=state;
+  $('planner-decision-hint').textContent=hint;
+  const show=Boolean(current && current.status!=='consulting' && !changed && capability?.enabled && capability.configured && capability.available);
+  $('planner-decision-details').hidden=!show;
+  if(!show)$('planner-decision-details').open=false;
+  setHTML('planner-decision-recommendation',show?decisionRecommendation(current):'');
+  setHTML('planner-decisions',records.slice(-12).reverse().map(decision=>'<article class="history-card decision-history-card"><strong>Jev · '+esc(decisionKindLabels[decision.kind]??decision.kind)+'</strong><span class="history-state">'+esc(decisionStatusLabels[decision.status]??'状态待确认')+(!decisionIsCurrent(decision)?' · 历史记录':'')+'</span><small>目标 v'+esc(decision.goal_revision)+' · 咨询任务 v'+esc(decision.context_work_revision??decision.work_revision)+(decision.context_work_revision!==undefined&&decision.work_revision!==decision.context_work_revision?' → 提案任务 v'+esc(decision.work_revision):'')+' · '+esc(decision.created_at)+'</small><details><summary>查看建议与原因</summary>'+decisionRecommendation(decision)+'</details></article>').join('')||'<p class="hint">Planner 请求决策后，在这里查看建议与状态。</p>');
 }
 function renderPlanner() {
   if(chatAttempt?.uncertain&&chatAttempt.teamId===team?.team_id) {

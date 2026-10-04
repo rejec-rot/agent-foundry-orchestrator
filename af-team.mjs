@@ -9,9 +9,11 @@ import { loadAcceptanceAllowlist, acceptanceAllowlistFile, acceptanceCommandAllo
 import { TeamController } from './lib/team/controller.mjs';
 import { listTeams, teamView } from './lib/team/store.mjs';
 import { createCollaborationTeam, commandTeam } from './lib/team/service.mjs';
+import { resolveDecisionEnv } from './lib/decision-model.mjs';
 
 const ROOT=dirname(fileURLToPath(import.meta.url));
 export async function runTeamCli(args=process.argv.slice(2)) {
+  Object.assign(process.env,resolveDecisionEnv(process.env));
   const value=name=>{const i=args.indexOf(name);return i<0?null:args[i+1];};
   const roots=resolveDataRoots(process.env,ROOT);
   const options={runtimeDir:value('--runtime-dir')??roots.runtime,tasksDir:value('--tasks-dir')??roots.tasks,locksDir:value('--locks-dir')??roots.locks};

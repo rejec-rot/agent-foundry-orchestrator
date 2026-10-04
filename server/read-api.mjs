@@ -51,6 +51,7 @@ import { runtimeGuard } from '../lib/executor-runtime-guard.mjs';
 import { loadCapabilityMap } from '../lib/executor-router.mjs';
 import { ADAPTERS } from '../lib/adapters.mjs';
 import { listTeams, teamView } from '../lib/team/store.mjs';
+import { plannerDecisionConfig } from '../lib/team/decision-advisor.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 export const WEB_ROOT = join(HERE, '..', 'web');
@@ -270,7 +271,7 @@ export function createReadApi({
         }
         if(teamCommandMatch) {
           const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,
-            teamId:teamCommandMatch[1],command:payload.command,commandId:payload.command_id,ensure:ensureController});
+            teamId:teamCommandMatch[1],command:payload.command,commandId:payload.command_id,env,ensure:ensureController});
           sendJson(res,202,shape(result));return;
         }
         if(path==='/api/teams') {
@@ -346,7 +347,7 @@ export function createReadApi({
           const task=readTaskJson(roots.tasks, taskId);
           if (!task) { sendJson(res, 404, shape({ error: 'not_found', reason: `no such task: ${taskId}` })); return; }
           if(task.team_binding) {
-            const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,ensure:ensureController,
+            const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,env,ensure:ensureController,
               teamId:task.team_binding.team_id,commandId:payload.command_id,actor:payload.author??'operator',command:{type:'message',agent_id:payload.agent_id??'lead',message:payload.message,work_item_id:payload.work_item_id??null}});
             sendJson(res,202,shape(result));return;
           }
@@ -364,7 +365,7 @@ export function createReadApi({
           if (action === 'cancel') {
             const task=readTaskJson(roots.tasks,taskId);
             if(task?.team_binding) {
-              const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,ensure:ensureController,
+              const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,env,ensure:ensureController,
                 teamId:task.team_binding.team_id,commandId:payload.command_id,actor:payload.requested_by??'operator',command:{type:'cancel',reason:payload.reason??null}});
               sendJson(res,202,shape({...result,note:'team cancellation is queued; its receipt confirms when all member scopes have stopped'}));return;
             }
@@ -378,7 +379,7 @@ export function createReadApi({
           // start: hand the run to a DETACHED worker so the request lifetime never owns it.
           const boundTask=readTaskJson(roots.tasks,taskId);
           if(boundTask?.team_binding) {
-            const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,ensure:ensureController,
+            const result=await commandTeam({runtimeDir:roots.runtime,tasksDir:roots.tasks,locksDir:locksDir??roots.locks,env,ensure:ensureController,
               teamId:boundTask.team_binding.team_id,commandId:payload.command_id,command:{type:'start'}});
             sendJson(res,202,shape({...result,note:'team start is queued; the leased controller owns member execution'}));return;
           }
@@ -458,6 +459,7 @@ export function createReadApi({
         const registry = loadProjectRegistry({ file: env.AF_PROJECTS_FILE ?? join(process.cwd(), 'config', 'projects.json') });
         return sendJson(res, 200, shape({
           ...capabilities({ allowRecord, writesAuthenticated: writeToken.configured === true, projectBrowsingConfigured: resolveProjectBrowseRoot(env).ok }),
+          planner_decision:plannerDecisionConfig(env),
           projects: registry.ok
             ? { configured: true, digest: registry.digest, count: registry.registry.projects.length }
             : { configured: registry.configured === true, digest: null, count: 0, reason: registry.reason },
