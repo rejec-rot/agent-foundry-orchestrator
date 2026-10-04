@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111111">
+  <title>模拟流程回放 · Agent Foundry</title>
+  <style>
+    @font-face {
+      font-family: "Foundry Sans";
+      src: url("/fonts/SpaceGrotesk-Variable.ttf") format("truetype");
+      font-style: normal;
+      font-weight: 300 700;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Foundry Display";
+      src: url("/fonts/Anton-Regular.ttf") format("truetype");
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Foundry Poster CN";
+      src: url("/fonts/SmileySans-Oblique.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+    }
+
+    :root {
+      color-scheme: dark;
+      --ink: #111111;
+      --panel: #191919;
+      --panel-raised: #222222;
+      --paper: #f3ecdc;
+      --paper-dim: #c9c1b2;
+      --red: #e52b35;
+      --red-dark: #a81921;
+      --line: #45423e;
+      --sans: "Foundry Sans", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --poster: "Foundry Poster CN", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --display: "Foundry Display", Impact, sans-serif;
+      font-family: var(--sans);
+      background: var(--ink);
+      color: var(--paper);
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { min-width: 320px; scroll-behavior: smooth; }
+    body {
+      min-width: 320px;
+      margin: 0;
+      background:
+        radial-gradient(ellipse at 50% -30%, rgba(229, 43, 53, .14), transparent 55%),
+        repeating-linear-gradient(135deg, transparent 0 31px, rgba(255,255,255,.018) 32px 33px),
+        var(--ink);
+    }
+    button, a { font: inherit; }
+    button { color: inherit; }
+    a { color: inherit; }
+    button:focus-visible, a:focus-visible, summary:focus-visible {
+      outline: 3px solid var(--paper);
+      outline-offset: 4px;
+    }
+    .page-shell { width: min(1280px, calc(100% - 48px)); margin-inline: auto; }
+
+    .topbar {
+      min-height: 68px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      border-bottom: 1px solid rgba(243,236,220,.19);
+    }
+    .wordmark { display: inline-flex; align-items: center; gap: 11px; text-decoration: none; }
+    .mark {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      color: var(--paper);
+      background: var(--red);
+      clip-path: polygon(16% 0,100% 0,84% 100%,0 100%);
+      font-family: var(--display);
+      font-size: 15px;
+      line-height: 1;
+    }
+    .wordmark-name { font-family: var(--display); font-size: 17px; letter-spacing: .04em; }
+    .wordmark-caption { margin-left: 2px; color: #a8a194; font-size: 10px; letter-spacing: .15em; }
+    .top-status { display: inline-flex; align-items: center; gap: 9px; color: var(--paper-dim); font-size: 12px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff4851; box-shadow: 0 0 0 4px rgba(229,43,53,.15); }
+
+    .intro { padding: 56px 0 34px; }
+    .eyebrow { display: flex; align-items: center; gap: 10px; color: #fa5961; font-size: 11px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+    .eyebrow::before { content: ""; width: 26px; height: 2px; background: var(--red); }
+    h1 {
+      max-width: 900px;
+      margin: 15px 0 12px;
+      font-family: var(--poster);
+      font-size: clamp(34px, 5vw, 62px);
+      font-weight: 400;
+      line-height: 1.12;
+      letter-spacing: .015em;
+    }
+    .intro-copy { max-width: 720px; margin: 0; color: #bdb5a7; font-size: 15px; line-height: 1.8; }
+    .intro-copy strong { color: var(--paper); font-weight: 600; }
+    .simulation-stamp {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 22px;
+      padding: 8px 12px;
+      border: 1px solid rgba(229,43,53,.65);
+      color: #ff7b80;
+      background: rgba(229,43,53,.08);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      transform: skew(-7deg);
+    }
+    .simulation-stamp span { transform: skew(7deg); }
+
+    .scope-strip {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      margin: 0 0 22px;
+      border: 1px solid var(--line);
+      background: rgba(25,25,25,.72);
+    }
+    .scope-item { min-width: 0; padding: 13px 16px; border-right: 1px solid var(--line); }
+    .scope-item:last-child { border-right: 0; }
+    .scope-label { display: block; margin-bottom: 5px; color: #938c7e; font-size: 10px; letter-spacing: .1em; }
+    .scope-value { display: block; overflow-wrap: anywhere; color: var(--paper); font-size: 12px; font-weight: 600; }
+    .scope-value::before { content: "// "; color: var(--red); }
+
+    .replay-card {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid #625d54;
+      background: var(--panel);
+      box-shadow: 11px 11px 0 rgba(229,43,53,.85);
+    }
+    .replay-card::before {
+      position: absolute;
+      z-index: 0;
+      top: 0;
+      right: 0;
+      width: 130px;
+      height: 7px;
+      content: "";
+      background: var(--red);
+      clip-path: polygon(8% 0,100% 0,92% 100%,0 100%);
+    }
+    .replay-head { padding: 23px 25px 0; }
+    .replay-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+    .replay-heading h2 { margin: 0; font-family: var(--poster); font-size: 22px; font-weight: 400; }
+    .phase-count { flex: none; color: #aaa294; font-family: var(--display); font-size: 14px; letter-spacing: .08em; }
+    .phase-count strong { color: var(--red); font-size: 23px; font-weight: 400; }
+    .progress-track { display: flex; gap: 5px; margin-top: 18px; }
+    .progress-segment { height: 4px; flex: 1 1 0; background: #3c3a36; transition: background-color .2s ease; }
+    .progress-segment.is-done { background: var(--red); }
+    .step-tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(138px, 1fr)); gap: 8px; margin-top: 18px; }
+    .step-tab {
+      min-width: 0;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 10px;
+      border: 1px solid #45423d;
+      background: #1d1d1d;
+      color: #aaa294;
+      text-align: left;
+      cursor: pointer;
+      transition: color .18s ease, border-color .18s ease, background-color .18s ease;
+    }
+    .step-tab:hover { border-color: #8a393c; color: var(--paper); }
+    .step-tab[aria-selected="true"] { border-color: var(--red); background: rgba(229,43,53,.12); color: var(--paper); }
+    .step-index { flex: none; color: #817a6e; font-family: var(--display); font-size: 14px; }
+    .step-tab[aria-selected="true"] .step-index { color: #ff636b; }
+    .step-tab-label { overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+
+    .report-error {
+      display: none;
+      margin: 18px 25px 0;
+      padding: 12px 14px;
+      border: 1px solid #a73a3f;
+      background: rgba(229,43,53,.1);
+      color: #ffb1b2;
+      font-size: 13px;
+      line-height: 1.6;
+      overflow-wrap: anywhere;
+    }
+    .report-error.is-visible { display: block; }
+    .stage-grid {
+      display: grid;
+      grid-template-columns: minmax(270px, .76fr) minmax(0, 1.24fr);
+      gap: 28px;
+      align-items: start;
+      padding: 26px 25px 24px;
+    }
+    .stage-copy { min-width: 0; }
+    .stage-kicker { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-bottom: 13px; }
+    .stage-state { padding: 4px 8px; color: #ff7379; background: rgba(229,43,53,.13); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+    .stage-number { color: #888174; font-family: var(--display); font-size: 12px; letter-spacing: .08em; }
+    .stage-title { margin: 0 0 12px; font-family: var(--poster); font-size: clamp(24px, 2.5vw, 34px); font-weight: 400; line-height: 1.25; overflow-wrap: anywhere; }
+    .stage-description { margin: 0; color: #c6beaf; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .facts-block { margin-top: 24px; padding-top: 17px; border-top: 1px solid #393733; }
+    .mini-label { margin: 0 0 11px; color: #8f887b; font-size: 10px; font-weight: 700; letter-spacing: .16em; }
+    .facts-list { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+    .facts-list li { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 9px; color: #ddd5c6; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+    .facts-list li::before { content: "✦"; color: var(--red); }
+    .stage-figure { min-width: 0; margin: 0; padding: 9px; border: 1px solid #746e62; background: #d7d0c2; }
+    .figure-topline { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 1px 8px; color: #282522; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+    .window-dots { display: inline-flex; gap: 4px; }
+    .window-dots i { width: 6px; height: 6px; display: block; border-radius: 50%; background: var(--red); }
+    .window-dots i:nth-child(2) { background: var(--ink); }
+    .window-dots i:nth-child(3) { background: var(--paper); }
+    .screenshot-wrap { position: relative; display: grid; min-height: 190px; place-items: center; overflow: hidden; background: #171717; }
+    .screenshot-wrap img { display: block; width: 100%; height: auto; max-height: 560px; object-fit: contain; }
+    .image-fallback { display: none; min-height: 190px; place-items: center; padding: 20px; color: #aaa294; font-size: 12px; text-align: center; }
+    .image-fallback.is-visible { display: grid; }
+    .figure-caption { display: flex; justify-content: space-between; gap: 10px; margin: 8px 1px 0; color: #4c4841; font-size: 10px; }
+    .figure-caption span { overflow-wrap: anywhere; }
+
+    .stage-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 25px; border-top: 1px solid #3c3a36; background: #151515; }
+    .control-hint { color: #8f887b; font-size: 11px; }
+    .control-buttons { display: flex; gap: 8px; }
+    .nav-button {
+      min-height: 39px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      padding: 0 14px;
+      border: 1px solid #625d54;
+      background: transparent;
+      color: var(--paper);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: border-color .18s ease, background-color .18s ease, opacity .18s ease;
+    }
+    .nav-button:hover:not(:disabled) { border-color: var(--paper); background: #292825; }
+    .nav-button.primary { border-color: var(--red); background: var(--red); }
+    .nav-button.primary:hover:not(:disabled) { border-color: #ff636b; background: #c51e28; }
+    .nav-button:disabled { opacity: .38; cursor: not-allowed; }
+
+    .below-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(290px, .9fr); gap: 22px; margin-top: 44px; }
+    .info-card { min-width: 0; padding: 22px; border: 1px solid var(--line); background: rgba(25,25,25,.78); }
+    .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 17px; font-family: var(--poster); font-size: 21px; font-weight: 400; }
+    .section-heading small { color: #928a7d; font-family: var(--sans); font-size: 10px; font-weight: 500; letter-spacing: .1em; }
+    .check-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+    .check-item { min-width: 0; }
+    .check-button {
+      width: 100%;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 10px;
+      border: 1px solid #403e39;
+      background: #1d1d1d;
+      color: var(--paper);
+      text-align: left;
+      cursor: pointer;
+    }
+    .check-button:hover { border-color: #776f61; }
+    .check-icon { flex: none; width: 19px; height: 19px; display: grid; place-items: center; background: var(--paper); color: var(--ink); font-size: 12px; font-weight: 700; }
+    .check-button[data-passed="false"] .check-icon { background: #7a272b; color: #ffe0e0; }
+    .check-label { min-width: 0; flex: 1; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+    .check-caret { flex: none; color: #9d9587; transition: transform .18s ease; }
+    .check-button[aria-expanded="true"] .check-caret { transform: rotate(180deg); }
+    .check-detail { padding: 9px 11px 10px 39px; color: #aaa294; font-size: 11px; line-height: 1.55; }
+    .check-detail[hidden] { display: none; }
+    .empty-note { margin: 0; color: #aaa294; font-size: 12px; line-height: 1.7; }
+
+    .final-topline { display: flex; flex-wrap: wrap; gap: 7px; margin: -3px 0 17px; }
+    .id-chip { max-width: 100%; padding: 5px 8px; border: 1px solid #47433c; color: #c8c0b2; font-size: 10px; overflow-wrap: anywhere; }
+    .final-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0 0 17px; }
+    .final-fact { min-width: 0; padding: 10px; background: #20201f; }
+    .final-fact dt { margin-bottom: 5px; color: #938b7f; font-size: 10px; letter-spacing: .08em; }
+    .final-fact dd { margin: 0; color: var(--paper); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+    .workers-label { margin: 0 0 8px; color: #938b7f; font-size: 10px; font-weight: 700; letter-spacing: .14em; }
+    .worker-list { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 18px; padding: 0; list-style: none; }
+    .worker-list li { max-width: 100%; padding: 7px 9px; border-left: 2px solid var(--red); background: #20201f; color: #d5cdbf; font-size: 10px; overflow-wrap: anywhere; }
+    .result-links { display: grid; gap: 8px; }
+    .result-link {
+      min-height: 43px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 12px;
+      border: 1px solid #575249;
+      color: var(--paper);
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 700;
+      transition: border-color .18s ease, background-color .18s ease;
+    }
+    .result-link:hover { border-color: var(--red); background: rgba(229,43,53,.1); }
+    .result-link span:last-child { color: #ff636b; font-size: 16px; }
+    .result-link[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+    .files-section { margin-top: 15px; padding-top: 14px; border-top: 1px solid #393733; }
+    .files-heading { margin: 0 0 9px; color: #aaa294; font-size: 11px; font-weight: 700; }
+    .file-list { display: grid; gap: 7px; }
+    .file-card { min-width: 0; border: 1px solid #3d3a35; background: #171717; }
+    .file-card summary { padding: 9px 10px; color: #eee6d7; font-size: 11px; font-weight: 600; cursor: pointer; overflow-wrap: anywhere; }
+    .file-card pre { max-height: 230px; overflow: auto; margin: 0; padding: 10px; border-top: 1px solid #3d3a35; color: #cfc7b9; font: 11px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 2; white-space: pre; }
+    .file-card code { font: inherit; }
+    .file-empty { margin: 0; color: #aaa294; font-size: 11px; }
+
+    .loading-state { min-height: 220px; display: grid; place-items: center; padding: 28px; color: #c7bfaf; text-align: center; }
+    .loading-mark { width: 28px; height: 28px; margin: 0 auto 12px; border: 2px solid #514a42; border-top-color: var(--red); border-radius: 50%; animation: spin .85s linear infinite; }
+    .loading-state p { margin: 0; font-size: 13px; }
+    .load-error { max-width: 560px; margin: 0 auto; color: #ffb1b2; line-height: 1.7; overflow-wrap: anywhere; }
+    .load-error strong { display: block; margin-bottom: 4px; color: #fff0df; font-family: var(--poster); font-size: 20px; font-weight: 400; }
+    .loading-state[hidden] { display: none; }
+    .replay-content[hidden] { display: none; }
+    .site-footer { display: flex; justify-content: space-between; gap: 16px; padding: 30px 0 35px; color: #817a70; font-size: 10px; line-height: 1.6; }
+    .site-footer span { overflow-wrap: anywhere; }
+    .site-footer strong { color: #aaa294; font-weight: 600; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 900px) {
+      .scope-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .scope-item:nth-child(3) { border-right: 0; }
+      .scope-item:nth-child(n+4) { border-top: 1px solid var(--line); }
+      .stage-grid { grid-template-columns: minmax(0, 1fr); }
+      .stage-copy { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, .7fr); column-gap: 24px; }
+      .stage-kicker, .stage-title, .stage-description { grid-column: 1; }
+      .facts-block { grid-column: 2; grid-row: 1 / span 3; margin-top: 0; padding-top: 0; border-top: 0; border-left: 1px solid #393733; padding-left: 19px; }
+      .below-grid { grid-template-columns: minmax(0, 1fr); }
+    }
+    @media (max-width: 620px) {
+      .page-shell { width: min(100% - 32px, 480px); }
+      .topbar { min-height: 59px; }
+      .wordmark-caption { display: none; }
+      .top-status { font-size: 10px; }
+      .intro { padding: 38px 0 25px; }
+      h1 { font-size: clamp(31px, 9vw, 43px); }
+      .intro-copy { font-size: 13px; }
+      .scope-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .scope-item { padding: 11px 12px; }
+      .scope-item:nth-child(odd) { border-right: 1px solid var(--line); }
+      .scope-item:nth-child(even) { border-right: 0; }
+      .scope-item:nth-child(3) { border-right: 1px solid var(--line); }
+      .scope-item:nth-child(n+3) { border-top: 1px solid var(--line); }
+      .scope-item:last-child { grid-column: 1 / -1; border-right: 0; }
+      .replay-card { box-shadow: 6px 6px 0 rgba(229,43,53,.85); }
+      .replay-head { padding: 19px 15px 0; }
+      .replay-heading h2 { font-size: 19px; }
+      .phase-count strong { font-size: 20px; }
+      .step-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+      .step-tab { min-height: 44px; gap: 7px; padding: 8px; }
+      .step-tab-label { font-size: 11px; }
+      .report-error { margin: 15px 15px 0; }
+      .stage-grid { gap: 19px; padding: 21px 15px 18px; }
+      .stage-copy { display: block; }
+      .facts-block { margin-top: 18px; padding: 15px 0 0; border-top: 1px solid #393733; border-left: 0; }
+      .stage-title { font-size: 27px; }
+      .stage-description { font-size: 13px; }
+      .screenshot-wrap img { max-height: 400px; }
+      .stage-controls { align-items: flex-start; flex-direction: column; padding: 13px 15px; }
+      .control-hint { font-size: 10px; }
+      .control-buttons { width: 100%; }
+      .nav-button { min-width: 0; flex: 1; padding-inline: 9px; }
+      .below-grid { gap: 15px; margin-top: 34px; }
+      .info-card { padding: 17px 14px; }
+      .check-list { grid-template-columns: minmax(0, 1fr); }
+      .final-facts { gap: 7px; }
+      .site-footer { flex-direction: column; padding: 24px 0 29px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="page-shell topbar">
+    <a class="wordmark" href="#top" aria-label="Agent Foundry 模拟流程回放首页">
+      <span class="mark" aria-hidden="true">A</span>
+      <span class="wordmark-name">AGENT FOUNDRY</span>
+      <span class="wordmark-caption">WORKFLOW REPLAY</span>
+    </a>
+    <div class="top-status"><span class="status-dot" aria-hidden="true"></span><span>隔离演示环境</span></div>
+  </header>
+
+  <main id="top" class="page-shell">
+    <section class="intro" aria-labelledby="page-title">
+      <div class="eyebrow">SIMULATION / FULL RUN</div>
+      <h1 id="page-title">一次虚拟协作，完整走完交付流程。</h1>
+      <p class="intro-copy">按阶段回放任务讨论、执行与验收。这里展示的是可检查的流程记录，控制器和验收来自真实应用链路；智能体与终止过程均为模拟数据。</p>
+      <div class="simulation-stamp"><span>模拟演示 · 不调用真实模型</span></div>
+    </section>
+
+    <section id="scope-strip" class="scope-strip" aria-label="本次演示范围"></section>
+
+    <section class="replay-card" aria-labelledby="replay-title">
+      <div id="loading-state" class="loading-state" role="status" aria-live="polite">
+        <div><div class="loading-mark" aria-hidden="true"></div><p>正在读取流程报告…</p></div>
+      </div>
+      <div id="load-error-state" class="loading-state" role="alert" hidden>
+        <div class="load-error"><strong>流程报告读取失败</strong><span id="load-error-message"></span></div>
+      </div>
+      <div id="replay-content" class="replay-content" hidden>
+        <div class="replay-head">
+          <div class="replay-heading">
+            <h2 id="replay-title">流程阶段回放</h2>
+            <div id="phase-count" class="phase-count" aria-live="polite"><strong>00</strong> / 00</div>
+          </div>
+          <div id="progress-track" class="progress-track" role="progressbar" aria-label="流程进度" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></div>
+          <div id="step-tabs" class="step-tabs" role="tablist" aria-label="选择流程阶段"></div>
+        </div>
+        <div id="report-error" class="report-error" role="alert"></div>
+        <div class="stage-grid">
+          <section class="stage-copy" id="stage-panel" role="tabpanel" aria-live="polite">
+            <div class="stage-kicker">
+              <span id="stage-state" class="stage-state"></span>
+              <span id="stage-number" class="stage-number"></span>
+            </div>
+            <h3 id="stage-title" class="stage-title"></h3>
+            <p id="stage-description" class="stage-description"></p>
+            <div id="facts-block" class="facts-block">
+              <p class="mini-label">阶段记录 / DETAILS</p>
+              <ul id="facts-list" class="facts-list"></ul>
+            </div>
+          </section>
+          <figure class="stage-figure">
+            <div class="figure-topline">
+              <span><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span> &nbsp;真实界面截图</span>
+              <a id="screenshot-link" target="_blank" rel="noopener">放大查看 ↗</a>
+              <span id="screenshot-index"></span>
+            </div>
+            <div class="screenshot-wrap">
+              <img id="stage-screenshot" alt="流程阶段截图">
+              <div id="image-fallback" class="image-fallback">当前阶段没有可显示的界面截图。</div>
+            </div>
+            <figcaption class="figure-caption"><span id="screenshot-caption">阶段界面记录</span><span>LOCAL CAPTURE</span></figcaption>
+          </figure>
+        </div>
+        <div class="stage-controls">
+          <span class="control-hint">使用阶段按钮或方向键浏览过程</span>
+          <div class="control-buttons">
+            <button id="previous-stage" class="nav-button" type="button"><span aria-hidden="true">←</span> 上一阶段</button>
+            <button id="next-stage" class="nav-button primary" type="button">下一阶段 <span aria-hidden="true">→</span></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="below-grid">
+      <section class="info-card" aria-labelledby="checks-title">
+        <h2 id="checks-title" class="section-heading">验收检查 <small>CLICK TO INSPECT</small></h2>
+        <div id="check-list" class="check-list"></div>
+      </section>
+
+      <section class="info-card" aria-labelledby="delivery-title">
+        <h2 id="delivery-title" class="section-heading">最终交付 <small>RUN SUMMARY</small></h2>
+        <div id="final-content">
+          <p class="empty-note">报告加载后显示任务与交付信息。</p>
+        </div>
+      </section>
+    </div>
+
+    <footer class="site-footer">
+      <span>演示范围：<strong>虚拟智能体 · 合成终止 · 临时仓库</strong></span>
+      <span id="verified-at">验证时间：读取中</span>
+    </footer>
+  </main>
+
+  <script>
+    (() => {
+      const byId = (id) => document.getElementById(id);
+      const asText = (value) => value == null ? "" : String(value);
+      const make = (tag, className, text) => {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = asText(text);
+        return node;
+      };
+      const scopeNames = {
+        agents: "智能体",
+        termination: "终止过程",
+        controller: "控制器",
+        acceptance: "验收",
+        git: "仓库范围"
+      };
+      const scopeValues = {
+        virtual: "虚拟",
+        synthetic: "合成",
+        real: "真实",
+        "temporary repository only": "仅临时仓库"
+      };
+      let steps = [];
+      let activeIndex = 0;
+
+      function renderScope(scope) {
+        const strip = byId("scope-strip");
+        strip.replaceChildren();
+        Object.keys(scopeNames).forEach((key) => {
+          const item = make("div", "scope-item");
+          item.append(make("span", "scope-label", scopeNames[key]));
+          const value = scope && scope[key] != null ? asText(scope[key]) : "未提供";
+          item.append(make("span", "scope-value", scopeValues[value] || value));
+          strip.append(item);
+        });
+      }
+
+      function renderTabs() {
+        const tabs = byId("step-tabs");
+        const progress = byId("progress-track");
+        tabs.replaceChildren();
+        progress.replaceChildren();
+        progress.setAttribute("aria-valuemax", String(steps.length));
+        for (let index = 0; index < steps.length; index += 1) {
+          const step = steps[index] || {};
+          const tab = make("button", "step-tab");
+          tab.type = "button";
+          tab.id = `step-tab-${index}`;
+          tab.setAttribute("role", "tab");
+          tab.setAttribute("aria-controls", "stage-panel");
+          tab.setAttribute("aria-selected", String(index === activeIndex));
+          tab.tabIndex = index === activeIndex ? 0 : -1;
+          tab.dataset.index = String(index);
+          tab.append(make("span", "step-index", String(index + 1).padStart(2, "0")));
+          tab.append(make("span", "step-tab-label", step.title || `阶段 ${index + 1}`));
+          tab.addEventListener("click", () => showStep(index, true));
+          tab.addEventListener("keydown", (event) => {
+            let next = index;
+            if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % steps.length;
+            else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + steps.length) % steps.length;
+            else if (event.key === "Home") next = 0;
+            else if (event.key === "End") next = steps.length - 1;
+            else return;
+            event.preventDefault();
+            showStep(next, true);
+            byId(`step-tab-${next}`).focus();
+          });
+          tabs.append(tab);
+
+          const segment = make("span", "progress-segment");
+          segment.setAttribute("aria-hidden", "true");
+          progress.append(segment);
+        }
+        showStep(activeIndex, false);
+      }
+
+      function showStep(index, moveFocus) {
+        if (!steps.length) return;
+        activeIndex = Math.max(0, Math.min(index, steps.length - 1));
+        const step = steps[activeIndex] || {};
+        byId("step-tabs").querySelectorAll("[role=tab]").forEach((tab, tabIndex) => {
+          const selected = tabIndex === activeIndex;
+          tab.setAttribute("aria-selected", String(selected));
+          tab.tabIndex = selected ? 0 : -1;
+        });
+        byId("progress-track").querySelectorAll(".progress-segment").forEach((segment, segmentIndex) => {
+          segment.classList.toggle("is-done", segmentIndex <= activeIndex);
+        });
+        byId("progress-track").setAttribute("aria-valuenow", String(activeIndex + 1));
+        byId("phase-count").replaceChildren(
+          make("strong", "", String(activeIndex + 1).padStart(2, "0")),
+          document.createTextNode(` / ${String(steps.length).padStart(2, "0")}`)
+        );
+        byId("stage-state").textContent = asText(step.state || "阶段记录");
+        byId("stage-number").textContent = `PHASE ${String(activeIndex + 1).padStart(2, "0")}`;
+        byId("stage-title").textContent = asText(step.title || `阶段 ${activeIndex + 1}`);
+        byId("stage-description").textContent = asText(step.description || "此阶段没有补充说明。");
+
+        const facts = Array.isArray(step.facts) ? step.facts : [];
+        const factsList = byId("facts-list");
+        factsList.replaceChildren();
+        facts.forEach((fact) => factsList.append(make("li", "", fact)));
+        byId("facts-block").hidden = facts.length === 0;
+
+        const screenshot = byId("stage-screenshot");
+        const fallback = byId("image-fallback");
+        const filename = asText(step.screenshot || "");
+        byId("screenshot-index").textContent = filename ? `CAPTURE ${String(activeIndex + 1).padStart(2, "0")}` : "NO CAPTURE";
+        byId("screenshot-caption").textContent = filename || "当前阶段界面记录";
+        screenshot.alt = `第 ${activeIndex + 1} 阶段截图：${asText(step.title || "流程阶段")}`;
+        screenshot.hidden = !filename;
+        fallback.classList.toggle("is-visible", !filename);
+        fallback.textContent = filename ? "正在读取本阶段截图…" : "当前阶段没有可显示的界面截图。";
+        screenshot.onerror = () => {
+          screenshot.hidden = true;
+          fallback.classList.add("is-visible");
+          fallback.textContent = `截图加载失败：${filename}`;
+        };
+        if (filename && /^[A-Za-z0-9._-]+$/.test(filename)) {
+          fallback.classList.remove("is-visible");
+          screenshot.src = `/screenshots/${encodeURIComponent(filename)}`;
+          byId('screenshot-link').href = screenshot.src;
+          byId('screenshot-link').hidden = false;
+        } else if (filename) {
+          byId('screenshot-link').hidden = true;
+          screenshot.hidden = true;
+          fallback.classList.add("is-visible");
+          fallback.textContent = "截图文件名无效，无法加载此图片。";
+        } else {
+          byId('screenshot-link').hidden = true;
+          screenshot.removeAttribute("src");
+        }
+        byId("previous-stage").disabled = activeIndex === 0;
+        byId("next-stage").disabled = activeIndex === steps.length - 1;
+        if (moveFocus) byId(`step-tab-${activeIndex}`).focus();
+      }
+
+      function renderChecks(checks) {
+        const list = byId("check-list");
+        list.replaceChildren();
+        if (!Array.isArray(checks) || checks.length === 0) {
+          list.append(make("p", "empty-note", "报告中没有验收检查项。"));
+          return;
+        }
+        checks.forEach((check, index) => {
+          const passed = check && check.passed === true;
+          const item = make("div", "check-item");
+          const button = make("button", "check-button");
+          const detailId = `check-detail-${index}`;
+          button.type = "button";
+          button.dataset.passed = String(passed);
+          button.setAttribute("aria-expanded", "false");
+          button.setAttribute("aria-controls", detailId);
+          button.append(make("span", "check-icon", passed ? "✓" : "×"));
+          button.append(make("span", "check-label", check && check.label ? check.label : `检查项 ${index + 1}`));
+          button.append(make("span", "check-caret", "⌄"));
+          const detail = make("div", "check-detail", passed ? "此项已通过流程验收。" : "此项未通过流程验收。检查阶段记录和报告详情。 ");
+          detail.id = detailId;
+          detail.hidden = true;
+          button.addEventListener("click", () => {
+            const expanded = button.getAttribute("aria-expanded") !== "true";
+            button.setAttribute("aria-expanded", String(expanded));
+            detail.hidden = !expanded;
+          });
+          item.append(button, detail);
+          list.append(item);
+        });
+      }
+
+      function internalHref(value) {
+        const candidate = asText(value);
+        if (!candidate || candidate.startsWith("//")) return null;
+        try {
+          const url = new URL(candidate, window.location.href);
+          if (url.origin !== window.location.origin) return null;
+          return `${url.pathname}${url.search}${url.hash}`;
+        } catch {
+          return null;
+        }
+      }
+
+      function appendFact(container, label, value) {
+        const item = make("div", "final-fact");
+        item.append(make("dt", "", label));
+        item.append(make("dd", "", value || "未提供"));
+        container.append(item);
+      }
+
+      function renderFiles(files) {
+        const section = make("div", "files-section");
+        section.append(make("p", "files-heading", `最终代码文件 · ${Array.isArray(files) ? files.length : 0}`));
+        const list = make("div", "file-list");
+        if (!Array.isArray(files) || files.length === 0) {
+          list.append(make("p", "file-empty", "报告中没有交付文件。"));
+        } else {
+          files.forEach((file, index) => {
+            const card = make("details", "file-card");
+            if (index === 0) card.open = true;
+            const summary = make("summary", "", file && file.path ? file.path : `文件 ${index + 1}`);
+            const pre = make("pre", "");
+            pre.append(make("code", "", file && file.content != null ? file.content : ""));
+            card.append(summary, pre);
+            list.append(card);
+          });
+        }
+        section.append(list);
+        return section;
+      }
+
+      function renderFinal(finalData) {
+        const host = byId("final-content");
+        host.replaceChildren();
+        const final = finalData || {};
+        const chips = make("div", "final-topline");
+        chips.append(make("span", "id-chip", `TEAM · ${final.team_id || "未提供"}`));
+        chips.append(make("span", "id-chip", `TASK · ${final.task_id || "未提供"}`));
+        chips.append(make("span", "id-chip", `PHASE · ${final.phase || "未提供"}`));
+        host.append(chips);
+
+        const facts = make("dl", "final-facts");
+        appendFact(facts, "审查轮次", final.review_rounds == null ? "未提供" : final.review_rounds);
+        const planner = final.planner || {};
+        appendFact(facts, "规划执行器", [planner.executor_type, planner.model, planner.effort].filter(Boolean).join(" · ") || "未提供");
+        host.append(facts);
+
+        host.append(make("p", "workers-label", "工作成员"));
+        const workers = make("ul", "worker-list");
+        if (Array.isArray(final.workers) && final.workers.length) {
+          final.workers.forEach((worker) => {
+            const detail = worker || {};
+            const parts = [detail.agent_id, detail.executor_type, detail.model, detail.effort].filter(Boolean);
+            workers.append(make("li", "", parts.join(" · ") || "成员"));
+          });
+        } else {
+          workers.append(make("li", "", "没有成员信息"));
+        }
+        host.append(workers);
+
+        const links = make("div", "result-links");
+        const teamLink = make("a", "result-link");
+        teamLink.href = internalHref(final.team_url) || "#";
+        teamLink.setAttribute("aria-disabled", String(!internalHref(final.team_url)));
+        teamLink.append(make("span", "", "打开真实团队视图"), make("span", "", "↗"));
+        const deliveryLink = make("a", "result-link");
+        deliveryLink.href = internalHref(final.delivery_url) || "#";
+        deliveryLink.setAttribute("aria-disabled", String(!internalHref(final.delivery_url)));
+        deliveryLink.append(make("span", "", "查看交付工作台"), make("span", "", "↗"));
+        links.append(teamLink, deliveryLink);
+        host.append(links, renderFiles(final.files));
+      }
+
+      function renderReport(report) {
+        renderScope(report.scope || {});
+        steps = Array.isArray(report.steps) ? report.steps : [];
+        byId("loading-state").hidden = true;
+        byId("load-error-state").hidden = true;
+        byId("replay-content").hidden = false;
+        const errorMessage = report.error ? asText(report.error) : "";
+        const reportError = byId("report-error");
+        if (report.running === true) {
+          reportError.textContent = '模拟流程正在执行，完成后会显示完整结果。';
+          reportError.classList.add('is-visible');
+        } else if (report.ok !== true || errorMessage) {
+          reportError.textContent = errorMessage || "报告标记为未通过，请查看下方阶段记录和验收检查。";
+          reportError.classList.add("is-visible");
+        } else {
+          reportError.classList.remove("is-visible");
+          reportError.textContent = "";
+        }
+        if (!steps.length) {
+          reportError.textContent = report.running ? '模拟流程正在准备首个阶段…' : errorMessage || "报告中没有流程阶段，无法开始回放。";
+          reportError.classList.add("is-visible");
+          byId("step-tabs").replaceChildren();
+          byId("progress-track").replaceChildren();
+          byId("stage-title").textContent = "没有可回放阶段";
+          byId("stage-description").textContent = "请检查报告数据是否包含 steps。";
+          byId("stage-state").textContent = "无阶段数据";
+          byId("stage-number").textContent = "PHASE --";
+          byId("facts-block").hidden = true;
+          byId("stage-screenshot").hidden = true;
+          byId("image-fallback").classList.add("is-visible");
+          byId("image-fallback").textContent = "当前没有阶段截图。";
+          byId("phase-count").textContent = "00 / 00";
+          byId("progress-track").setAttribute("aria-valuemax", "0");
+          byId("progress-track").setAttribute("aria-valuenow", "0");
+          byId("previous-stage").disabled = true;
+          byId("next-stage").disabled = true;
+        } else {
+          activeIndex = 0;
+          renderTabs();
+        }
+        renderChecks(report.checks);
+        renderFinal(report.final);
+        const verified = report.verified_at ? new Date(report.verified_at) : null;
+        byId("verified-at").textContent = `验证时间：${verified && !Number.isNaN(verified.getTime()) ? verified.toLocaleString("zh-CN", {hour12: false}) : "未提供"}`;
+      }
+
+      byId("previous-stage").addEventListener("click", () => showStep(activeIndex - 1, false));
+      byId("next-stage").addEventListener("click", () => showStep(activeIndex + 1, false));
+
+      function loadReport() { fetch("/report.json", { cache: "no-store" })
+        .then((response) => {
+          if (!response.ok) throw new Error(`读取 /report.json 失败（HTTP ${response.status}）。`);
+          return response.json();
+        })
+        .then((report) => {
+          renderReport(report && typeof report === "object" ? report : {});
+          if (report.running === true) setTimeout(loadReport, 2000);
+        })
+        .catch((error) => {
+          byId("loading-state").hidden = true;
+          byId("load-error-message").textContent = error && error.message ? error.message : "无法读取流程报告，请确认演示服务正在运行。";
+          byId("load-error-state").hidden = false;
+        }); }
+      loadReport();
+    })();
+  </script>
+</body>
+</html>

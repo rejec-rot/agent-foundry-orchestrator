@@ -10,7 +10,7 @@ const STAGES = [
 ];
 
 const state = {
-  tasks: [], selected: null, filter: '', capabilities: null, plan: null,
+  tasks: [], selected: null, selectionVersion: 0, filter: '', capabilities: null, plan: null,
   // The operator token lives in memory + sessionStorage only: never localStorage (which would
   // outlive the tab), never a cookie, never a URL, never the DOM as a value.
   token: (() => { try { return sessionStorage.getItem('af-write-token') || ''; } catch { return ''; } })(),
@@ -204,7 +204,8 @@ function renderTasks() {
 }
 
 function stageStrip(currentPhase) {
-  const idx = STAGES.findIndex(([, key]) => key === currentPhase);
+  const phase = ({ PROJECTED: 'PROJECTION', AUTHOR_RUNNING: 'AUTHOR' })[currentPhase] ?? currentPhase;
+  const idx = phase === 'PROMOTED' ? STAGES.length : STAGES.findIndex(([, key]) => key === phase);
   return `<div class="runway" role="list" aria-label="受信阶段">${STAGES.map(([label, key], i) => {
     const cls = idx === -1 ? '' : (i < idx ? 'done' : (i === idx ? 'current' : ''));
     const state = cls === 'done' ? '已完成' : (cls === 'current' ? '当前阶段' : '未到达');
@@ -226,8 +227,18 @@ function blockValue(block, fallback = '—') {
   return esc(fallback);
 }
 
+function taskFromHash() {
+  try {
+    const id = decodeURIComponent(location.hash.slice(1));
+    return /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : null;
+  } catch { return null; }
+}
+
 async function selectTask(taskId) {
   state.selected = taskId;
+  const selectionVersion = ++state.selectionVersion;
+  const isCurrent = () => state.selected === taskId && state.selectionVersion === selectionVersion;
+  if (taskFromHash() !== taskId) history.replaceState(null, '', '#' + encodeURIComponent(taskId));
   refreshWriteControls();
   if (state.plan && state.plan.taskId !== taskId) state.plan = null;
   renderTasks();
@@ -238,16 +249,18 @@ async function selectTask(taskId) {
       getJson(`/api/v2/tasks/${encodeURIComponent(taskId)}`),
       getJson(`/api/v2/tasks/${encodeURIComponent(taskId)}/evidence`).catch((err) => ({ error: err.message })),
     ]);
+    if (!isCurrent()) return;
     renderDetail(taskPayload.model ?? taskPayload, evidencePayload.error ? evidencePayload : (evidencePayload.model ?? evidencePayload));
     // §6 G5 timeline: a bounded page of the phase-event projection, and an explicit banner when the
     // projection disagrees with the task snapshot (the task file stays the lifecycle truth).
     getJson(`/api/v2/tasks/${encodeURIComponent(taskId)}/events?limit=20`)
-      .then((payload) => renderTimeline(payload.model ?? payload))
-      .catch(() => renderTimeline(null));
+      .then((payload) => { if (isCurrent()) renderTimeline(payload.model ?? payload); })
+      .catch(() => { if (isCurrent()) renderTimeline(null); });
     getJson(`/api/v2/tasks/${encodeURIComponent(taskId)}/messages`)
-      .then((payload) => renderCollab(payload.model ?? payload))
-      .catch(() => renderCollab(null));
+      .then((payload) => { if (isCurrent()) renderCollab(payload.model ?? payload); })
+      .catch(() => { if (isCurrent()) renderCollab(null); });
   } catch (err) {
+    if (!isCurrent()) return;
     el.innerHTML = `<p class="missing">读取失败：${esc(err.message)}</p>`;
   }
 }
@@ -292,7 +305,7 @@ async function loadRecoveryPlan(taskId, expectedVersion) {
 function renderDetail(model, evidence) {
   const task = model.blocks?.task ?? {};
   const value = task.value ?? {};
-  const phase = value.phase ?? null;
+  const phase = value.phase ?? value.trusted_import?.phase ?? null;
   const boundary = value.boundary_state ?? (value.trusted_import?.boundary_state ?? null);
   const boundaryAlert = value.boundary_alert ?? null;
 
@@ -425,6 +438,10 @@ async function boot() {
   // Attach the handlers FIRST: a failure in any of the read paths below must never leave the page
   // without its controls (or, worse, with controls that silently do nothing).
   $('filter').addEventListener('input', (e) => { state.filter = e.target.value; renderTasks(); });
+  window.addEventListener('hashchange', () => {
+    const taskId = taskFromHash();
+    if (taskId && taskId !== state.selected) void selectTask(taskId);
+  });
   let generatedKey = submissionKey();
   $('s-key').value = generatedKey;
   $('submit-form').addEventListener('input', (e) => {
@@ -492,6 +509,8 @@ async function boot() {
     refreshWriteControls();
   } catch { /* the banner stays empty; the footer already says this page is read-only */ }
   await refreshList();
+  const bookmarkedTask = taskFromHash();
+  if (bookmarkedTask && !state.selected) await selectTask(bookmarkedTask);
   await refreshSide();
   setInterval(refreshList, 5000);
   setInterval(refreshSide, 30000);
