@@ -1,5 +1,33 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Simulated Workflow Replay — 2026-10-04
+
+| Field | Verified value |
+|---|---|
+| Code commit | [`4f4414529fef91ea201c3968b0a5a61ce8f78cc0`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/4f4414529fef91ea201c3968b0a5a61ce8f78cc0) |
+| Full regression | 904 tests: 899 passed, 0 failed, 5 existing environment-gated skips at 2026-10-04T09:18:44Z |
+| Architecture invariants | 6/6 at 2026-10-04T09:19:12Z |
+| Workflow and replay browser checks | 37/37, nine stages at 2026-10-04T09:19:24Z |
+| Authenticated workbench regression | 26/26 at 2026-10-04T09:19:22Z |
+| Real demo acceptance | 2/2 Node tests; temporary repository reaches COMPLETED / PROMOTED |
+| Independent review | Non-author PASS; independent 37/37 run at 2026-10-04T09:19:04Z; signal interruption report/cleanup verified at 2026-10-04T09:17:18Z |
+
+The replay uses existing fixture adapters and the real team controller/Trusted
+Import workflow in isolated directories on localhost. Planner chat, human plan
+confirmation, parallel Workers, scoped operator revision, preserved peer output,
+review-driven local repair, fresh same-profile Reviewer sessions, acceptance and
+temporary Git promotion are recorded. Agents, model capabilities and termination
+evidence are simulated; no real model or host isolation validation is claimed.
+The seeded project/goal and commands belong to the fixture; browser access is
+read-only. No production registry, operator restrictions or existing team data
+are modified, and no scheduler or governance layer is added.
+
+The exercise fixed workbench task bookmark selection and response ordering,
+including A → B → A, and restored actual trusted-import phase display. REVIEW
+is current during both review sessions; PROMOTED marks all eight stages complete.
+Failed/interrupted runs retain progress and report their actual outcome.
+See the [simulation report](docs/reviews/2026-10-04-simulated-workflow.md).
+
 ## V2 Final System Accuracy Review — 2026-10-04
 
 | Field | Verified value |
