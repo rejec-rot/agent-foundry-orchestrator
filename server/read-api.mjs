@@ -34,7 +34,7 @@ import { createV2Task, dispatchV2Task } from '../lib/v2-service.mjs';
 import { requestCancel, readCancelRequest } from '../lib/trusted-import/cancel.mjs';
 import { eventsDirFor, readTaskEvents } from '../lib/v2-events.mjs';
 import { contentIndex, readTaskBlob } from '../lib/content.mjs';
-import { describeRegistry, loadProjectRegistry } from '../lib/projects.mjs';
+import { describeRegistry, loadProjectRegistry, resolveAcceptanceProfile, resolveProject } from '../lib/projects.mjs';
 import { collaborationView, queueMessage } from '../lib/collaboration.mjs';
 import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
 import { disabledExecutors } from '../lib/operator-control.mjs';
@@ -240,11 +240,35 @@ export function createReadApi({
           const registryFile=env.AF_PROJECTS_FILE??join(process.cwd(),'config','projects.json');
           const loaded=loadProjectRegistry({file:registryFile});
           if(!loaded.ok){sendJson(res,422,shape({ok:false,reason:loaded.reason}));return;}
-          const result=createCollaborationTeam({spec:payload.spec,workerCount:payload.worker_count??3,planning:payload.planning??null,allowedRoots,
+          const registryScoped=Object.hasOwn(payload,'project_id')||Object.hasOwn(payload,'profile_id');
+          let spec=payload.spec,profileId=null;
+          const allowlist=loadAcceptanceAllowlist({file:acceptanceAllowlistFile(env)});
+          if(registryScoped) {
+            const invalid=(reason)=>{sendJson(res,422,shape({ok:false,reason}));return;};
+            if(typeof payload.project_id!=='string'||!payload.project_id.trim()||typeof payload.profile_id!=='string'||!payload.profile_id.trim()) {
+              invalid('project_id and profile_id are both required for registry-scoped team creation');return;
+            }
+            if(Object.hasOwn(payload,'target_path')||Object.hasOwn(payload,'acceptance')||!spec||typeof spec!=='object'||Array.isArray(spec)
+              ||['target_path','acceptance','project_id','profile_id'].some(key=>Object.hasOwn(spec,key))) {
+              invalid('registry-scoped team creation accepts project_id/profile_id only at the top level; target_path and acceptance come from the registered profile');return;
+            }
+            const resolvedProject=resolveProject({registry:loaded.registry,projectId:payload.project_id});
+            if(!resolvedProject.ok){invalid(resolvedProject.reason);return;}
+            const profileMatches=(resolvedProject.project.acceptance_profiles??[]).filter(profile=>profile.profile_id===payload.profile_id);
+            if(profileMatches.length!==1){
+              invalid(profileMatches.length?'the requested acceptance profile id is ambiguous':'no such acceptance profile for the registered project');return;
+            }
+            const trusted=resolveAcceptanceProfile({registry:loaded.registry,registryFile,registryDigest:loaded.digest,
+              projectId:payload.project_id,profileId:payload.profile_id,allowlist,acceptanceCommandAllowed});
+            if(!trusted.ok){invalid(trusted.reason);return;}
+            spec={...spec,target_path:resolvedProject.project.root,acceptance:trusted.identity.acceptance};
+            profileId=payload.profile_id;
+          }
+          const result=createCollaborationTeam({spec,workerCount:payload.worker_count??3,planning:payload.planning??null,allowedRoots,
             tasksDir:roots.tasks,runtimeDir:roots.runtime,locksDir:locksDir??roots.locks,env,
             submissionsDir:env.AF_SUBMISSION_DIR??join(roots.runtime,'submissions'),
             projectRegistry:loaded.registry,registryFile,registryDigest:loaded.digest,
-            allowlist:loadAcceptanceAllowlist({file:acceptanceAllowlistFile(env)}),acceptanceCommandAllowed});
+            allowlist,acceptanceCommandAllowed,...(profileId?{profileId}:{})});
           sendJson(res,result.ok?(result.created?201:200):422,shape(result));return;
         }
         if (path === '/api/v2/tasks/create') {
@@ -364,6 +388,16 @@ export function createReadApi({
       if(path==='/api/teams') return sendJson(res,200,shape({teams:listTeams(roots.runtime).map(t=>teamView(roots.runtime,t.team_id))}));
       const teamMatch=/^\/api\/teams\/([^/]+)$/.exec(path);
       if(teamMatch){const model=teamView(roots.runtime,teamMatch[1]);return sendJson(res,model?200:404,shape(model??{error:'not_found'}));}
+      if(path==='/api/v2/projects') {
+        const registry=loadProjectRegistry({file:env.AF_PROJECTS_FILE??join(process.cwd(),'config','projects.json')});
+        if(!registry.ok) {
+          const configured=registry.configured===true;
+          return sendJson(res,configured?503:200,shape({schema:'af-v2-projects-v1',configured,projects:[],...(configured?{reason:'the project registry is unreadable or invalid'}:{})}));
+        }
+        return sendJson(res,200,shape({schema:'af-v2-projects-v1',configured:true,projects:registry.registry.projects.map(project=>({
+          project_id:project.project_id,profiles:(project.acceptance_profiles??[]).map(profile=>({profile_id:profile.profile_id})),
+        }))}));
+      }
       if (path === '/api/v2/capabilities') {
         const registry = loadProjectRegistry({ file: env.AF_PROJECTS_FILE ?? join(process.cwd(), 'config', 'projects.json') });
         return sendJson(res, 200, shape({

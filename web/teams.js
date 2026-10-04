@@ -25,6 +25,7 @@ let selected = null, workId = null, team = null, capabilities = null, refreshing
 let pending = 0, editBase = null, goalBase = null, noticeTimer = null, lastConnectionError = null;
 let executorCatalog = null, dispatchBase = null, profileDraft = [], agentScan = null, pendingCatalogRefresh = null;
 let createWorkersDraft = null, consoleProfileBase = null, consoleProfileDirty = false, consoleProfileKey = '', consoleProfileEditable = null, configCommand = null;
+let projectsCatalog = null, projectsError = null, firstChatAttempt = null, chatAttempt = null;
 const emptyConversation = $('planner-conversation').innerHTML;
 
 function operationId(prefix) {
@@ -47,7 +48,10 @@ async function request(path, body = null, { timeoutMs = 12000 } = {}) {
     };
     const res = await fetch(path, { ...options, signal: controller.signal });
     const envelope = await res.json(), model = envelope.model ?? envelope;
-    if (!res.ok) throw new Error(model.reason ?? model.error ?? ('HTTP ' + res.status));
+    if (!res.ok) {
+      const error=new Error(model.reason ?? model.error ?? ('HTTP ' + res.status));
+      error.httpStatus=res.status;throw error;
+    }
     return model;
   } finally { clearTimeout(timer); }
 }
@@ -81,6 +85,7 @@ function navigation(open) {
   if (mobile && open) $('sidebar').querySelector('.nav-item').focus();
 }
 function openDialog(id, configureWorkers=false) {
+  if(id==='create-dialog'&&(firstChatAttempt?.uncertain||chatAttempt?.uncertain)){notice('先确认上一条目标或消息的回执，再开始新的目标。');return;}
   if (!['create-dialog', 'token-dialog', 'dispatch-dialog'].includes(id) && !team) {
     notice('先选择或创建一个团队。');
     return;
@@ -130,8 +135,13 @@ function writes() {
     ['CANCELLED', 'RECOVERY_REQUIRED'].includes(team?.state);
   $('retry').disabled = !enabled || !workId || editBase?.teamId !== team?.team_id || terminal;
   if(team?.planning && ['DRAFT','HELD'].includes(team.work_items.find(i=>i.work_item_id===workId)?.status)){ $('adjust').disabled=true; $('retry').disabled=true; }
-  $('planner-send').disabled = !enabled || consoleProfileDirty || Boolean(configCommand) || !team?.planning || !['DISCUSSING','PLAN_READY','WORKING','BLOCKED'].includes(team.state);
-  $('propose-plan').disabled = !enabled || consoleProfileDirty || Boolean(configCommand) || !team?.planning || !['DISCUSSING','PLAN_READY'].includes(team.state) || team.members.find(m=>m.role==='lead')?.status==='RUNNING';
+  const chatBlock=plannerChatBlock();
+  $('planner-send').disabled = Boolean(chatBlock);
+  $('planner-chat-hint').textContent=chatBlock??(chatAttempt?.uncertain?'消息回执未确认；再次发送会查询或重用原消息。':firstChatAttempt?.uncertain?'目标创建回执未确认；再次发送会重用原目标与配置。':!team?'第一条消息会建立商讨会话；确认计划后才派工。':consoleProfileDirty?'直接发送，自动应用所选模型与思考强度。':'消息会发送给当前 Planner。确认计划后才派工。');
+  $('planner-chat-hint').dataset.blocked=String(Boolean(chatBlock));
+  $('planner-connect-access').hidden=Boolean(token)||!capabilities?.write?.team_command;
+  $('propose-plan').disabled = Boolean(chatBlock) || !team?.planning || !['DISCUSSING','PLAN_READY'].includes(team.state) ||
+    team.members.find(m=>m.role==='lead')?.status==='RUNNING' || hasPendingPlannerMessage();
   $('configure-dispatch').disabled = !enabled || team?.state!=='PLAN_READY' || team.members.find(m=>m.role==='lead')?.status==='RUNNING' || team.messages.some(m=>m.to_agent_id==='lead'&&['queued','received'].includes(m.status));
   $('approve-plan').disabled = pending>0 || Boolean(configCommand) || (dispatchBase?.mode==='local'?false:
     !enabled || dispatchBase?.teamId!==team?.team_id || dispatchBase?.revision!==team?.plan_revision || dispatchBase?.configRevision!==(team?.planning?.agent_config_revision??0) ||
@@ -142,8 +152,20 @@ function writes() {
     $('approve-plan').disabled=true;
     $('worker-profile-hint').textContent='待注册、停用或待适配的 Agent 可以查看配置，但当前不能派工。请为每位 Worker 选择可派工的适配器。';
   }else if(dispatchBase?.mode==='approve')$('worker-profile-hint').textContent='确认后开始执行。Planner / Reviewer 的配置保持一致。';
-  $('save-console-planner').disabled=pending>0 || Boolean(configCommand) || (team ? !enabled || !canConfigureAgents() || !consoleProfileDirty : !$('console-planner-executor').value);
+  $('save-console-planner').disabled=pending>0 || Boolean(configCommand&&!configCommand.retryable) || (team ? !enabled || !canConfigureAgents() || !consoleProfileDirty : !$('console-planner-executor').value);
   $('save-console-planner').disabled ||= !profileModelReady(entryFor($('console-planner-executor').value,Boolean(team?.planning)),$('console-planner-model-input').value.trim());
+  const profileLocked=pending>0 || Boolean(configCommand) || Boolean(firstChatAttempt?.uncertain||chatAttempt?.uncertain) || Boolean(team&&!canConfigureAgents());
+  const consoleEntry=entryFor($('console-planner-executor').value,Boolean(team?.planning));
+  $('console-planner-executor').disabled=profileLocked;
+  $('console-planner-model-select').disabled=profileLocked||!consoleEntry?.supports_model;
+  $('console-planner-model-input').disabled=profileLocked||!consoleEntry?.supports_model||$('console-planner-model-input').hidden;
+  $('console-planner-effort').disabled=profileLocked||![...$('console-planner-effort').options].some(o=>o.value);
+  $('console-project').disabled=pending>0||Boolean(firstChatAttempt?.uncertain)||Boolean(team);
+  $('console-acceptance').disabled=pending>0||Boolean(firstChatAttempt?.uncertain)||Boolean(team)||!$('console-project').value;
+  const messageLocked=pending>0||Boolean(firstChatAttempt?.uncertain||chatAttempt?.uncertain);
+  $('planner-input').readOnly=messageLocked;
+  for(const suggestion of document.querySelectorAll('[data-prompt]'))suggestion.disabled=messageLocked;
+  $('configure-workers').disabled=pending>0||Boolean(configCommand)||Boolean(firstChatAttempt?.uncertain||chatAttempt?.uncertain);
   $('pause').disabled ||= ['CREATED', 'PAUSED'].includes(team?.state);
   $('deliver').disabled ||= !team?.integration || ['CREATED', 'PLANNING', 'WORKING', 'INTEGRATING', 'PAUSED'].includes(team?.state);
   $('start').disabled ||= ['PLANNING', 'WORKING', 'INTEGRATING', 'DELIVERING', 'PAUSING'].includes(team?.state);
@@ -170,9 +192,18 @@ function memberName(id) {
   return number ? 'Worker ' + number.padStart(2, '0') : String(id ?? '团队');
 }
 function renderPlanner() {
+  if(chatAttempt?.uncertain&&chatAttempt.teamId===team?.team_id) {
+    const receipt=team.commands.find(c=>c.command_id===chatAttempt.commandId);
+    if(receipt?.status==='rejected'){chatAttempt=null;notice(receipt.reason??'消息未被接收，请重新确认。','error');}
+    else if(team.messages.some(m=>m.message_id===chatAttempt.commandId)) {
+      if($('planner-input').value===chatAttempt.message)$('planner-input').value='';
+      chatAttempt=null;firstChatAttempt=null;notice('消息已确认收到。');
+    }
+  }
   document.body.dataset.hasTeam=String(Boolean(team));
   const legacy=Boolean(team&&!team.planning);
   $('console-planner-form').hidden=legacy;
+  $('console-project-fields').hidden=Boolean(team);
   $('configure-workers').hidden=legacy;$('worker-config-summary').hidden=legacy;
   renderConsoleProfile();
   if(configCommand && configCommand.teamId!==team?.team_id)configCommand=null;
@@ -180,7 +211,10 @@ function renderPlanner() {
     const receipt=team?.team_id===configCommand.teamId?team.commands.find(c=>c.command_id===configCommand.commandId):null;
     if(receipt && ['applied','rejected'].includes(receipt.status)) {
       if(receipt.status==='applied') {if(configCommand.role==='planner')consoleProfileDirty=false;consoleProfileKey='';notice('Agent 配置已保存，下一次执行使用新配置。');}
-      else notice(receipt.reason??'配置未保存，请刷新后重新确认。','error');
+      else {
+        if(configCommand.role==='planner')consoleProfileBase={teamId:team.team_id,revision:team.plan_revision,goalRevision:team.goal_revision,configRevision:team.planning.agent_config_revision??0};
+        notice(receipt.reason??'配置未保存，请重新确认。','error');
+      }
       configCommand=null;renderConsoleProfile();
     }
   }
@@ -327,7 +361,42 @@ function updatePlannerControls(reset=false) {
 function canConfigureAgents() {
   return Boolean(team?.planning && (['DISCUSSING','PLAN_READY'].includes(team.state) ||
     (team.state==='PAUSED' && ['DISCUSSING','PLAN_READY','PLANNING','WORKING','BLOCKED'].includes(team.paused_from_state))) &&
-    ![...team.runs,...team.delivery_runs].some(r=>['RUNNING','UNCONFIRMED'].includes(r.status)));
+    ![...team.runs,...team.delivery_runs].some(r=>['RUNNING','UNCONFIRMED'].includes(r.status)) && !hasPendingPlannerMessage());
+}
+function hasPendingPlannerMessage() {return Boolean(team?.messages.some(m=>m.to_agent_id==='lead'&&['queued','received'].includes(m.status)));}
+function plannerChatBlock() {
+  if(pending>0)return '正在提交，请稍候…';
+  if(!capabilities)return '正在连接工作空间…';
+  if(!capabilities.write?.team_command||(!team&&!capabilities.write?.create_team))return '当前空间为只读模式，启用写操作后才能商讨。';
+  if(!token)return '连接操作权限后，即可直接发送消息。';
+  if(configCommand&&!configCommand.retryable)return 'Agent 配置正在保存，等待确认后继续。';
+  if(team&&(!team.planning||!['DISCUSSING','PLAN_READY','WORKING','BLOCKED'].includes(team.state)))return '当前阶段不能商讨；暂停的团队需要先恢复。';
+  if(consoleProfileDirty&&team&&!canConfigureAgents())return '等待当前执行结束，再应用新的 Planner 配置。';
+  const entry=entryFor($('console-planner-executor').value,Boolean(team?.planning));
+  if(!entry||(!team&&entry.availability!=='AVAILABLE')||(entry.availability&&entry.availability!=='AVAILABLE')||entry.supports_planner===false)return '请选择当前可派工的 Planner Agent。';
+  if(!profileModelReady(entry,$('console-planner-model-input').value.trim())||
+    ($('console-planner-model-select').value==='__custom'&&!$('console-planner-model-input').value.trim()))return '请选择模型，或填写自定义模型 ID。';
+  if(!team) {
+    if(projectsError)return projectsError;
+    if(!projectsCatalog)return '正在读取已接入项目…';
+    if(!projectsCatalog.length)return '尚未接入工作项目，注册项目后即可开始商讨。';
+    if(!projectsCatalog.some(p=>p.project_id===$('console-project').value&&p.profiles.some(a=>a.profile_id===$('console-acceptance').value)))return '选择工作项目与验收标准后，直接发送第一条消息。';
+  }
+  return null;
+}
+function renderProjects() {
+  const chosen=$('console-project').value;
+  const projects=projectsCatalog??[];
+  $('console-project').innerHTML='<option value="">'+esc(projectsError?'项目目录读取失败':projects.length?'选择工作项目':'尚未接入项目')+'</option>'+projects.map(p=>'<option value="'+esc(p.project_id)+'">'+esc(p.project_id)+'</option>').join('');
+  $('console-project').value=projects.some(p=>p.project_id===chosen)?chosen:projects.length===1?projects[0].project_id:'';
+  renderAcceptanceProfiles();
+}
+function renderAcceptanceProfiles() {
+  const chosen=$('console-acceptance').value;
+  const profiles=projectsCatalog?.find(p=>p.project_id===$('console-project').value)?.profiles??[];
+  $('console-acceptance').innerHTML='<option value="">'+esc(profiles.length?'选择验收标准':'先选择项目')+'</option>'+profiles.map(p=>'<option value="'+esc(p.profile_id)+'">'+esc(p.profile_id)+'</option>').join('');
+  $('console-acceptance').value=profiles.some(p=>p.profile_id===chosen)?chosen:profiles.length===1?profiles[0].profile_id:'';
+  writes();
 }
 function consoleProfile() {
   return {executor_type:$('console-planner-executor').value,model:$('console-planner-model-input').value.trim()||null,effort:$('console-planner-effort').value||null};
@@ -363,8 +432,8 @@ function renderConsoleProfile() {
   if(editable!==consoleProfileEditable){if(editable)updateConsoleControls();else for(const control of $('console-planner-form').querySelectorAll('select,input'))control.disabled=true;consoleProfileEditable=editable;}
   if(!consoleProfileDirty)consoleProfileBase={teamId:team?.team_id??null,revision:team?.plan_revision??0,goalRevision:team?.goal_revision??0,configRevision:team?.planning?.agent_config_revision??0};
   const entry=entryFor($('console-planner-executor').value,Boolean(team?.planning));
-  $('console-profile-hint').textContent=configCommand?'配置正在保存，请等待回执。':!team?(entry?.availability==='AVAILABLE'?'选择后，新目标会使用这套 Planner 配置。':entry?.availability==='DISABLED_BY_OPERATOR'?'此 Agent 已停用；当前选择可保存为配置草稿。':entry?.availability==='UNAVAILABLE'?'此 Agent 当前不可用；请选择其他 Agent 开始。':'此 Agent 待接入；可先选择模型与思考强度。'):!editable?'正在执行或交付；先暂停团队，再修改配置。':consoleProfileDirty?'有未保存的配置，保存后再继续商讨。':'配置已生效；修改后点击保存。';
-  $('save-console-planner').innerHTML=(team?'保存配置':'使用此 Planner')+' '+icon('arrow');
+  $('console-profile-hint').textContent=configCommand?(configCommand.retryable?'配置回执未确认；再次发送或保存会重用原请求，消息已保留。':'配置正在保存，请等待回执。'):!team?(entry?.availability==='AVAILABLE'?'选好 Planner 与工作项目后，直接发送第一条消息。':entry?.availability==='DISABLED_BY_OPERATOR'?'此 Agent 已停用；请选择其他 Agent 开始。':entry?.availability==='UNAVAILABLE'?'此 Agent 当前不可用；请选择其他 Agent 开始。':'此 Agent 待接入；可先选择模型与思考强度。'):!editable?'当前会话或任务正在执行，结束后可修改配置。':consoleProfileDirty?'下一条消息将自动应用所选配置；也可单独保存。':'选择模型与强度后直接发送，Reviewer 保持一致。';
+  $('save-console-planner').hidden=!team;
 }
 function syncConsoleToCreate() {
   const p=consoleProfile();$('planner-executor').value=p.executor_type;
@@ -506,6 +575,14 @@ async function refresh({ reloadCatalog=false, scan=false }={}) {
   $('refresh').setAttribute('aria-busy', 'true');
   try {
     if (!capabilities) capabilities = await request('/api/v2/capabilities');
+    if (!projectsCatalog || reloadCatalog) {
+      try {
+        const registry=await request('/api/v2/projects');
+        if(registry.schema!=='af-v2-projects-v1'||!Array.isArray(registry.projects)||registry.projects.some(p=>typeof p.project_id!=='string'||!Array.isArray(p.profiles)||p.profiles.some(a=>typeof a.profile_id!=='string')))throw new Error('项目目录格式无效。');
+        projectsCatalog=registry.projects;projectsError=null;
+      } catch {projectsCatalog=[];projectsError='无法读取已接入项目，请刷新后重试。';}
+      renderProjects();
+    }
     if (!executorCatalog || reloadCatalog || scan) {
       loadingCatalog=true;
       $('agent-scan-status').textContent=scan?'正在扫描 Agents 与模型…':'正在读取已有目录…';$('scan-agents').disabled=true;
@@ -530,7 +607,7 @@ async function refresh({ reloadCatalog=false, scan=false }={}) {
     }
     const listing = await request('/api/teams');
     if (selected && !listing.teams.some(item => item.team_id === selected)) { selected = null; team = null; workId = null; }
-    if (!selected && listing.teams.length) selected = listing.teams[0].team_id;
+    if (!selected && listing.teams.length && !firstChatAttempt?.uncertain) selected = listing.teams[0].team_id;
     $('team-count').textContent = String(listing.teams.length).padStart(2, '0');
     const id = selected;
     if (id) {
@@ -569,6 +646,95 @@ async function command(payload, baseTeam = team?.team_id) {
   await refresh();
   return result;
 }
+async function applyConsoleProfile() {
+  if($('console-planner-model-select').value==='__custom'&&!$('console-planner-model-input').value.trim())throw new Error('填写自定义模型 ID，或选择默认模型。');
+  if(!team){syncConsoleToCreate();return;}
+  if(!consoleProfileDirty&&!configCommand)return;
+  if(!consoleProfileBase || consoleProfileBase.teamId!==team.team_id)throw new Error('重新选择当前团队后再配置 Planner。');
+  const wanted=configCommand?.planner??consoleProfile(),base={...(configCommand?.base??consoleProfileBase)},teamId=base.teamId;
+  if(!configCommand) {
+    if(!canConfigureAgents())throw new Error('等待当前执行结束后再切换 Planner。');
+    const commandId=operationId('CMD-');
+    configCommand={teamId,commandId,role:'planner',base,planner:wanted,command:{
+      type:'configure_agents',expected_plan_revision:base.revision,expected_goal_revision:base.goalRevision,
+      expected_agent_config_revision:base.configRevision,planner:wanted,
+    }};
+  }
+  if(configCommand.role!=='planner')throw new Error('Worker 配置正在保存，等待确认后继续。');
+  const attempt=configCommand,retrying=Boolean(configCommand.retryable);
+  attempt.retryable=false;writes();
+  try {
+    try {
+      await request('/api/teams/'+encodeURIComponent(teamId)+'/commands',{command_id:attempt.commandId,command:attempt.command});
+    } catch(error) {
+      if(error.httpStatus>=400&&error.httpStatus<500){if(!retrying)configCommand=null;throw error;}
+      // A lost response cannot tell us whether the server already queued the command.
+      // Read its receipt first; any explicit retry keeps the original ID and payload.
+    }
+    const commandId=attempt.commandId,deadline=Date.now()+16000;
+    while(Date.now()<deadline) {
+      const current=await request('/api/teams/'+encodeURIComponent(teamId));
+      if(selected!==teamId)throw new Error('当前团队已切换，请重新确认消息。');
+      const receipt=current.commands.find(c=>c.command_id===commandId);
+      team=current;render();
+      if(receipt?.status==='rejected')throw new Error(receipt.reason??'Planner 配置未生效，消息尚未发送。');
+      if(receipt?.status==='applied') {
+        const saved=current.planning?.planner;
+        if(current.goal_revision!==base.goalRevision || current.planning.agent_config_revision!==base.configRevision+1 ||
+          saved?.executor_type!==wanted.executor_type || (saved.model??null)!==wanted.model || (saved.effort??null)!==wanted.effort) {
+          throw new Error('Planner 配置已被更新，请重新确认后发送。');
+        }
+        consoleProfileDirty=false;consoleProfileKey='';render();return;
+      }
+      await new Promise(resolve=>setTimeout(resolve,180));
+    }
+    throw new Error('配置仍在等待确认，消息尚未发送。请查看操作回执。');
+  } catch(error) {
+    if(configCommand===attempt){attempt.retryable=true;renderConsoleProfile();}
+    throw error;
+  }
+}
+async function startPlannerChat(message) {
+  const planner=consoleProfile(),projectId=$('console-project').value,profileId=$('console-acceptance').value;
+  const spec={project_id:projectId,profile_id:profileId,goal:message,planner,workers:createWorkersDraft};
+  const fingerprint=JSON.stringify(spec);
+  if(!firstChatAttempt||(!firstChatAttempt.uncertain&&firstChatAttempt.fingerprint!==fingerprint)) {
+    const key=operationId('chat-');
+    firstChatAttempt={fingerprint,key,message,payload:{
+      project_id:projectId,profile_id:profileId,spec:{goal:message,idempotency_key:key},
+      planning:{dispatch_mode:'human',planner,...(createWorkersDraft?{workers:structuredClone(createWorkersDraft)}:{})},
+    }};
+  }
+  const attempt=firstChatAttempt;
+  const wasUncertain=Boolean(attempt.uncertain);
+  try {
+    const result=await request('/api/teams',attempt.payload);
+    attempt.teamId=result.team_id;
+    selected=result.team_id;workId=null;editBase=null;consoleProfileDirty=false;consoleProfileKey='';
+    team=await request('/api/teams/'+encodeURIComponent(selected));
+    attempt.uncertain=false;createWorkersDraft=null;render();await refresh();
+  } catch(error) {
+    attempt.uncertain=wasUncertain||Boolean(attempt.teamId)||!(error.httpStatus>=400&&error.httpStatus<500);
+    if(attempt.uncertain)notice('创建结果尚未确认；目标与配置已保留，再次发送将重用原请求。','error');
+    throw error;
+  }
+}
+async function waitForPlannerMessage(teamId,commandId) {
+  const deadline=Date.now()+16000;
+  while(Date.now()<deadline) {
+    const current=await request('/api/teams/'+encodeURIComponent(teamId));
+    if(selected!==teamId)throw new Error('当前团队已切换，请重新确认消息。');
+    team=current;render();
+    const receipt=current.commands.find(c=>c.command_id===commandId);
+    if(receipt?.status==='rejected') {
+      const error=new Error(receipt.reason??'消息未被接收，请重新确认 Planner 配置。');
+      error.receiptRejected=true;throw error;
+    }
+    if(current.messages.some(m=>m.message_id===commandId))return;
+    await new Promise(resolve=>setTimeout(resolve,180));
+  }
+  throw new Error('消息仍在等待领取，内容已保留。请查看操作回执后再重试。');
+}
 const handle = (fn, write = true) => async event => {
   event?.preventDefault();
   if (write && pending) return;
@@ -598,6 +764,7 @@ syncNavigation();
 $('refresh').onclick = ()=>refresh({reloadCatalog:true});
 $('scan-agents').onclick=()=>refresh({scan:true});
 $('teams').onclick = handle(async event => {
+  if(pending>0||firstChatAttempt?.uncertain||chatAttempt?.uncertain)return;
   const id = event.target.closest('[data-team]')?.dataset.team;
   if (!id || id === selected) return;
   selected = id; workId = null; editBase = null; team = null; dispatchBase=null; $('planner-input').value='';
@@ -681,23 +848,39 @@ $('console-planner-model-select').onchange=()=>{
 $('console-planner-model-input').oninput=()=>{consoleProfileDirty=true;updateEffort($('console-planner-effort'),entryFor($('console-planner-executor').value,Boolean(team)),$('console-planner-model-input').value.trim());if(!team)syncConsoleToCreate();writes();};
 $('console-planner-effort').onchange=()=>consoleChanged();
 $('console-planner-form').onsubmit=handle(async()=>{
-  if($('console-planner-model-select').value==='__custom'&&!$('console-planner-model-input').value.trim())throw new Error('填写自定义模型 ID，或选择默认模型。');
-  if(!team){syncConsoleToCreate();consoleProfileDirty=false;openDialog('create-dialog');return;}
-  if(!consoleProfileBase || consoleProfileBase.teamId!==team.team_id)throw new Error('重新选择当前团队后再配置 Planner。');
-  const result=await command({type:'configure_agents',expected_plan_revision:consoleProfileBase.revision,expected_goal_revision:consoleProfileBase.goalRevision,
-    expected_agent_config_revision:consoleProfileBase.configRevision,planner:consoleProfile()},consoleProfileBase.teamId);
-  configCommand={teamId:consoleProfileBase.teamId,commandId:result.command_id,role:'planner'};
-  render();
+  await applyConsoleProfile();
 });
-$('configure-workers').onclick=()=>{if(team&&consoleProfileDirty){notice('先保存 Planner 配置，再设置 Worker Agents。');return;}openDialog('dispatch-dialog',true);};
+$('configure-workers').onclick=handle(async()=>{await applyConsoleProfile();openDialog('dispatch-dialog',true);});
+$('console-project').onchange=renderAcceptanceProfiles;
+$('console-acceptance').onchange=writes;
 $('dispatch-mode').onchange=()=>{$('create-mode-summary').textContent=$('dispatch-mode').value==='planner'?'Planner 编组并自动开工':'看过计划，再确认开工';};
 $('planner-chat-form').onsubmit=handle(async()=>{
-  if(consoleProfileDirty||configCommand)throw new Error('先保存 Planner 配置，再发送消息。');
-  const message=$('planner-input').value.trim();if(!message)throw new Error('先写下你想和 Planner 商讨的内容。');
-  await command({type:'message',agent_id:'lead',message});$('planner-input').value='';$('planner-input').focus();
+  const message=(chatAttempt?.uncertain?chatAttempt.message:firstChatAttempt?.uncertain?firstChatAttempt.message:$('planner-input').value).trim();if(!message)throw new Error('先写下你想和 Planner 商讨的内容。');
+  if(!team||firstChatAttempt?.uncertain)await startPlannerChat(message);
+  await applyConsoleProfile();
+  const teamId=team.team_id,payload={type:'message',agent_id:'lead',message,
+    expected_goal_revision:team.goal_revision,expected_agent_config_revision:team.planning.agent_config_revision??0};
+  const fingerprint=JSON.stringify({teamId,payload});
+  if(!chatAttempt||(!chatAttempt.uncertain&&chatAttempt.fingerprint!==fingerprint))chatAttempt={fingerprint,commandId:operationId('CMD-'),teamId,payload,message};
+  const attempt=chatAttempt,wasUncertain=Boolean(attempt.uncertain);
+  let postAccepted=false;
+  try {
+    await request('/api/teams/'+encodeURIComponent(attempt.teamId)+'/commands',{command:attempt.payload,command_id:attempt.commandId});
+    postAccepted=true;
+    await waitForPlannerMessage(attempt.teamId,attempt.commandId);
+  } catch(error) {
+    if(chatAttempt===attempt) {
+      if(error.receiptRejected||(!postAccepted&&!wasUncertain&&error.httpStatus>=400&&error.httpStatus<500))chatAttempt=null;
+      else attempt.uncertain=true;
+    }
+    throw error;
+  }
+  chatAttempt=null;firstChatAttempt=null;
+  $('planner-input').value='';$('planner-input').focus();await refresh();
+  notice('消息已发送，Planner 正在领取。');
 });
 for(const suggestion of document.querySelectorAll('[data-prompt]'))suggestion.onclick=()=>{$('planner-input').value=suggestion.dataset.prompt;$('planner-input').focus();};
-$('propose-plan').onclick=handle(()=>{if(consoleProfileDirty||configCommand)throw new Error('先保存 Planner 配置，再生成行动计划。');return command({type:'propose_plan'});});
+$('propose-plan').onclick=handle(async()=>{await applyConsoleProfile();return command({type:'propose_plan'});});
 $('dispatch-workers').oninput=()=>{readDispatchDraft();renderDispatch();};
 $('worker-profiles').onchange=event=>{
   const executor=event.target.closest('[data-profile-executor]');if(executor){updateWorkerControls(executor.closest('.worker-profile'),true);writes();return;}

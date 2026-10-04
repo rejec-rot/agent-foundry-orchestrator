@@ -108,6 +108,38 @@ test('configuration uses version checks, survives restart, and duplicate command
   }finally{await c.close();fx.cleanup();}
 });
 
+test('version-bound Planner messages reject stale configuration and goal snapshots without launching a model',async()=>{
+  const fx=plannerFixture(),c=controller(fx);
+  try {
+    fx.send(settings(c,fx,{planner:{executor_type:'writer',model:'saved-model',effort:'high'}}),'CMD-new-profile');await c.tick();
+    for(const [id,expected_goal_revision,expected_agent_config_revision] of [['CMD-old-profile',1,0],['CMD-old-goal',0,1]]) {
+      fx.send({type:'message',agent_id:'lead',message:'保持所选模型',expected_goal_revision,expected_agent_config_revision},id);await c.tick();
+      assert.equal(c.read(fx.team.team_id).commands[id].code,'TEAM_VERSION_CONFLICT');
+      assert.ok(!c.read(fx.team.team_id).messages.some(m=>m.message_id===id));
+    }
+    assert.equal(fx.calls.length,0);
+    fx.send({type:'message',agent_id:'lead',message:'现在使用已确认模型',expected_goal_revision:1,expected_agent_config_revision:1},'CMD-current');
+    await drive(c,()=>c.read(fx.team.team_id).commands['CMD-current']?.status==='applied');
+    assert.equal(fx.calls[0].model,'saved-model');assert.equal(fx.calls[0].effort,'high');
+  }finally{await c.close();fx.cleanup();}
+});
+
+test('queued Planner messages keep their configuration until consumed, even when a later configure command shares the tick',async()=>{
+  const fx=plannerFixture(),c=controller(fx);
+  try {
+    const change=settings(c,fx,{planner:{executor_type:'writer',model:'new-planner-model'}});
+    const {command_id}=fx.send({type:'message',agent_id:'lead',message:'用当前模型商讨',expected_goal_revision:1,expected_agent_config_revision:0},'CMD-bound-chat');
+    await c.command(fx.team.team_id,{command_id,command:{type:'message',agent_id:'lead',message:'用当前模型商讨',expected_goal_revision:1,expected_agent_config_revision:0}});
+    fx.send(change,'CMD-later-config');await c.tick();
+    assert.equal(c.read(fx.team.team_id).commands['CMD-later-config'].status,'rejected');
+    assert.match(c.read(fx.team.team_id).commands['CMD-later-config'].reason,/queued Planner messages/);
+    await drive(c,()=>c.read(fx.team.team_id).commands['CMD-bound-chat']?.status==='applied');
+    assert.equal(fx.calls[0].model,'planning-model');
+    fx.send(settings(c,fx,{planner:{executor_type:'writer',model:'new-planner-model'}}),'CMD-after-chat');await c.tick();
+    assert.equal(c.read(fx.team.team_id).commands['CMD-after-chat'].status,'applied');
+  }finally{await c.close();fx.cleanup();}
+});
+
 test('changing a proposal configuration invalidates earlier approval snapshots',async()=>{
   const fx=plannerFixture(),c=new TeamController({...fx.options,...fx.io,autoDeliver:false});
   try {

@@ -10,14 +10,16 @@
 
 ## 新人先看：一个目标怎样完成
 
-创建页只需填写目标、项目并选择 Planner 的 Agent、模型与思考强度；开工授权和验收参数放在“更多设置”。协作页的 Planner 面板也可直接选择这三项，“你的团队”旁的“选择 Worker Agents”可预设每位 Worker 的配置。保存配置后，先与 Planner 商讨边界和验收，再生成行动提案。未预设时由 Planner 推荐编组，你确认或调整后开工；也可授权 Planner 自动开工。Planner 整合成果后，同配置 Reviewer 通过独立会话复检，交付服务继续授权、验收和正式提升。
+Planner 使用整行聊天面板。选择 Agent、模型、思考强度及已接入项目后，直接发送第一条消息建立商讨会话；无需点击“使用此 Planner”或再填一遍目标。单一项目和单一验收标准自动选中，多项时由你选择。缺少操作权限、项目或可用模型的原因显示在输入框旁。现有团队切换模型后，下一条消息会先等待配置生效，再发送给所选 Planner；断网或版本冲突保留消息，显式重试复用提交标识。
+
+“选择 Worker Agents”可预设每位 Worker 的配置。先与 Planner 商讨边界和验收，再生成行动提案。直接聊天默认由你确认计划和编组后开工；独立的新建目标表单仍可授权 Planner 自动开工。未预设时由 Planner 推荐编组。同配置 Reviewer 通过独立会话复检，交付服务继续授权、验收和正式提升。
 
 下面的 Mermaid 流程图可在 GitHub README 中直接查看。主线按从上到下阅读，虚线表示用户介入与成员通信。不支持 Mermaid 的阅读器可打开[协作流程 SVG](docs/diagrams/team-workflow.svg)。
 
 ```mermaid
 flowchart TD
     USER["操作员提交目标、项目与验收要求"] --> MODEL["选择 Planner Agent、模型与思考强度<br/>Reviewer 沿用配置，独立会话"]
-    MODEL --> CHAT["与 Planner 聊天<br/>商讨目标、约束与验收"]
+    MODEL --> CHAT["直接发送第一条消息，建立商讨会话<br/>商讨目标、约束与验收"]
     CHAT --> PLAN["Planner 提交行动计划<br/>遵循预设编组，或推荐数量、模型与分工"]
     PLAN --> MODE{"谁来决定开工？"}
     MODE -- "操作员" --> CONFIRM["确认编组和每项任务分配<br/>未确认时不派工"]
@@ -108,13 +110,15 @@ Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图�
 
 ## 团队入口
 
-浏览器默认进入 Persona 5 视觉风格协作空间：红黑白、斜切海报排版、原创面具、漫画对话气泡、行动卡片和四步流程条。协作空间与交付工作台共用本地加载的 Anton、Space Grotesk 和得意黑，以及带错位底板、箭头区和按压反馈的按钮。Planner 对话常驻左侧，计划与派工确认集中在右侧；创建目标、Worker 编组、定向调整和运行记录使用弹窗。手机端成员横向滚动，减少顶部占用。
+浏览器默认进入 Persona 5 视觉风格协作空间：红黑白、斜切海报排版、原创面具、漫画对话气泡、行动卡片和四步流程条。协作空间与交付工作台共用本地加载的 Anton、Space Grotesk 和得意黑，以及带错位底板、箭头区和按压反馈的按钮。Planner 对话独占整行，计划与派工确认位于下方；聊天区放大文字和发送按钮。创建目标、Worker 编组、定向调整和运行记录使用弹窗。手机端成员横向滚动，减少顶部占用。
 
 两页的面板、成员卡片、工作项、表单、折叠设置与全部弹窗共用 P5 边框：黑色描边、斜切角、错位底板，以及表示选中或执行状态的红色强调。文字输入保留完整区域，弹窗仍使用原生焦点与滚动；高对比模式保留系统边框。交付队列独立滚动，长卡片保持文字和状态标签的完整高度。
 
 [Planner 桌面预览](docs/previews/persona-workspace/planner-desktop.png) · [Planner 手机预览](docs/previews/persona-workspace/planner-mobile.png) · [手机编组窗口](docs/previews/persona-workspace/planner-dispatch-mobile.png) · [界面与验证说明](docs/design/PERSONA-COLLABORATION-WORKSPACE.md)
 
 [常驻 Planner 选择](docs/previews/persona-workspace/planner-config-desktop.png) · [逐位 Worker 配置](docs/previews/persona-workspace/worker-config-desktop.png) · [手机 Worker 配置](docs/previews/persona-workspace/worker-config-mobile.png)
+
+[直接聊天桌面预览](docs/previews/persona-workspace/planner-ready-desktop.png) · [直接聊天手机预览](docs/previews/persona-workspace/planner-ready-mobile.png)
 
 [交付工作台桌面预览](docs/previews/persona-workspace/workbench-desktop.png) · [交付工作台手机预览](docs/previews/persona-workspace/workbench-mobile.png)
 
@@ -128,6 +132,8 @@ node af-admin.mjs web serve --port 8787
 交付工作台位于 `/workbench.html`，采用同一套 Persona 视觉语言；旧的 `/#TASK-*` 详情链接会保留任务标识并转到交付工作台。浏览器写操作仍使用下文的 `--allow-write` 与操作令牌配置。
 
 先按既有部署要求配置项目注册表、验收 profile 和执行器隔离。目标 spec 保留 V2 的 `goal`、`target_path`、`acceptance`、`idempotency_key`。Planner/Worker 的选择属于鉴权后的团队配置，服务端仍检查执行器是否可用；验收 profile 与项目权限仍由受信注册表绑定。可选模型使用执行器支持的模型 ID，留空沿用其 CLI 默认配置。
+
+直接聊天读取 `GET /api/v2/projects` 的项目 ID 与验收标准 ID。创建时提交顶层 `project_id`、`profile_id` 和 `spec: {goal, idempotency_key}`，由服务端从同一受信注册表解析路径与验收命令；此模式拒绝调用方同时提供路径或验收覆盖。配置 `AF_PROJECTS_FILE`、`AF_WEB_TOKEN_FILE` 后以 `--allow-write --root` 启动服务，在页面连接一次操作令牌即可发送。只读启动仍可浏览。
 
 将下面的示例保存为 `team-goal.json`，并替换项目路径、目标与验收命令。验收命令必须与项目已登记的受信 profile 一致；`idempotency_key` 用于识别同一提交的重试。
 
@@ -324,7 +330,7 @@ GP-4 是运行时护栏探针，不等于完整 V2 冒烟。报告应分别列�
 | `af-team.mjs`、`af-admin.mjs team` | 团队创建、查询、控制与控制器入口 |
 | `lib/team/` | 目标与成员模型、工作依赖、通信、调度、成果整合及交付衔接 |
 | `web/teams.html`、`server/read-api.mjs` | 团队页面与 HTTP 入口 |
-| `tests/team-*.test.mjs`、`qa/team-browser.mjs`、`qa/planner-browser.mjs` | 团队回归与真实浏览器检查；模型输出使用受控适配器 |
+| `tests/team-*.test.mjs`、`qa/team-browser.mjs`、`qa/planner-browser.mjs`、`qa/planner-first-chat-browser.mjs` | 团队回归、模型切换恢复与空工作台首次聊天检查；模型输出使用受控适配器 |
 | `prototypes/` | 前端视觉与交互原型，使用模拟数据，与正式团队页面分别维护 |
 | [协作核心决策](docs/adr/0011-team-collaboration-controller.md) | 控制器、持久化、恢复与执行边界 |
 | `orchestrator.mjs` | 任务入口、执行与恢复 |

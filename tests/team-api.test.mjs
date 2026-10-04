@@ -1,6 +1,6 @@
 import {test,mock} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdirSync,writeFileSync,readdirSync,readFileSync} from 'node:fs';
+import {mkdirSync,writeFileSync,readdirSync,readFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {fixture,adaptersFor,drive} from './helpers/team-fixture.mjs';
 import {startReadApi} from '../server/read-api.mjs';
@@ -92,6 +92,76 @@ test('team creation binds a registered delivery profile and returns one team for
     const again=await post(server.url,'/api/teams',{spec,worker_count:3});assert.equal(again.status,200);assert.equal((await again.json()).model.team_id,created.team_id);
     assert.equal((await post(server.url,'/api/teams',{spec,worker_count:2})).status,422);
     assert.equal((await post(server.url,'/api/teams',{spec:{...spec,idempotency_key:'forged',target_path:fx.root},worker_count:3})).status,422);
+  }finally{await server.close();fx.cleanup();}
+});
+
+test('project listing returns only canonical IDs, is read-only, and reports an absent registry',async()=>{
+  const fx=fixture(),server=await serve(fx,{redact:true}),registryFile=join(fx.root,'projects.json');
+  try {
+    const original=readFileSync(registryFile,'utf8'),tasksBefore=readdirSync(fx.options.tasksDir).sort(),runtimeBefore=readdirSync(fx.options.runtimeDir).sort();
+    const response=await fetch(server.url+'/api/v2/projects');assert.equal(response.status,200);
+    const body=await response.json();assert.equal(body.model.schema,'af-v2-projects-v1');assert.equal(body.model.configured,true);
+    assert.deepEqual(body.model.projects,[{project_id:'team-api',profiles:[{profile_id:'default'}]}]);
+    assert.equal(body.paths_redacted,true);assert.equal(body.path_mode,'hash');
+    assert.doesNotMatch(JSON.stringify(body),/canonical|workspaces|gate\.test\.mjs|acceptance\.command/);
+    assert.deepEqual(readdirSync(fx.options.tasksDir).sort(),tasksBefore,'GET must not create tasks');
+    assert.deepEqual(readdirSync(fx.options.runtimeDir).sort(),runtimeBefore,'GET must not create runtime state');
+    assert.equal(readFileSync(registryFile,'utf8'),original,'GET must not rewrite the canonical registry');
+
+    rmSync(registryFile);
+    const missing=await fetch(server.url+'/api/v2/projects');assert.equal(missing.status,200);
+    const missingBody=await missing.json();assert.equal(missingBody.model.schema,'af-v2-projects-v1');
+    assert.equal(missingBody.model.configured,false);assert.deepEqual(missingBody.model.projects,[]);
+  }finally{await server.close();fx.cleanup();}
+});
+
+test('registry-scoped team creation uses the selected trusted profile and is idempotent',async()=>{
+  const fx=fixture(),server=await serve(fx);
+  const request={project_id:'team-api',profile_id:'default',spec:{goal:'create from the planner chat',idempotency_key:'project-scoped-team-api'}};
+  try {
+    const before=readdirSync(fx.options.tasksDir).sort();
+    assert.equal((await post(server.url,'/api/teams',request,{})).status,401,'project-scoped creation remains authenticated');
+    assert.deepEqual(readdirSync(fx.options.tasksDir).sort(),before);
+
+    const response=await post(server.url,'/api/teams',request);assert.equal(response.status,201,JSON.stringify(await response.clone().json()));
+    const created=(await response.json()).model,team=readTeam(fx.options.runtimeDir,created.team_id);
+    const task=JSON.parse(readFileSync(join(fx.options.tasksDir,`${created.task_id}.json`),'utf8'));
+    assert.equal(task.fixture_dir,fx.repo,'target path comes from the registered project');
+    assert.deepEqual(task.acceptance_cmd,{command:'node',args:['--test','tests/gate.test.mjs']});
+    assert.equal(task.trusted_import.acceptance.dependency_fixture_id,'team-api');
+    assert.ok(task.trusted_import.acceptance.acceptance_profile_digest,'V2 task binds the resolved trusted profile');
+
+    const afterFirst=readdirSync(fx.options.tasksDir).sort();
+    const again=await post(server.url,'/api/teams',request);assert.equal(again.status,200);
+    assert.equal((await again.json()).model.team_id,created.team_id);
+    assert.deepEqual(readdirSync(fx.options.tasksDir).sort(),afterFirst,'an idempotent retry must not create another task');
+  }finally{await server.close();fx.cleanup();}
+});
+
+test('registry-scoped team creation fails closed for unknown or ambiguous IDs and caller-supplied trust fields',async()=>{
+  const fx=fixture(),server=await serve(fx),registryFile=join(fx.root,'projects.json');
+  try {
+    const beforeTasks=readdirSync(fx.options.tasksDir).sort(),beforeRuntime=readdirSync(fx.options.runtimeDir).sort();
+    const cases=[
+      {project_id:'missing-project',profile_id:'default',spec:{goal:'x',idempotency_key:'unknown-project'}},
+      {project_id:'team-api',profile_id:'missing-profile',spec:{goal:'x',idempotency_key:'unknown-profile'}},
+      {project_id:'team-api',profile_id:'default',spec:{goal:'x',idempotency_key:'caller-path',target_path:fx.root}},
+      {project_id:'team-api',profile_id:'default',spec:{goal:'x',idempotency_key:'caller-acceptance',acceptance:{command:'sh',args:['-c','echo untrusted']}}},
+      {project_id:'team-api',profile_id:'default',target_path:fx.root,spec:{goal:'x',idempotency_key:'top-level-path'}},
+    ];
+    for(const request of cases) {
+      const response=await post(server.url,'/api/teams',request);assert.equal(response.status,422,JSON.stringify(await response.clone().json()));
+      assert.deepEqual(readdirSync(fx.options.tasksDir).sort(),beforeTasks);
+      assert.deepEqual(readdirSync(fx.options.runtimeDir).sort(),beforeRuntime);
+    }
+
+    const registry=JSON.parse(readFileSync(registryFile,'utf8'));
+    registry.projects[0].acceptance_profiles.push({...registry.projects[0].acceptance_profiles[0]});
+    writeFileSync(registryFile,JSON.stringify(registry));
+    const ambiguous=await post(server.url,'/api/teams',{project_id:'team-api',profile_id:'default',spec:{goal:'x',idempotency_key:'ambiguous-profile'}});
+    assert.equal(ambiguous.status,422);assert.match((await ambiguous.json()).model.reason,/ambiguous/);
+    assert.deepEqual(readdirSync(fx.options.tasksDir).sort(),beforeTasks);
+    assert.deepEqual(readdirSync(fx.options.runtimeDir).sort(),beforeRuntime);
   }finally{await server.close();fx.cleanup();}
 });
 

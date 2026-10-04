@@ -48,6 +48,7 @@ function releaseTeamPoll(){const res=heldTeamResponse;heldTeamResponse=null;json
 const server=createServer((req,res)=>{
   const url=new URL(req.url,'http://127.0.0.1');
   if(url.pathname==='/api/v2/capabilities')return json(res,{read:{workspace:true},write:{team_command:true}});
+  if(url.pathname==='/api/v2/projects')return json(res,{schema:'af-v2-projects-v1',configured:false,projects:[]});
   if(url.pathname==='/api/v2/executors'){
     catalogReads++;
     if(url.searchParams.get('scan')!=='1')return json(res,{...inventory,scan:null});
@@ -116,7 +117,8 @@ try{
   check('scan summary distinguishes installed, matched, and dispatchable counts',await browser.evaluate("document.getElementById('agent-scan-status').textContent.includes('7 个已安装客户端 / 8 个已匹配适配器 / 5 个当前可派工')"));
   check('discovery details show protocol, adapter status, and public source',await browser.evaluate("(()=>{const cards=[...document.querySelectorAll('.agent-inventory-card')];return cards.length===9&&document.querySelector('.agent-inventory-card[data-adapter=unsupported]')?.textContent.includes('Kiro client detected')&&document.querySelector('.agent-inventory-card[data-adapter=matched] .agent-inventory-heading span')?.textContent==='RPC'})()"));
   check('Planner marks DSH as Worker-only and Kiro as pending adaptation',await browser.evaluate("(()=>{const options=[...document.getElementById('planner-executor').options];return options.find(o=>o.value==='dsh')?.disabled&&options.find(o=>o.value==='dsh')?.textContent.includes('仅 Worker')&&options.find(o=>o.value==='kiro')?.disabled&&options.find(o=>o.value==='kiro')?.textContent.includes('待适配')})()"));
-  check('new-team Worker options include DSH and exclude unsupported Kiro',await browser.evaluate("(()=>{document.getElementById('configure-workers').click();const options=[...document.querySelectorAll('[data-profile-executor]')[0].options];return options.some(o=>o.value==='dsh'&&!o.disabled)&&!options.some(o=>o.value==='kiro')})()"));
+  await browser.click('#configure-workers');await browser.waitFor("document.getElementById('dispatch-dialog').open && document.querySelector('[data-profile-executor]')");
+  check('new-team Worker options include DSH and exclude unsupported Kiro',await browser.evaluate("(()=>{const options=[...document.querySelectorAll('[data-profile-executor]')[0].options];return options.some(o=>o.value==='dsh'&&!o.disabled)&&!options.some(o=>o.value==='kiro')})()"));
   await browser.evaluate("(()=>{const s=document.querySelectorAll('[data-profile-executor]')[0];s.value='dsh';s.dispatchEvent(new Event('change',{bubbles:true}))})()");
   check('DSH Worker selection uses the default model and effort only',await browser.evaluate("document.querySelectorAll('[data-profile-model-select]')[0].disabled&&document.querySelectorAll('[data-profile-effort]')[0].disabled"));
   await browser.evaluate("(()=>{const s=document.querySelector('[data-profile-executor]');s.value='cline';s.dispatchEvent(new Event('change',{bubbles:true}))})()");

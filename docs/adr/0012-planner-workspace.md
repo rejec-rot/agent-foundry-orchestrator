@@ -43,6 +43,12 @@ Cline ACP 只返回模型选项，逐模型能力来自当前安装 SDK 的 `get
 
 团队从 `DISCUSSING` 开始。`message` 发给 `lead` 会启动只讨论、不编辑文件的 Planner 回合；回复来自受控运行的真实 `summary`，持久化到带 `from_run_id` 的对话记录。`propose_plan` 请求计划，Planner 返回 `workers` 推荐编组与完整工作图。
 
+空工作台可以从整行 Planner 面板直接开始聊天。`GET /api/v2/projects` 返回 `schema: af-v2-projects-v1`、`configured` 和 `projects: [{project_id, profiles: [{profile_id}]}]`，不暴露项目路径、验收命令或凭据。缺少注册表返回未配置的空列表；损坏或不可读的注册表拒绝读取。项目与验收标准只有一项时自动选中，多项必须显式选择。
+
+首次创建或消息提交结果不确定时，页面冻结原文及相关选择，保留完整 payload 与提交标识。回执确认前的显式重试复用原请求；后台读取确认消息已接收后解锁，明确拒绝时保留原文供修改。提交过程中也锁定输入及快捷建议，避免新草稿被旧请求的成功回调清空。
+
+第一次发送通过 `POST /api/teams` 提交顶层 `project_id` / `profile_id`、`spec: {goal, idempotency_key}` 和 `planning`。此创建模式拒绝顶层或 spec 中的路径、验收覆盖及嵌套项目/profile ID；服务端解析 canonical registry 中唯一匹配的 profile，再调用既有 Team / V2 intake，保留鉴权、路径授权、验收 allowlist 和幂等检查。原 `target_path` / `acceptance` 创建方式仍可用。直接聊天固定使用 `dispatch_mode: human`，Worker 在人工确认计划后开工。
+
 `dispatch_mode: human` 将提案保留在 `PLAN_READY`，工作项为 `DRAFT`。`start` / `resume` 不能绕过确认。`dispatch_mode: planner` 验证推荐编组后自动开工。
 
 手动确认通过 `POST /api/teams/:id/commands` 或 CLI 的 `team command --file` 提交，例如：
@@ -80,6 +86,8 @@ Planner 面板常驻 Agent、模型与思考强度选项。“选择 Worker Agen
 
 `planner` 和 `workers` 至少提供一项。操作在 `DISCUSSING`、`PLAN_READY` 或从商讨、规划、工作、阻塞阶段暂停且全部执行范围已停止的团队中应用。开工后只允许修改成员配置，人数保持不变。保存不会启动新运行；清除 `effort` 恢复执行器默认值。配置更新原子写入团队日志，增加 `planning.agent_config_revision`，重放相同命令不重复应用。
 
+Planner 选项无需单独保存后才能聊天。发送时若配置有变化，先提交 `configure_agents` 并读取同一命令的 `applied` 回执，核对目标、配置版本、模型与强度后再发送消息。提交响应丢失时保留原命令 ID 和内容；仅在操作员显式重试时重发 POST。回执超时、拒绝或版本冲突保留输入及草稿，避免使用旧模型。消息带可选的 `expected_goal_revision` 和 `expected_agent_config_revision`；控制器拒绝过期快照。已有排队或领取中的 Planner 消息时禁止变更 Agent 配置，防止同一轮控制器命令改变消息的接收模型。旧客户端不带这些可选消息字段时保留原契约。
+
 提案尚未确认时，修改配置会增加计划版本；删掉 Worker 后，其工作项暂时分配给第一个 Worker，确认窗口仍要求逐项审核。批准提案同时检查配置版本，避免旧窗口覆盖刚保存的选择；未修改过配置的旧客户端仍可使用原确认字段。操作员预设约束 Planner 的推荐，数量不一致会在派工前阻塞。团队日志是配置事实来源，交付 runner 持有任务锁后将最新 Planner 配置绑定到任务与 Reviewer；历史运行记录和已接受成果保持不变。
 
 ## 执行中改向
@@ -94,4 +102,4 @@ Planner 回合不能修改工作文件。版本或工作图变化后，旧 Plann
 
 成果仍经过既有停止证明、快照密封、候选绑定、授权、受信验收与最终提升。选择同模型不会跳过这些交付检查。
 
-验证入口：`tests/native-catalog.test.mjs`、`tests/agent-options.test.mjs`、`tests/executor-catalog-api.test.mjs`、`tests/team-agent-configuration.test.mjs`、`tests/team-planner.test.mjs`、`tests/team-api.test.mjs`、`qa/planner-browser.mjs`。目录协议验证使用受控子进程，覆盖分页、provider 选择、准确等级、超时和无推理调用；浏览器及后端场景使用受控模型输出，真实 HTTP、控制器、文件系统和版本校验参与执行。
+验证入口：`tests/native-catalog.test.mjs`、`tests/agent-options.test.mjs`、`tests/executor-catalog-api.test.mjs`、`tests/team-agent-configuration.test.mjs`、`tests/team-planner.test.mjs`、`tests/team-api.test.mjs`、`qa/planner-browser.mjs`、`qa/planner-first-chat-browser.mjs`。目录协议验证使用受控子进程，覆盖分页、provider 选择、准确等级、超时和无推理调用。首次聊天的浏览器场景控制创建响应，真实 Team HTTP、持久消息与控制器参与执行；可信项目创建由 API 测试独立验证。配置及创建响应丢失、明确拒绝和版本冲突均有恢复检查，模型输出使用受控适配器。

@@ -49,13 +49,53 @@ try {
   await browser.evaluate("document.getElementById('console-planner-executor').value='secondary';document.getElementById('console-planner-executor').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-model-select').value='worker-no-thinking';document.getElementById('console-planner-model-select').dispatchEvent(new Event('change',{bubbles:true}))");
   assert.equal(await browser.evaluate("document.getElementById('console-planner-effort').disabled"),true,'console model choices gate reasoning effort');
   await browser.evaluate("document.getElementById('console-planner-model-select').value='worker-deep';document.getElementById('console-planner-model-select').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-effort').value='high';document.getElementById('console-planner-effort').dispatchEvent(new Event('change',{bubbles:true}))");
-  assert.equal(await browser.evaluate("document.getElementById('planner-send').disabled"),true,'unsaved configuration cannot silently use the old Planner');
+  assert.equal(await browser.evaluate("document.getElementById('planner-send').disabled"),false,'sending can automatically apply a new Planner profile');
   await browser.click('#scan-agents');await browser.waitFor("window.agentCatalogRequests===1&&!document.getElementById('scan-agents').disabled");
-  assert.equal(await browser.evaluate("document.getElementById('console-planner-model-select').value==='worker-deep'&&document.getElementById('console-planner-effort').value==='high'&&document.getElementById('planner-send').disabled"),true,'rescanning preserves an unsaved Planner profile');
-  await browser.click('#save-console-planner');await browser.waitFor("document.getElementById('planner-model')?.textContent.includes('secondary / worker-deep') && !document.getElementById('propose-plan').disabled");
+  assert.equal(await browser.evaluate("document.getElementById('console-planner-model-select').value==='worker-deep'&&document.getElementById('console-planner-effort').value==='high'&&!document.getElementById('planner-send').disabled"),true,'rescanning preserves an unsaved Planner profile');
+  await browser.evaluate(`(()=>{
+    const nativeFetch=window.fetch;window.configRequests=[];window.failConfiguration=true;window.failTeamRead=false;
+    window.fetch=async(url,...options)=>{
+      const body=options[0]?.body?JSON.parse(options[0].body):null;
+      if(body?.command?.type==='configure_agents') {
+        window.configRequests.push(body.command_id);
+        if(window.failConfiguration){window.failTeamRead=true;throw new TypeError('controlled connection loss before POST');}
+        if(window.configRequests.length===2)return new Response(JSON.stringify({model:{reason:'controlled temporary authentication failure'}}),{status:401,headers:{'content-type':'application/json'}});
+        const response=await nativeFetch(url,...options);
+        if(window.configRequests.length===3)throw new TypeError('controlled response loss after POST');
+        return response;
+      }
+      if(window.failTeamRead&&String(url).includes('/api/teams/')){window.failTeamRead=false;throw new TypeError('controlled receipt connection loss');}
+      return nativeFetch(url,...options);
+    };
+  })()`);
+  await browser.evaluate("document.getElementById('planner-input').value='先商讨模型选择，暂不规划。'");
+  await browser.click('#planner-send');await browser.waitFor("document.getElementById('console-profile-hint').textContent.includes('回执未确认')&&!document.getElementById('planner-send').disabled");
+  assert.equal(fx.calls.length,0,'uncertain configuration does not send the chat to the old model');
+  assert.equal(await browser.evaluate("document.getElementById('planner-input').value==='先商讨模型选择，暂不规划。'&&document.getElementById('console-planner-executor').disabled"),true,'uncertain configuration keeps the message and frozen profile');
+  await browser.evaluate('window.failConfiguration=false');
+  await browser.click('#planner-send');await browser.waitFor("document.getElementById('notice').textContent.includes('controlled temporary authentication failure')&&!document.getElementById('planner-send').disabled");
+  assert.equal(await browser.evaluate("document.getElementById('console-profile-hint').textContent.includes('回执未确认')&&document.getElementById('planner-input').value==='先商讨模型选择，暂不规划。'"),true,'an authentication failure on retry cannot discard an earlier uncertain configuration');
+  await browser.click('#planner-send');await browser.waitFor("document.getElementById('planner-model')?.textContent.includes('secondary / worker-deep') && document.getElementById('planner-conversation').textContent.includes('建议先明确') && !document.getElementById('propose-plan').disabled");
+  assert.equal(await browser.evaluate('window.configRequests.length===3&&new Set(window.configRequests).size===1'),true,'an explicit retry reuses the exact configuration command ID');
+  assert.equal(controller.read(fx.team.team_id).planning.agent_config_revision,1,'a lost response cannot configure twice');
+  assert.equal(fx.calls[0].model,'worker-deep','direct sending uses the newly selected model');
+  assert.equal(fx.calls[0].effort,'high','direct sending uses the newly selected reasoning grade');
+  assert.equal(fx.calls.filter(x=>['a','b','c'].includes(x.work_item_id)).length,0,'direct discussion does not dispatch Workers');
+  let callsAfterChat=fx.calls.length;
+  assert.equal(await browser.evaluate("Math.abs(document.querySelector('.planner-console').getBoundingClientRect().width-document.querySelector('.board-columns').getBoundingClientRect().width)<2 && document.querySelector('.work-area').getBoundingClientRect().top>=document.querySelector('.planner-console').getBoundingClientRect().bottom"),true,'Planner occupies a whole row, with the plan underneath');
   assert.equal(controller.read(fx.team.team_id).planning.planner.effort,'high');
   await browser.evaluate("document.getElementById('console-planner-executor').value='writer';document.getElementById('console-planner-executor').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-model-select').value='__custom';document.getElementById('console-planner-model-select').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-model-input').value='planning-model';document.getElementById('console-planner-model-input').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('console-planner-effort').value='high';document.getElementById('console-planner-effort').dispatchEvent(new Event('change',{bubbles:true}))");
   await browser.click('#save-console-planner');await browser.waitFor("document.getElementById('planner-model')?.textContent.includes('writer / planning-model') && !document.getElementById('propose-plan').disabled");
+  await browser.evaluate("document.getElementById('console-planner-model-select').value='saved-model';document.getElementById('console-planner-model-select').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-effort').value='low';document.getElementById('console-planner-effort').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('planner-input').value='版本变动后请保留这条消息。'");
+  controller.update(fx.team.team_id,'controlled-concurrent-configuration',null,t=>t.planning.agent_config_revision++);
+  await browser.click('#planner-send');await browser.waitFor("document.getElementById('notice').textContent.includes('agent configuration changed')&&!document.getElementById('planner-send').disabled");
+  assert.equal(await browser.evaluate("document.getElementById('planner-input').value==='版本变动后请保留这条消息。'&&document.getElementById('console-planner-model-select').value==='saved-model'"),true,'a version conflict preserves the input and intended profile');
+  assert.equal(fx.calls.length,callsAfterChat,'a rejected configuration cannot chat through the old model');
+  await browser.click('#planner-send');await browser.waitFor("document.getElementById('planner-model').textContent.includes('writer / saved-model')&&!document.getElementById('planner-input').value&&!document.getElementById('propose-plan').disabled");
+  assert.equal(fx.calls.at(-1).model,'saved-model','an explicit retry uses a fresh revision and the intended model');
+  callsAfterChat=fx.calls.length;
+  await browser.evaluate("document.getElementById('console-planner-model-select').value='planning-model';document.getElementById('console-planner-model-select').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('console-planner-effort').value='high';document.getElementById('console-planner-effort').dispatchEvent(new Event('change',{bubbles:true}))");
+  await browser.click('#save-console-planner');await browser.waitFor("document.getElementById('planner-model').textContent.includes('writer / planning-model')&&!document.getElementById('propose-plan').disabled");
   await browser.click('#configure-workers');
   assert.equal(await browser.evaluate("document.getElementById('assignment-heading').hidden && document.getElementById('approve-plan').textContent.includes('保存 Worker')"),true,'Worker configuration opens before a plan exists');
   await browser.evaluate("document.querySelector('[data-profile-model-select=\"0\"]').value='__custom';document.querySelector('[data-profile-model-select=\"0\"]').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('[data-profile-model=\"0\"]').value='unverified-worker';document.querySelector('[data-profile-model=\"0\"]').dispatchEvent(new Event('input',{bubbles:true}))");
@@ -68,7 +108,7 @@ try {
   await browser.screenshot(join(outputDir,'worker-config-mobile.png'),{fullPage:false});
   await browser.click('#approve-plan');await browser.waitFor("document.getElementById('members')?.textContent.includes('worker-fast') && !document.getElementById('propose-plan').disabled");
   assert.equal(controller.read(fx.team.team_id).planning.worker_preferences[1].model,'worker-deep');
-  assert.equal(fx.calls.length,0,'configuring Agents does not start Planner or Workers');
+  assert.equal(fx.calls.length,callsAfterChat,'configuring Agents does not start Planner or Workers');
   await browser.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1080,deviceScaleFactor:1,mobile:false});
   await browser.evaluate("document.getElementById('notice').hidden=true;scrollTo({top:0,behavior:'instant'})");
   await browser.screenshot(join(outputDir,'planner-config-desktop.png'));
@@ -91,7 +131,8 @@ try {
   await browser.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1080,deviceScaleFactor:1,mobile:false});
   await browser.click('[data-prompt]');assert.ok(await browser.evaluate("document.getElementById('planner-input').value.includes('边界')"));
   await browser.evaluate(`document.getElementById('planner-input').value='先分析目标与验收要求，再帮我考虑合适的分工。'`);
-  await browser.click('#planner-send');await browser.waitFor("document.getElementById('planner-conversation')?.textContent.includes('建议先明确')");
+  await browser.click('#planner-send');await browser.waitFor("!document.getElementById('propose-plan').disabled");
+  assert.ok(fx.calls.some(x=>x.work_item_id==='discuss'&&x.model==='planning-model'),'the restored Planner receives subsequent chat');
   assert.equal(fx.calls.find(x=>x.work_item_id==='discuss').effort,'high');
   assert.equal(await browser.evaluate("Boolean(window.hacked||document.querySelector('#planner-conversation img'))"),false);
   assert.equal(fx.calls.filter(x=>['a','b','c'].includes(x.work_item_id)).length,0);
@@ -135,7 +176,7 @@ try {
   await browser.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   assert.equal(await browser.evaluate("getComputedStyle(document.querySelector('.member-card')).transitionDuration==='0s'"),true);
   assert.deepEqual(browser.errors,[]);assert.deepEqual(tickErrors,[]);
-  report={ok:true,browser:'Chromium',model_adapters:'controlled fixtures; real HTTP and controller',checks:['persistent Planner chat','escaped chat messages','manual proposal gate','no dispatch before approval','same Planner/Reviewer model display','worker count changed after planning','distinct executor profiles','per-worker models reach capsules','explicit work assignment','scoped pause before Planner revision','dependent work held','old result discarded','Planner direction receipt','unaffected artifact preserved','conversation survives reload','320–1920px responsive layouts','mobile dispatch dialog','keyboard focus','reduced motion','compact goal creation','custom model selection','executor-specific effort choices','changing Agent clears incompatible overrides','model-specific effort gating','Planner effort reaches execution','per-worker effort reaches execution','mobile create dialog','visible cockpit Agent/model/effort controls','console model-specific effort gating','unsaved Planner configuration blocks old-model chat','live Planner configuration persists','Worker settings available before planning','explicit per-Worker model dropdowns','operator Worker presets persist','configuration does not dispatch any agents','sticky mobile Worker configuration action','visible cached Agent/model catalog with explicit rescan','rescan preserves unsaved Planner choices','unknown Planner effort stays disabled','unknown Worker effort stays disabled'],verified_at:new Date().toISOString()};
+  report={ok:true,browser:'Chromium',model_adapters:'controlled fixtures; real HTTP and controller',checks:['persistent Planner chat','escaped chat messages','manual proposal gate','no dispatch before approval','same Planner/Reviewer model display','worker count changed after planning','distinct executor profiles','per-worker models reach capsules','explicit work assignment','scoped pause before Planner revision','dependent work held','old result discarded','Planner direction receipt','unaffected artifact preserved','conversation survives reload','320–1920px responsive layouts','mobile dispatch dialog','keyboard focus','reduced motion','compact goal creation','custom model selection','executor-specific effort choices','changing Agent clears incompatible overrides','model-specific effort gating','Planner effort reaches execution','per-worker effort reaches execution','mobile create dialog','visible cockpit Agent/model/effort controls','console model-specific effort gating','direct chat automatically saves the selected Planner before messaging','selected model and reasoning grade reach the direct chat capsule','direct chat never dispatches Workers','full-row Planner layout','uncertain configuration preserves the message and frozen profile','uncertain configuration never sends to the old model','explicit configuration retry keeps its command ID','authentication failure on retry preserves an uncertain configuration','lost configuration response cannot apply twice','version conflicts preserve message and profile','rejected configuration never chats through an old model','explicit conflict retry uses a fresh revision and intended model','live Planner configuration persists','Worker settings available before planning','explicit per-Worker model dropdowns','operator Worker presets persist','configuration does not dispatch any agents','sticky mobile Worker configuration action','visible cached Agent/model catalog with explicit rescan','rescan preserves unsaved Planner choices','unknown Planner effort stays disabled','unknown Worker effort stays disabled'],verified_at:new Date().toISOString()};
 } finally {
   clearInterval(timer);releaseRevision?.();browser?.close();
   if(chrome.exitCode===null&&chrome.signalCode===null)await new Promise(resolve=>{const timeout=setTimeout(()=>signalTree(chrome,'SIGKILL'),5000);chrome.once('close',()=>{clearTimeout(timeout);resolve();});signalTree(chrome,'SIGTERM');});
