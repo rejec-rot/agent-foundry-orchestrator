@@ -1,5 +1,36 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Jev Planner Decision Advice — 2026-10-04
+
+| Field | Verified value |
+|---|---|
+| Code commit | [`b8297956dc7e7268c1e688930bf2512b4b64f55e`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/b8297956dc7e7268c1e688930bf2512b4b64f55e) |
+| Full regression | 932 tests: 927 passed, 0 failed, 5 existing environment-gated skips at 2026-10-04T11:58:43.079Z |
+| Architecture invariants | 6/6 at 2026-10-04T12:00:02.029Z; independently repeated during final review |
+| Planner / authenticated workbench browser | 57/57 at 2026-10-04T11:53:24.905Z; 26/26 at 2026-10-04T11:58:43.925Z |
+| Simulated workflow and browser | 54/54, nine stages at 2026-10-04T12:01:40.981Z; real Node acceptance 2/2, temporary Git promotion |
+| Independent review | Non-author final PASS; independent advisor/integration 17/17, Planner/API 29/29, error advisory 11/11, architecture 6/6 |
+| Real Jev connectivity | Subsequent single-question and batched probes returned HTTP 200; batch minimum confidence 43% used normal fallback; first probe was unavailable |
+| Actual host preview | Jev explicitly configured; one metadata scan found 114 models at 2026-10-04T11:58:45.363Z; subsequent cached GET unchanged |
+
+Optional Jev suggestions now reach existing Planner plan, scoped revision and
+coordination runs. Typed choices retain human preferences and exact verified
+model effort grades. Planner remains responsible for its result, and human
+confirmation, independent Reviewer and Trusted Import retain their existing
+checks. Prelaunch consultation can be cancelled with actual none-scope evidence;
+late or superseded advice does not start an Agent. Public status/history records
+are bounded, escaped, revision-aware and contain no credentials or raw requests.
+
+Startup configuration is explicit literal data from a private 0600 file, never
+shell execution. Both Planner advice and the previously dormant error overlay
+use bounded sanitized metadata and a three-second, single-attempt budget.
+No scheduler, registry, database or governance plane is introduced.
+
+Simulation clearly labels virtual Jev responses, Agents and termination proof.
+Live probes use synthetic metadata and start no real team. Per-model execution
+and live-team decision quality are outside this verification. See the
+[implementation and verification report](docs/reviews/2026-10-04-jev-planner-advisor.md).
+
 ## V2 Simulated Workflow Replay — 2026-10-04
 
 | Field | Verified value |
