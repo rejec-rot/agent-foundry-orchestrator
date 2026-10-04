@@ -1,5 +1,36 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Final System Accuracy Review — 2026-10-04
+
+| Field | Verified value |
+|---|---|
+| Code commit | [`747cab8a81c0edfbbee7b80dbb2599c47488277d`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/747cab8a81c0edfbbee7b80dbb2599c47488277d) |
+| Full regression | 904 tests: 899 passed, 0 failed, 5 existing environment-gated skips |
+| Regression completed at | 2026-10-04T06:55:16Z |
+| Architecture invariants | 6/6 passed at 2026-10-04T06:54:32Z |
+| Browser verification | 240/240: Planner 57, first-chat 46, legacy teams 23, discovery 35, project picker 19, workbench read 34 and write 26 |
+| Targeted regression | Pi/catalog 11/11, including a real concurrent HTTP scan with a held native-query fixture |
+| Independent review | Non-author PASS on final production/cache-race and QA diff; independent Planner browser 57/57 |
+| Actual host preview | Updated process; one explicit native metadata scan completed at 2026-10-04T06:57:03Z; later cached GET preserved identical models and timestamps |
+
+Pi rejects duplicate complete provider/model identities rather than choosing a
+last record with potentially incorrect reasoning grades. Explicit scans clear
+missing-client catalogs after shared queries settle, preventing late query results
+from reviving removed clients. Installation derives from current local discovery;
+scan failure counts exclude uninstalled or operator-disabled clients. Cached page
+reads still launch no native catalog clients, and no admission rule is relaxed.
+
+Browser checks follow the current unified Planner entry and Worker task navigation.
+The Planner fixture controls native health and uses the process-scoped test registry;
+the deployed registry and operator policy are unchanged. Navigation readiness checks
+retry only explicit destroyed-context errors. README/design and the
+[accuracy report](docs/reviews/2026-10-04-final-system-review.md) record the exact
+scope, counts, current unavailable agents and unverified model metadata.
+
+Workflow tests use controlled model adapters. The host scan requests metadata only;
+no real team or model prompt was created. Individual live provider execution and
+the five pre-existing environment gates are not claimed as verified.
+
 ## V2 Delivery Persona Palette — 2026-10-04
 
 | Field | Verified value |
