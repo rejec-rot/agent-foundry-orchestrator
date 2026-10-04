@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fixture } from './helpers/team-fixture.mjs';
 import { startReadApi } from '../server/read-api.mjs';
 import { loadProjectRegistry, PROJECT_REGISTRY_SCHEMA } from '../lib/projects.mjs';
+import { ADAPTERS } from '../lib/adapters.mjs';
 
 const TOKEN = 'project-picker-test-token';
 const AUTH = { authorization: `Bearer ${TOKEN}`, 'x-af-csrf': '1' };
@@ -19,7 +20,7 @@ function post(url, body, headers = AUTH) {
   });
 }
 
-async function setup({ acceptanceFile = null, assets = [], allowRecord = true, extraProject = null, registrySymlink = false } = {}) {
+async function setup({ acceptanceFile = null, assets = [], allowRecord = true, extraProject = null, registrySymlink = false, redact = true } = {}) {
   const fx = fixture();
   const browseRoot = join(fx.root, 'browse');
   const selectedRoot = join(browseRoot, 'new-project');
@@ -43,7 +44,7 @@ async function setup({ acceptanceFile = null, assets = [], allowRecord = true, e
   if (registrySymlink) symlinkSync(registryTargetFile, registryFile);
   const server = await startReadApi({
     roots: { tasks: fx.options.tasksDir, locks: fx.options.locksDir, runtime: fx.options.runtimeDir, alerts: join(fx.root, 'alerts.jsonl') },
-    allowedRoots: [fx.options.tasksDir], allowRecord, redact: true, ensureController: null,
+    allowedRoots: [fx.options.tasksDir], allowRecord, redact, ensureController: null,
     env: {
       ...process.env, AF_WEB_TOKEN: TOKEN, AF_WEB_TOKEN_FILE: '', AF_PROJECTS_FILE: registryFile,
       AF_PROJECT_BROWSE_ROOT: browseRoot, AF_V2_WORKSPACE_ROOT: workspaceRoot,
@@ -218,8 +219,19 @@ test('registry symlink registration updates the canonical target and shares its 
   } finally { await fx.cleanup(); }
 });
 
-test('registered roots below AF_PROJECT_BROWSE_ROOT are allowed for project-scoped team creation only', async () => {
-  const fx = await setup();
+test('registered roots below AF_PROJECT_BROWSE_ROOT are allowed for project-scoped team creation only', async (t) => {
+  // Intake checks local health before assigning an author. Keep this API test
+  // hermetic when the host has no CLI installation: creation must use the
+  // fixture registry and must never invoke a native adapter health command.
+  const healthCalls = Object.create(null);
+  for (const [id, adapter] of Object.entries(ADAPTERS)) {
+    healthCalls[id] = 0;
+    t.mock.method(adapter, 'health', () => {
+      healthCalls[id] += 1;
+      return { executor_type: id, ok: true };
+    });
+  }
+  const fx = await setup({ redact: false });
   try {
     cpSync(fx.fx.repo, fx.selectedRoot, { recursive: true });
     const profile = { profile_id: 'unit-tests', acceptance: { command: 'node', args: ['--test', 'tests/gate.test.mjs'] }, assets: [] };
@@ -236,12 +248,26 @@ test('registered roots below AF_PROJECT_BROWSE_ROOT are allowed for project-scop
     });
     assert.equal(created.status, 201, JSON.stringify(await created.clone().json()));
     const task = (await created.json()).model.task_id;
-    assert.equal(JSON.parse(readFileSync(join(fx.fx.options.tasksDir, `${task}.json`), 'utf8')).fixture_dir, fx.selectedRoot);
+    const taskRecord = JSON.parse(readFileSync(join(fx.fx.options.tasksDir, `${task}.json`), 'utf8'));
+    assert.equal(taskRecord.fixture_dir, fx.selectedRoot);
+    assert.equal(taskRecord.state, 'CREATED');
+    assert.deepEqual(taskRecord.runs, [], 'team intake creates a task without dispatching a model');
+    assert.ok(Object.values(healthCalls).some((count) => count > 0), 'executor admission used the test health stubs');
 
     const unscoped = await fetch(`${fx.server.url}/api/teams`, {
       method: 'POST', headers: { 'content-type': 'application/json', ...AUTH },
       body: JSON.stringify({ spec: { goal: 'unscoped request', target_path: fx.selectedRoot, acceptance: profile.acceptance, idempotency_key: 'unscoped-browse-root' } }),
     });
     assert.equal(unscoped.status, 422, 'AF_PROJECT_BROWSE_ROOT is added only for registered project-scoped intake');
+    assert.match((await unscoped.json()).model.reason, /outside the allowed root/);
+
+    registry.projects.push({ ...registry.projects[0], project_id: 'outside-browse', root: fx.fx.repo });
+    writeFileSync(fx.registryFile, JSON.stringify(registry));
+    const outside = await fetch(`${fx.server.url}/api/teams`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...AUTH },
+      body: JSON.stringify({ ...request, project_id: 'outside-browse', spec: { ...request.spec, idempotency_key: 'outside-browse-team' } }),
+    });
+    assert.equal(outside.status, 422, 'a registered project outside the browser root does not gain permission');
+    assert.match((await outside.json()).model.reason, /outside the allowed root/);
   } finally { await fx.cleanup(); }
 });
