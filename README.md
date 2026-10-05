@@ -303,6 +303,17 @@ Linux 隔离回归使用 `bubblewrap`、`xdg-dbus-proxy`、`dbus-daemon`、`dbus
 
 真实 V2 需要 Docker writer scope 或可用的 Linux delegated cgroup v2；缺少强写者范围时拒绝启动。cgroup 负责进程范围与回收，不单独提供文件系统或凭据隔离，部署仍需保护 canonical、CAS 和控制面状态。
 
+**本机 Planner 聊天也需要执行范围配置。** 在使用 systemd 用户委派目录的 Linux 主机上，先确认下面的目录确实存在且已委派给当前用户，再启动 Web 服务：
+
+```bash
+export AF_CGROUP_BASE="/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service"
+node af-admin.mjs web serve --allow-write --root /path/to/registered-project
+```
+
+Web 自动启动的团队控制器会继承此配置。不要指向普通文件夹或未委派的系统根目录；缺少可用委派时需配置已有 Docker 执行隔离。修改环境变量后应重启 Web 和团队控制器，重新授权浏览器，再明确恢复失败的团队。页面不会自动重试；聊天区会同时保留消息队列状态并显示关联尝试的失败或终止未确认状态。`Jev 已启用` 表示决策辅助配置就绪，不代表 Planner 已成功启动。
+
+2026-10-05 已在本机修复缺失的 `AF_CGROUP_BASE`，恢复一次原有 Qoder 讨论，验证选定 `Qwen3.8-Flash / xhigh` 的真实回复与执行范围清理。这次没有派发 Worker，也没有进行评审、验收或提升，详见[Planner 启动故障复检](docs/reviews/2026-10-05-planner-chat-startup.md)。
+
 治理文件可显式配置：
 
 ```bash

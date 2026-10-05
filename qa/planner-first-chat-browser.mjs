@@ -321,6 +321,72 @@ try {
   check('fixture Planner reply is visible in the browser conversation', await browser.evaluate("document.getElementById('planner-conversation').textContent.includes('建议先明确目标与验收，再确定分工。')"));
   check('selected model and exact effort reach the fixture model call', fx.calls.some(call => call.work_item_id === 'discuss' && call.model === 'planning-model' && call.effort === 'high'));
   check('direct first chat starts no Worker work', fx.calls.filter(call => ['a', 'b', 'c'].includes(call.work_item_id)).length === 0 && controller.read(fx.team.team_id).members.filter(member => member.role === 'worker').every(member => member.status === 'IDLE'));
+
+  clearInterval(timer);
+  const failureMessageId='CMD-ui-failure', failureRunId='RUN-ui-failure';
+  const failureState=readTeam(fx.options.runtimeDir,fx.team.team_id);
+  failureState.messages.push({message_id:failureMessageId,from_agent_id:'operator',to_agent_id:'lead',goal_revision:failureState.goal_revision,
+    status:'queued',received_by:failureRunId,message:'受控失败状态检查',created_at:new Date().toISOString()});
+  failureState.commands[failureMessageId]={status:'received'};
+  failureState.runs.push({run_id:failureRunId,agent_id:'lead',work_item_id:'discuss',kind:'discuss',goal_revision:failureState.goal_revision,
+    message_ids:[failureMessageId],status:'FAILED',process_state:'EXITED',writer_termination:{process_started:false,termination_confirmed:true,
+      process_group_alive:false,scope_verified:true,scope_empty:true,scope_kind:'none'},error:'TRUSTED_IMPORT_WRITER_SCOPE_UNAVAILABLE: cgroup EACCES /var/run/private Bearer abcdefghijk'});
+  failureState.state='BLOCKED';failureState.failure_reason='TRUSTED_IMPORT_WRITER_SCOPE_UNAVAILABLE: cgroup EACCES /var/run/private';
+  commitTeam(fx.options.runtimeDir,failureState,'controlled-planner-ui-failure',null,()=>{});
+  await browser.click('#refresh');
+  await browser.waitFor("[...document.querySelectorAll('.chat-bubble.from-operator')].some(b=>b.textContent.includes('受控失败状态检查')&&b.textContent.includes('Planner 执行失败')&&b.textContent.includes('Planner 进程未启动'))");
+  check('failed queued chat shows that Planner execution failed before process start',await browser.evaluate(`(()=>{const b=[...document.querySelectorAll('.chat-bubble.from-operator')].find(x=>x.textContent.includes('受控失败状态检查'));return b?.querySelector('strong small')?.textContent==='已排队'&&b.textContent.includes('Planner 执行失败')&&b.textContent.includes('Planner 进程未启动')&&!b.textContent.includes('已落实')&&!b.textContent.includes('已收到')})()`));
+  check('failure detail is server-redacted and does not expose the path or bearer token',await browser.evaluate("(()=>{const b=[...document.querySelectorAll('.chat-bubble.from-operator')].find(x=>x.textContent.includes('受控失败状态检查'));return !b.textContent.includes('/var/run/private')&&!b.textContent.includes('abcdefghijk')&&b.textContent.includes('sha256:')})()"));
+  check('a previously applied Planner message is not relabeled by a later failure',await browser.evaluate(`(()=>{const b=[...document.querySelectorAll('.chat-bubble.from-operator')].find(x=>x.textContent.includes(${JSON.stringify(firstMessage)}));return b?.querySelector('strong small')?.textContent==='已落实'&&!b.querySelector('.chat-run-outcome')})()`));
+
+  const retryRunId='RUN-ui-failure-retry';
+  const retryState=readTeam(fx.options.runtimeDir,fx.team.team_id), retryMessage=retryState.messages.find(m=>m.message_id===failureMessageId);
+  retryState.runs.push({run_id:retryRunId,agent_id:'lead',work_item_id:'discuss',kind:'discuss',goal_revision:retryState.goal_revision,
+    message_ids:[failureMessageId],status:'RUNNING',process_state:'RUNNING',writer_termination:null,error:null});
+  retryMessage.received_by=retryRunId;retryMessage.status='queued';retryState.state='DISCUSSING';retryState.failure_reason=null;
+  retryState.members.find(m=>m.agent_id==='lead').status='RUNNING';
+  commitTeam(fx.options.runtimeDir,retryState,'controlled-planner-ui-retry-running',null,()=>{});
+  await browser.click('#refresh');
+  await browser.waitFor("[...document.querySelectorAll('.chat-bubble.from-operator')].some(b=>b.textContent.includes('受控失败状态检查')&&b.textContent.includes('Planner 正在处理此消息'))");
+  check('a new RUNNING retry takes precedence over the preserved FAILED run and restores the thinking hint',await browser.evaluate(`(()=>{const b=[...document.querySelectorAll('.chat-bubble.from-operator')].find(x=>x.textContent.includes('受控失败状态检查'));return b?.querySelector('strong small')?.textContent==='已排队'&&b.textContent.includes('Planner 正在处理此消息')&&!b.textContent.includes('Planner 执行失败')&&!b.textContent.includes('EACCES')&&document.querySelector('.planner-thinking')?.textContent.includes('Planner 正在思考')})()`));
+  equal('retry history keeps the failed attempt and adds a distinct running attempt',controller.read(fx.team.team_id).runs.filter(r=>[failureRunId,retryRunId].includes(r.run_id)).map(r=>[r.run_id,r.status]),[[failureRunId,'FAILED'],[retryRunId,'RUNNING']]);
+
+  const recoveredState=readTeam(fx.options.runtimeDir,fx.team.team_id), retryRun=recoveredState.runs.find(r=>r.run_id===retryRunId), recoveredMessage=recoveredState.messages.find(m=>m.message_id===failureMessageId);
+  recoveredState.state='DISCUSSING';retryRun.status='COMPLETED';retryRun.process_state='EXITED';retryRun.writer_termination={process_started:true,termination_confirmed:true,
+    process_group_alive:false,scope_verified:true,scope_empty:true,scope_kind:'cgroup'};retryRun.error=null;recoveredState.members.find(m=>m.agent_id==='lead').status='IDLE';
+  recoveredMessage.status='applied';recoveredMessage.applied_by=retryRunId;
+  commitTeam(fx.options.runtimeDir,recoveredState,'controlled-planner-ui-retry-completed',null,()=>{});
+  await browser.click('#refresh');
+  await browser.waitFor("[...document.querySelectorAll('.chat-bubble.from-operator')].some(b=>b.textContent.includes('受控失败状态检查')&&b.querySelector('strong small')?.textContent==='已落实')");
+  check('a successful retry clears the failure banner and shows the applied message status',await browser.evaluate("(()=>{const b=[...document.querySelectorAll('.chat-bubble.from-operator')].find(x=>x.textContent.includes('受控失败状态检查'));return b?.querySelector('strong small')?.textContent==='已落实'&&!b.querySelector('.chat-run-outcome')})()"));
+  equal('a successful retry leaves the prior FAILED run in history',controller.read(fx.team.team_id).runs.filter(r=>[failureRunId,retryRunId].includes(r.run_id)).map(r=>[r.run_id,r.status]),[[failureRunId,'FAILED'],[retryRunId,'COMPLETED']]);
+
+  const startedFailureMessageId='CMD-ui-started-failure', startedFailureRunId='RUN-ui-started-failure';
+  const startedFailureState=readTeam(fx.options.runtimeDir,fx.team.team_id);
+  startedFailureState.messages.push({message_id:startedFailureMessageId,from_agent_id:'operator',to_agent_id:'lead',goal_revision:startedFailureState.goal_revision,
+    status:'queued',received_by:startedFailureRunId,message:'受控已启动失败状态检查',created_at:new Date().toISOString()});
+  startedFailureState.runs.push({run_id:startedFailureRunId,agent_id:'lead',work_item_id:'discuss',kind:'discuss',goal_revision:startedFailureState.goal_revision,
+    message_ids:[startedFailureMessageId],status:'FAILED',process_state:'EXITED',writer_termination:{process_started:true,termination_confirmed:true,
+      process_group_alive:false,scope_verified:true,scope_empty:true,scope_kind:'cgroup'},error:'controlled Planner error after process start'});
+  startedFailureState.state='BLOCKED';
+  commitTeam(fx.options.runtimeDir,startedFailureState,'controlled-planner-ui-started-failure',null,()=>{});
+  await browser.click('#refresh');
+  await browser.waitFor("[...document.querySelectorAll('.chat-bubble.from-operator')].some(b=>b.textContent.includes('受控已启动失败状态检查')&&b.textContent.includes('Planner 执行失败'))");
+  check('a FAILED run is shown even when its process did start',await browser.evaluate(`(()=>{const b=[...document.querySelectorAll('.chat-bubble.from-operator')].find(x=>x.textContent.includes('受控已启动失败状态检查'));return b?.querySelector('strong small')?.textContent==='已排队'&&b.textContent.includes('controlled Planner error after process start')&&!b.textContent.includes('Planner 进程未启动')})()`));
+
+  const unconfirmedMessageId='CMD-ui-unconfirmed', unconfirmedRunId='RUN-ui-unconfirmed';
+  const unconfirmedState=readTeam(fx.options.runtimeDir,fx.team.team_id);
+  unconfirmedState.messages.push({message_id:unconfirmedMessageId,from_agent_id:'operator',to_agent_id:'lead',goal_revision:unconfirmedState.goal_revision,
+    status:'queued',received_by:unconfirmedRunId,message:'受控未确认状态检查',created_at:new Date().toISOString()});
+  unconfirmedState.runs.push({run_id:unconfirmedRunId,agent_id:'lead',work_item_id:'discuss',kind:'discuss',goal_revision:unconfirmedState.goal_revision,
+    message_ids:[unconfirmedMessageId],status:'UNCONFIRMED',process_state:'EXITED',writer_termination:{process_started:true,termination_confirmed:false,
+      process_group_alive:true,scope_verified:false,scope_empty:false,scope_kind:'cgroup'},error:'controlled Planner termination evidence is unavailable'});
+  unconfirmedState.state='RECOVERY_REQUIRED';
+  commitTeam(fx.options.runtimeDir,unconfirmedState,'controlled-planner-ui-unconfirmed',null,()=>{});
+  await browser.click('#refresh');
+  await browser.waitFor("[...document.querySelectorAll('.chat-bubble.from-operator')].some(b=>b.textContent.includes('受控未确认状态检查')&&b.textContent.includes('Planner 执行状态未确认'))");
+  check('UNCONFIRMED runs show the execution uncertainty and preserve the queued receipt',await browser.evaluate(`(()=>{const b=[...document.querySelectorAll('.chat-bubble.from-operator')].find(x=>x.textContent.includes('受控未确认状态检查'));return b?.querySelector('strong small')?.textContent==='已排队'&&b.textContent.includes('Planner 执行状态未确认')&&b.textContent.includes('终止状态尚未确认')&&!b.textContent.includes('已落实')})()`));
+
   check('new-team save-console-planner was never clicked', await browser.evaluate('window.firstChatQa.saveClicks===0'));
   equal('no native catalog scan ran during the browser flow', [scanRequests.readOnly, scanRequests.main], [0, 0]);
   equal('browser runtime exceptions are absent', browser.errors, []);

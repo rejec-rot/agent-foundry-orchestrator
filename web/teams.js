@@ -22,6 +22,7 @@ const htmlCache = new Map();
 const emptyMembers = $('members').innerHTML;
 const emptyActivity = $('messages').innerHTML;
 const access = createAccess();
+const redactedModels = new WeakSet();
 let selected = null, workId = null, team = null, capabilities = null, refreshing = false;
 let pending = 0, editBase = null, goalBase = null, noticeTimer = null, lastConnectionError = null;
 let executorCatalog = null, dispatchBase = null, profileDraft = [], agentScan = null, pendingCatalogRefresh = null;
@@ -66,6 +67,7 @@ async function request(path, body = null, { timeoutMs = 12000, authenticated = f
     };
     const res = await fetch(path, { ...options, credentials: 'same-origin', signal: controller.signal });
     const envelope = await res.json(), model = envelope.model ?? envelope;
+    if (model && typeof model === 'object' && envelope.model === model && envelope.paths_redacted === true) redactedModels.add(model);
     if (!res.ok) {
       const error=new Error(model.reason ?? model.error ?? ('HTTP ' + res.status));
       if(res.status===401)access.invalidate();
@@ -213,6 +215,33 @@ function memberName(id) {
   const number = /^worker-(\d+)$/.exec(id ?? '')?.[1];
   return number ? 'Worker ' + number.padStart(2, '0') : String(id ?? '团队');
 }
+function plannerMessageRun(message) {
+  const refs = Array.isArray(message.received_by) ? message.received_by : [message.received_by];
+  const receivedIds = new Set(refs.map(ref => typeof ref === 'string' ? ref : ref?.run_id).filter(Boolean));
+  const related = team?.runs.filter(run => run.agent_id === 'lead' &&
+    (run.goal_revision == null || run.goal_revision === message.goal_revision) &&
+    (receivedIds.has(run.run_id) || run.message_ids?.includes(message.message_id))) ?? [];
+  const received = related.filter(run => receivedIds.has(run.run_id));
+  return (received.length ? received : related).at(-1) ?? null;
+}
+function plannerMessageExecution(message) {
+  if (message.status === 'applied' || message.applied_by) return '';
+  const run = plannerMessageRun(message);
+  if (!run) return '';
+  if (run.status === 'RUNNING') {
+    return '<section class="chat-run-outcome" data-state="running"><strong>Planner 正在处理此消息</strong><p>消息状态仍为「' + esc(label(message.status)) + '」。</p></section>';
+  }
+  if (!['FAILED', 'UNCONFIRMED'].includes(run.status)) return '';
+  const unconfirmed = run.status === 'UNCONFIRMED';
+  const started = run.writer_termination?.process_started;
+  const heading = unconfirmed ? 'Planner 执行状态未确认' : 'Planner 执行失败';
+  const detail = started === false ? 'Planner 进程未启动。' :
+    unconfirmed && started === true ? 'Planner 进程已启动，终止状态尚未确认。' :
+    run.writer_termination?.termination_confirmed === true ? '本次 Planner 尝试已结束。' : '系统记录了本次 Planner 尝试的失败状态。';
+  const reason = redactedModels.has(team) && typeof run.error === 'string' ? run.error.trim().slice(0, 500) : '';
+  return '<section class="chat-run-outcome" data-state="failure"><strong>' + esc(heading) + '</strong><p>' + esc(detail) + '</p>' +
+    (reason ? '<p class="chat-run-reason">' + esc(reason) + '</p>' : '') + '</section>';
+}
 const decisionStatusLabels = {consulting:'正在咨询 Jev',off:'未启用',unconfigured:'未配置',unavailable:'当前不可用',invalid:'建议未通过校验',suggested:'建议可用',low_confidence:'低置信度 · 仅供参考',superseded:'建议已过期'};
 const decisionKindLabels = {plan:'计划与编组',revise:'任务改向',coordinate:'协作决策'};
 const decisionFocusLabels={clarify_contract:'明确验收契约',repair_implementation:'修正实现',align_dependencies:'协调依赖接口',clarify_goal:'细化任务目标'};
@@ -301,7 +330,7 @@ function renderPlanner() {
   for(const item of document.querySelectorAll('[data-phase]'))item.dataset.current=String(item.dataset.phase===phase);
   const conversation=team?.messages.filter(m=>m.goal_revision===team.goal_revision && ((m.from_agent_id==='operator'&&m.to_agent_id==='lead') || (m.from_agent_id==='lead'&&m.to_agent_id==='operator')))??[];
   const log=$('planner-conversation'),atBottom=log.scrollHeight-log.scrollTop-log.clientHeight<48;
-  const html=legacy?'<div class="chat-empty"><span class="calling-card" aria-hidden="true">YOUR NEXT<br><b>MOVE AWAITS.</b><i>✦</i></span><h4>开启新的 Planner 协作。</h4><p>当前团队使用原有启动流程。<br>新建目标，即可先聊天、确认编组后开工。</p><button class="text-button" type="button" data-new-goal>新建 Planner 目标 '+icon('arrow')+'</button></div>':conversation.slice(-60).map(m=>'<article class="chat-bubble '+(m.from_agent_id==='operator'?'from-operator':'from-planner')+'"><strong><span class="agent-identity">'+messageMask(m)+esc(memberName(m.from_agent_id))+'</span><small>'+esc(label(m.status))+'</small></strong><p>'+esc(m.message)+'</p></article>').join('') || emptyConversation;
+  const html=legacy?'<div class="chat-empty"><span class="calling-card" aria-hidden="true">YOUR NEXT<br><b>MOVE AWAITS.</b><i>✦</i></span><h4>开启新的 Planner 协作。</h4><p>当前团队使用原有启动流程。<br>新建目标，即可先聊天、确认编组后开工。</p><button class="text-button" type="button" data-new-goal>新建 Planner 目标 '+icon('arrow')+'</button></div>':conversation.slice(-60).map(m=>'<article class="chat-bubble '+(m.from_agent_id==='operator'?'from-operator':'from-planner')+'"><strong><span class="agent-identity">'+messageMask(m)+esc(memberName(m.from_agent_id))+'</span><small>'+esc(label(m.status))+'</small></strong><p>'+esc(m.message)+'</p>'+plannerMessageExecution(m)+'</article>').join('') || emptyConversation;
   const active=team?.runs.findLast(r=>r.agent_id==='lead'&&r.status==='RUNNING');
   const next=html+(active?'<p class="planner-thinking" role="status">✦ '+(active.kind==='revise'?'Planner 正在改写任务方向…':active.kind==='plan'?'Planner 正在拟定行动计划…':'Planner 正在思考…')+'</p>':'');
   const changed=htmlCache.get('planner-conversation')!==next;setHTML('planner-conversation',next);

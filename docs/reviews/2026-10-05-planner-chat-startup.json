@@ -1,0 +1,18 @@
+{
+  "date": "2026-10-05",
+  "issue": "Planner discussion rejected before process start by missing delegated cgroup configuration; queued message concealed failed attempt",
+  "regression": { "total": 940, "passed": 935, "failed": 0, "skipped": 5, "verified_at": "2026-10-05T10:50:52.408Z" },
+  "architecture": { "passed": 6, "total": 6 },
+  "planner_browser": { "passed": 58, "total": 58, "verified_at": "2026-10-05T10:53:23.657Z", "model_output": "controlled" },
+  "first_chat_browser": { "passed": 55, "total": 55, "verified_at": "2026-10-05T10:55:51.744Z", "model_output": "controlled", "native_scans": 0, "worker_runs": 0 },
+  "independent_review": { "author_equals_reviewer": false, "status": "PASS", "independent_browser_checks": 53 },
+  "real_discussion": {
+    "executor": "qoder", "model": "Qwen3.8-Flash", "effort": "xhigh",
+    "run_id": "RUN-b323c2ab-0503-41bf-90c9-3a1481d4ba36", "status": "COMPLETED",
+    "started_at": "2026-10-05T10:45:57.249Z", "finished_at": "2026-10-05T10:47:11.998Z",
+    "reply_characters": 1768, "original_message_status": "applied", "reply_status": "delivered",
+    "termination_confirmed": true, "scope_verified": true, "scope_empty": true,
+    "worker_runs": 0, "review_acceptance_or_promotion": false
+  },
+  "scope": "Display-only failure reporting, local deployment configuration and documentation; fail-closed executor checks unchanged"
+}
