@@ -1,5 +1,25 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Agent Mask Identities — 2026-10-05
+
+| Field | Verified value |
+|---|---|
+| Code commit | [`e9de31c5916ae84a9cd27b5b727225945d5038aa`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/e9de31c5916ae84a9cd27b5b727225945d5038aa) |
+| Full regression | 940 tests: 935 passed, 0 failed, 5 existing gated skips at 2026-10-05T02:04:10.603Z |
+| Architecture invariants | 6/6 at 2026-10-05T02:03:25.184Z |
+| Mask browser / Planner / authenticated delivery | 26/26 at 2026-10-05T02:06:34.048Z; 58/58 at 2026-10-05T02:06:08.524Z; 29/29 at 2026-10-05T02:03:35.416Z |
+| Independent review | Non-author PASS; 32 Chromium checks: canonical run-linked history, drafts/roles, both pages, 320–1440px, reduced motion and forced colors |
+| Design scope | 15 distinct executor masks; cmd aliases command-code; unknown clients share four deterministic fallback families with visible names |
+
+Presentation-only inline SVG/CSS now identifies Agents in inventory, Planner and
+Worker controls, members, task assignment, verified messages/run history, and
+workbench author/reviewer/activity. Separate role/slot badges identify members
+sharing an executor. Historical messages use actual from_run_id identity.
+No registry, model/effort metadata, scheduling, auth, scan trigger or dependency
+changes. Browser catalogs and dispatches are controlled fixtures; no real model
+execution or quality is claimed. See [verification](docs/reviews/2026-10-05-agent-masks.md)
+and [mask atlas](docs/design/AGENT-MASKS.md).
+
 ## V2 Local One-Click Authorization — 2026-10-05
 
 | Field | Verified value |

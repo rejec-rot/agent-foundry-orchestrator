@@ -1,0 +1,52 @@
+{
+  "code_commit": "e9de31c5916ae84a9cd27b5b727225945d5038aa",
+  "known_agent_masks": 15,
+  "distinct_motifs": 15,
+  "alias": "cmd = command-code",
+  "full_regression": {
+    "tests": 940,
+    "passed": 935,
+    "failed": 0,
+    "existing_gated_skips": 5,
+    "completed_at": "2026-10-05T02:04:10.603Z"
+  },
+  "architecture_invariants": {
+    "passed": 6,
+    "completed_at": "2026-10-05T02:03:25.184Z"
+  },
+  "browser_checks": [
+    {
+      "name": "mask identity, previews and dual-page layouts",
+      "passed": 26,
+      "completed_at": "2026-10-05T02:06:34.048Z"
+    },
+    {
+      "name": "Planner interactions",
+      "passed": 58,
+      "completed_at": "2026-10-05T02:06:08.524Z"
+    },
+    {
+      "name": "authenticated delivery workflow",
+      "passed": 29,
+      "completed_at": "2026-10-05T02:03:35.416Z"
+    }
+  ],
+  "independent_review": {
+    "status": "PASS",
+    "browser_checks": 32,
+    "canonical_message_field": "from_run_id",
+    "widths": [
+      320,
+      390,
+      768,
+      1440
+    ],
+    "motion_and_forced_colors": true,
+    "zero_native_scans_and_api_writes": true
+  },
+  "limits": [
+    "unknown clients use four stable fallback motifs and may share silhouettes",
+    "browser catalog/Agents and dispatch use controlled fixtures; no real model quality or execution claim"
+  ],
+  "collected_at": "2026-10-05T02:09:16.759Z"
+}

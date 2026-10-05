@@ -152,6 +152,10 @@ Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图�
 
 两页的面板、成员卡片、工作项、表单、折叠设置与全部弹窗共用 P5 边框：黑色描边、斜切角、错位底板，以及表示选中或执行状态的红色强调。交付工作台的权限标识、连接状态、任务标签与已完成阶段也采用红黑纸白配色；只读与可写通过底色和文字区分，浏览器尚未授权时仍显示只读标识。文字输入保留完整区域，弹窗仍使用原生焦点与滚动；高对比模式保留系统边框。交付队列独立滚动，长卡片保持文字和状态标签的完整高度。
 
+不同 Agent 使用 15 种原创 P5 风格面具，在目录、Planner、Worker 编组、任务、历史与交付页中保持身份一致；P / R / 编号区分角色和成员。选择 Agent 时预览立即更新，历史消息跟随实际执行记录。未知客户端使用稳定的备用面具，名称仍保留。
+
+[Agent 面具图鉴](docs/previews/persona-workspace/agent-masks.png)
+
 [Planner 桌面预览](docs/previews/persona-workspace/planner-desktop.png) · [Planner 手机预览](docs/previews/persona-workspace/planner-mobile.png) · [手机编组窗口](docs/previews/persona-workspace/planner-dispatch-mobile.png) · [界面与验证说明](docs/design/PERSONA-COLLABORATION-WORKSPACE.md)
 
 [常驻 Planner 选择](docs/previews/persona-workspace/planner-config-desktop.png) · [逐位 Worker 配置](docs/previews/persona-workspace/worker-config-desktop.png) · [手机 Worker 配置](docs/previews/persona-workspace/worker-config-mobile.png)
