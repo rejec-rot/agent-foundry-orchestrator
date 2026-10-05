@@ -47,6 +47,7 @@ async function holdTeamPoll(){
 function releaseTeamPoll(){const res=heldTeamResponse;heldTeamResponse=null;json(res,{teams:showTeam?[team]:[]});}
 const server=createServer((req,res)=>{
   const url=new URL(req.url,'http://127.0.0.1');
+  if(url.pathname==='/api/v2/access/status')return json(res,{schema:'af-v2-local-access-v1',authorized:req.headers.authorization==='Bearer browser-test-token',local_authorization_available:false,reason:'controlled advanced bearer fixture'});
   if(url.pathname==='/api/v2/capabilities')return json(res,{read:{workspace:true},write:{team_command:true}});
   if(url.pathname==='/api/v2/projects')return json(res,{schema:'af-v2-projects-v1',configured:false,projects:[]});
   if(url.pathname==='/api/v2/executors'){

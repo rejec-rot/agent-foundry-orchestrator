@@ -11,7 +11,7 @@ import { plannerFixture } from '../tests/helpers/planner-team-fixture.mjs';
 import { readTeam, commitTeam } from '../lib/team/store.mjs';
 import { TeamController } from '../lib/team/controller.mjs';
 import { PROJECT_REGISTRY_SCHEMA } from '../lib/projects.mjs';
-import { authorizeWrite, resolveWriteToken } from '../server/web-auth.mjs';
+import { authorizeWrite, resolveWriteToken, createLocalWriteSessionAuth } from '../server/web-auth.mjs';
 import { createReadApi } from '../server/read-api.mjs';
 import { DevTools } from './browser-client.mjs';
 
@@ -120,9 +120,10 @@ const readOnlyApi = createReadApi({
   catalogScanner: async () => { throw new Error('catalog scan must not run in this QA'); },
   agentDiscoverer: () => [],
 });
+const localSessionAuth=createLocalWriteSessionAuth();
 const mainApi = createReadApi({
   roots, allowedRoots: [fx.repo], allowRecord: true, env: mainEnv,
-  token: mainToken, ensureController: null,
+  token: mainToken, ensureController: null, localSessionAuth,
   catalogScanner: async () => { throw new Error('catalog scan must not run in this QA'); },
   agentDiscoverer: () => [],
 });
@@ -142,7 +143,7 @@ function buildServer({ api, mode }) {
     }
     if (mode === 'main' && req.method === 'POST' && url.pathname === '/api/teams') {
       void (async () => {
-        const auth = authorizeWrite({ req, token: mainToken, expectedHosts: [req.headers.host ?? ''] });
+        const auth = authorizeWrite({ req, token: mainToken, expectedHosts: [req.headers.host ?? ''],localSessionAuth });
         if (!auth.ok) {
           sendJson(res, auth.status, { model: { ok: false, reason: auth.reason }, paths_redacted: false, path_mode: 'fixture', truncations: [] });
           return;
@@ -225,14 +226,13 @@ try {
   check('read-only workspace does not offer a permission connection button', await browser.evaluate("document.getElementById('planner-connect-access').hidden"));
 
   await browser.send('Page.navigate', { url: `${mainUrl}/teams.html` });
-  await browser.waitFor("document.getElementById('connection')?.dataset.status==='connected' && document.getElementById('planner-chat-hint')?.textContent.includes('连接操作权限')");
-  check('missing browser token is explained beside chat', await browser.evaluate("document.getElementById('planner-chat-hint').textContent==='连接操作权限后，即可直接发送消息。'"));
-  check('missing browser token exposes the connect-permission button', await browser.evaluate("!document.getElementById('planner-connect-access').hidden"));
+  await browser.waitFor("document.getElementById('connection')?.dataset.status==='connected' && !document.getElementById('planner-connect-access').hidden");
+  check('missing authorization is explained beside chat', await browser.evaluate("document.getElementById('planner-chat-hint').textContent.includes('授权')"));
+  check('missing authorization exposes the one-click button', await browser.evaluate("!document.getElementById('planner-connect-access').hidden"));
   check('new-team state hides save-console-planner', await browser.evaluate("document.getElementById('save-console-planner').hidden"));
 
   await browser.click('#planner-connect-access');
-  await browser.evaluate(`document.getElementById('token').value=${JSON.stringify(testToken)}`);
-  await browser.click('#save-token');
+  await browser.waitFor("document.getElementById('access-label').textContent==='取消授权'");
   await browser.waitFor("document.getElementById('planner-chat-hint')?.textContent.includes('尚未接入工作项目')===false && document.getElementById('console-project')?.options.length>1");
   check('the sole registered project auto-selects after permission is connected', await browser.evaluate("document.getElementById('console-project').value==='browser-project'"));
   check('multiple acceptance profiles remain unselected until an explicit choice', await browser.evaluate("document.getElementById('console-acceptance').value===''&&document.getElementById('console-acceptance').options.length===3"));

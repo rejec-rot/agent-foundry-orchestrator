@@ -1,3 +1,5 @@
+import { createAccess, renderAccess } from './access.js';
+
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = (name, extra = '') => '<svg class="icon ' + extra + '" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
@@ -18,8 +20,7 @@ const effortLabel = value => effortLabels[value] ?? value;
 const htmlCache = new Map();
 const emptyMembers = $('members').innerHTML;
 const emptyActivity = $('messages').innerHTML;
-let token = '';
-try { token = sessionStorage.getItem('af-write-token') ?? ''; } catch {}
+const access = createAccess();
 let selected = null, workId = null, team = null, capabilities = null, refreshing = false;
 let pending = 0, editBase = null, goalBase = null, noticeTimer = null, lastConnectionError = null;
 let executorCatalog = null, dispatchBase = null, profileDraft = [], agentScan = null, pendingCatalogRefresh = null;
@@ -43,14 +44,15 @@ async function request(path, body = null, { timeoutMs = 12000, authenticated = f
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const options = body === null ? { cache: 'no-store', ...(authenticated?{headers:{authorization:'Bearer '+token,'x-af-csrf':'1'}}:{}) } : {
-      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token, 'x-af-csrf': '1' },
+    const options = body === null ? { cache: 'no-store', ...(authenticated?{headers:{...access.headers(),'x-af-csrf':'1'}}:{}) } : {
+      method: 'POST', headers: { 'content-type': 'application/json', ...access.headers(), 'x-af-csrf': '1' },
       body: JSON.stringify(body),
     };
-    const res = await fetch(path, { ...options, signal: controller.signal });
+    const res = await fetch(path, { ...options, credentials: 'same-origin', signal: controller.signal });
     const envelope = await res.json(), model = envelope.model ?? envelope;
     if (!res.ok) {
       const error=new Error(model.reason ?? model.error ?? ('HTTP ' + res.status));
+      if(res.status===401)access.invalidate();
       error.httpStatus=res.status;throw error;
     }
     return model;
@@ -94,7 +96,7 @@ function openDialog(id, configureWorkers=false) {
   const dialog = $(id);
   const feedback = dialog.querySelector('.dialog-feedback');
   if (feedback) feedback.hidden = true;
-  if (id === 'token-dialog') $('token').value = token;
+  if (id === 'token-dialog') renderAccess(access, { writeAvailable: Boolean(capabilities?.write?.team_command), busy: pending > 0 });
   if (id === 'replan-dialog') {
     $('new-goal').value = team.goal;
     goalBase = { teamId: team.team_id, revision: team.goal_revision };
@@ -117,13 +119,13 @@ function openDialog(id, configureWorkers=false) {
   }
   navigation(false);
   dialog.showModal();
-  const input = { 'token-dialog': 'token', 'message-dialog': 'message',
+  const input = { 'token-dialog': 'access-panel-action', 'message-dialog': 'message',
     'work-dialog': 'direction', 'replan-dialog': 'new-goal', 'dispatch-dialog':'dispatch-workers' }[id];
   if (input) $(input).focus();
 }
 function writes() {
   renderPlannerDecisions();
-  const enabled = Boolean(token && capabilities?.write?.team_command) && pending === 0;
+  const enabled = access.state.authorized && Boolean(capabilities?.write?.team_command) && pending === 0 && !access.state.pending;
   const terminal = ['COMPLETED', 'CANCELLED', 'RECOVERY_REQUIRED'].includes(team?.state);
   for (const button of document.querySelectorAll('[data-write]')) {
     button.disabled = !enabled || (button.id !== 'create' && !team) ||
@@ -137,7 +139,9 @@ function writes() {
   $('planner-send').disabled = Boolean(chatBlock);
   $('planner-chat-hint').textContent=chatBlock??(chatAttempt?.uncertain?'消息回执未确认；再次发送会查询或重用原消息。':firstChatAttempt?.uncertain?'目标创建回执未确认；再次发送会重用原目标与配置。':!team?'第一条消息会建立商讨会话；确认计划后才派工。':consoleProfileDirty?'直接发送，自动应用所选模型与思考强度。':'消息会发送给当前 Planner。确认计划后才派工。');
   $('planner-chat-hint').dataset.blocked=String(Boolean(chatBlock));
-  $('planner-connect-access').hidden=Boolean(token)||!capabilities?.write?.team_command;
+  $('planner-connect-access').hidden=access.state.authorized||!capabilities?.write?.team_command;
+  $('planner-connect-access').disabled=pending>0||access.state.pending||!access.state.known;
+  $('planner-connect-access').innerHTML=(access.state.available?'一键授权':'操作权限')+' '+icon('arrow');
   $('propose-plan').disabled = Boolean(chatBlock) || !team?.planning || !['DISCUSSING','PLAN_READY'].includes(team.state) ||
     team.members.find(m=>m.role==='lead')?.status==='RUNNING' || hasPendingPlannerMessage();
   $('configure-dispatch').disabled = !enabled || team?.state!=='PLAN_READY' || team.members.find(m=>m.role==='lead')?.status==='RUNNING' || team.messages.some(m=>m.to_agent_id==='lead'&&['queued','received'].includes(m.status));
@@ -180,11 +184,11 @@ function writes() {
     team?.state === 'DELIVERING' ? '正在交付' : team?.state === 'PAUSING' ? '正在停止' : '启动团队';
   $('start').querySelector('use').setAttribute('href', handoff ? '#i-arrow' : '#i-play');
   if(team?.planning && ['DISCUSSING','PLAN_READY'].includes(team.state)) $('start').querySelector('span').textContent=team.state==='PLAN_READY'?'确认计划与编组':'与 Planner 商讨';
-  $('access-label').textContent = token ? '令牌已设置' : '连接令牌';
-  const writable = token && capabilities?.write?.team_command;
+  renderAccess(access, { writeAvailable: Boolean(capabilities?.write?.team_command), busy: pending > 0 });
+  const writable = access.state.authorized && capabilities?.write?.team_command;
   $('access-hint').textContent = writable ? '你的团队状态会自动更新，操作结果可在回执中查看。' :
     capabilities && !capabilities.write?.team_command ? '当前空间为只读模式，可查看团队状态与交付记录。' :
-    '连接操作令牌后，即可启动和调整团队。';
+    access.state.error || (access.state.known && !access.state.available ? access.state.reason || '当前连接无法使用本机授权。' : '点击「一键授权」，即可启动和调整团队。');
 }
 function memberName(id) {
   const member = team?.members.find(m => m.agent_id === id);
@@ -396,10 +400,11 @@ function canConfigureAgents() {
 }
 function hasPendingPlannerMessage() {return Boolean(team?.messages.some(m=>m.to_agent_id==='lead'&&['queued','received'].includes(m.status)));}
 function plannerChatBlock() {
-  if(pending>0)return '正在提交，请稍候…';
+  if(pending>0||access.state.pending)return '正在提交，请稍候…';
   if(!capabilities)return '正在连接工作空间…';
   if(!capabilities.write?.team_command||(!team&&!capabilities.write?.create_team))return '当前空间为只读模式，启用写操作后才能商讨。';
-  if(!token)return '连接操作权限后，即可直接发送消息。';
+  if(!access.state.known)return access.state.error || '正在确认操作权限…';
+  if(!access.state.authorized)return access.state.available?'点击「一键授权」，即可直接发送消息。':access.state.reason || '连接操作权限后，即可直接发送消息。';
   if(projectRegisterAttempt)return '工作目录接入尚未确认，请点击「确认项目接入」继续。';
   if(configCommand&&!configCommand.retryable)return 'Agent 配置正在保存，等待确认后继续。';
   if(team&&(!team.planning||!['DISCUSSING','PLAN_READY','WORKING','BLOCKED'].includes(team.state)))return '当前阶段不能商讨；暂停的团队需要先恢复。';
@@ -610,6 +615,7 @@ async function refresh({ reloadCatalog=false, scan=false }={}) {
   $('refresh').setAttribute('aria-busy', 'true');
   try {
     if (!capabilities) capabilities = await request('/api/v2/capabilities');
+    await access.refresh();
     if (!projectsCatalog || reloadCatalog) {
       try {
         const registry=await request('/api/v2/projects');
@@ -776,7 +782,7 @@ async function waitForPlannerMessage(teamId,commandId) {
 }
 const handle = (fn, write = true) => async event => {
   event?.preventDefault();
-  if (write && pending) return;
+  if (write && (pending || access.state.pending)) return;
   if (write && event?.submitter?.disabled) return;
   const button = event?.submitter ?? (event?.currentTarget?.tagName === 'BUTTON' ? event.currentTarget : null);
   if (write) { pending++; button?.setAttribute('aria-busy', 'true'); writes(); }
@@ -793,7 +799,7 @@ function updateDirectoryControls() {
   const existing=Boolean(directory?.current_project_id),ambiguous=(directory?.current_registered_project_ids?.length??0)>1;
   $('project-name').required=Boolean(directory&&!existing);
   $('project-template').required=Boolean(directory&&!existing);
-  $('select-directory').disabled=directoryLoading||pending>0||!directory||ambiguous||(!existing&&directory.current_path===directory.browse_root)||(!existing&&(!token||!capabilities?.write?.register_project||!registryDigest||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test($('project-name').value.trim())||!$('project-template').value));
+  $('select-directory').disabled=directoryLoading||pending>0||access.state.pending||!directory||ambiguous||(!existing&&directory.current_path===directory.browse_root)||(!existing&&(!access.state.authorized||!capabilities?.write?.register_project||!registryDigest||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test($('project-name').value.trim())||!$('project-template').value));
   $('select-directory').innerHTML=(projectRegisterAttempt?.uncertain?'确认接入结果':existing?'使用此目录':'添加并使用此目录')+' '+icon('arrow');
 }
 function renderDirectory() {
@@ -818,7 +824,7 @@ async function loadDirectory(path=null) {
     renderDirectory();
   } catch(error) {
     if(error.httpStatus===403&&/AF_PROJECT_BROWSE_ROOT/.test(error.message))error.message='本机目录浏览尚未启用，请在服务端配置可浏览的项目父目录。';
-    $('directory-status').textContent=error.httpStatus===401?'操作权限尚未连接或令牌无效，请重新连接。':error.message;
+    $('directory-status').textContent=error.httpStatus===401?'操作权限已失效，请重新授权。':error.message;
     throw error;
   } finally {directoryLoading=false;updateDirectoryControls();}
 }
@@ -833,7 +839,7 @@ async function useProject(projectId,profileId=null) {
 }
 $('browse-projects').onclick=handle(async()=>{
   if(team||firstChatAttempt?.uncertain||chatAttempt?.uncertain)return;
-  if(!token){openDialog('token-dialog');notice('连接操作权限后，即可浏览本机工作目录。');return;}
+  if(!access.state.authorized){openDialog('token-dialog');notice('授权后，即可浏览本机工作目录。');return;}
   if(!projectRegisterAttempt)directory=null;renderDirectory();openDialog('project-dialog');await loadDirectory(projectRegisterAttempt?.payload.root??null);
 },false);
 $('directory-up').onclick=handle(()=>loadDirectory(directory?.parent_path),false);
@@ -931,13 +937,29 @@ $('work-items').onclick = event => {
   $('work-items').querySelector('[data-work="' + CSS.escape(id) + '"]').focus();
   openDialog('work-dialog');
 };
-$('token-form').onsubmit = event => {
+$('token-form').onsubmit = async event => {
   event.preventDefault();
-  token = $('token').value.trim();
-  try { if (token) sessionStorage.setItem('af-write-token', token); else sessionStorage.removeItem('af-write-token'); } catch {}
-  writes(); $('token-dialog').close();
-  notice(token ? '操作令牌已保存到本次会话。' : '操作令牌已清除。');
+  if(pending||access.state.pending)return;
+  try {
+    if(await access.connectLegacy($('token').value)) {
+      $('token').value='';$('token-dialog').close();
+      notice('操作权限已连接，可继续当前草稿。');
+    }
+  } catch(error) {notice(error.message,'error');}
 };
+async function changeAccess() {
+  if(pending||access.state.pending)return;
+  try {
+    if(!access.state.known){await access.refresh();return;}
+    if(!access.state.authorized&&!access.state.available){openDialog('token-dialog');return;}
+    const revoking=access.state.authorized;
+    if(await (revoking?access.revoke():access.authorize()))notice(revoking?'已取消授权。当前草稿已保留。':'授权成功，可继续当前草稿。');
+  } catch(error) {notice(error.message,'error');}
+}
+$('authorize-access').onclick=changeAccess;
+$('access-panel-action').onclick=changeAccess;
+$('planner-connect-access').onclick=changeAccess;
+access.subscribe(writes);
 for (const id of ['start', 'pause', 'cancel', 'deliver']) $(id).onclick = handle(() => {
   if(id==='start' && team?.planning && team.state==='DISCUSSING'){ $('planner-input').scrollIntoView({block:'center'}); $('planner-input').focus(); return; }
   if(id==='start' && team?.planning && team.state==='PLAN_READY'){openDialog('dispatch-dialog');return;}

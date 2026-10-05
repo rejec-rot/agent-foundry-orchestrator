@@ -39,7 +39,7 @@ import {
   resolveAcceptanceProfile, resolveProject, resolveProjectBrowseRoot,
 } from '../lib/projects.mjs';
 import { collaborationView, queueMessage } from '../lib/collaboration.mjs';
-import { authorizeWrite, resolveWriteToken } from './web-auth.mjs';
+import { authorizeWrite, createLocalWriteSessionAuth, hasValidWriteToken, resolveWriteToken } from './web-auth.mjs';
 import { disabledExecutors } from '../lib/operator-control.mjs';
 import { createCollaborationTeam, commandTeam } from '../lib/team/service.mjs';
 import { supportsModel, supportsPlanner } from '../lib/team/planner.mjs';
@@ -91,7 +91,7 @@ export function readTaskJson(tasksDir, taskId) {
   try { return JSON.parse(readFileSync(join(tasksDir, `${taskId}.json`), 'utf8')); } catch { return null; }
 }
 
-export function capabilities({ allowRecord = false, writesAuthenticated = false, projectBrowsingConfigured = false } = {}) {
+export function capabilities({ allowRecord = false, writesAuthenticated = false, projectBrowsingConfigured = false, localAccessAvailable = false, localAccessReason = null, localAccessReasonCode = null } = {}) {
   return {
     schema: 'af-v2-capabilities-v1',
     read: { task_list: true, task_detail: true, task_evidence: true, task_events: true, task_content: true, collaboration: true, exceptions: true, executors: true, environment: true, recovery_plan: true, submit_preflight: true,
@@ -111,6 +111,11 @@ export function capabilities({ allowRecord = false, writesAuthenticated = false,
       recover_task: false,
       approve_human_gate: false,
       promote: false,
+    },
+    local_access: {
+      available: localAccessAvailable === true,
+      reason: localAccessReason,
+      reason_code: localAccessReasonCode,
     },
     note: writesAuthenticated !== true
       ? 'writes are disabled: no operator token is configured (set AF_WEB_TOKEN_FILE)'
@@ -149,7 +154,11 @@ function sendStatic(res, urlPath) {
     return;
   }
   const body = readFileSync(target);
-  res.writeHead(200, { 'content-type': CONTENT_TYPES[extname(target)] ?? 'application/octet-stream', 'content-length': body.length, 'cache-control': 'no-store' });
+  const frameProtection = extname(target) === '.html' ? {
+    'content-security-policy': "frame-ancestors 'none'",
+    'x-frame-options': 'DENY',
+  } : {};
+  res.writeHead(200, { 'content-type': CONTENT_TYPES[extname(target)] ?? 'application/octet-stream', 'content-length': body.length, 'cache-control': 'no-store', ...frameProtection });
   res.end(body);
 }
 
@@ -167,6 +176,7 @@ export function createReadApi({
   env = process.env,
   maxBodyBytes = 64 * 1024,
   token = null,
+  localSessionAuth: injectedLocalSessionAuth = null,
   locksDir = null,
   spawnWorker = null,
   ensureController = undefined,
@@ -174,7 +184,14 @@ export function createReadApi({
   agentDiscoverer = discoverInstalledAgents,
 } = {}) {
   const writeToken = token ?? resolveWriteToken(env);
-  const writeAuth = (req) => authorizeWrite({ req, token: writeToken, expectedHosts: [req.headers?.host ?? ''] });
+  const localSessionAuth = injectedLocalSessionAuth ?? createLocalWriteSessionAuth({ now });
+  const writeAuth = (req) => authorizeWrite({ req, token: writeToken, expectedHosts: [req.headers?.host ?? ''], localSessionAuth });
+  const localAvailability = (req) => {
+    if (allowRecord !== true) return { available: false, reason: 'restart this server with --allow-write to enable local authorization', reasonCode: 'write_routes_disabled' };
+    if (writeToken.configured !== true) return { available: false, reason: 'local authorization is unavailable because no write token is configured', reasonCode: 'server_credentials_missing' };
+    if (!localSessionAuth.isLocalRequest(req)) return { available: false, reason: 'local authorization is only available from localhost on this server port', reasonCode: 'local_connection_required' };
+    return { available: true, reason: null, reasonCode: null };
+  };
   const shape = (model) => redactModel(model, { redact, hash: hashPaths });
   // Directory browsing and registration are token-authenticated and intentionally return the
   // selected canonical path so the browser can use it in the next request. Other read models keep
@@ -201,7 +218,7 @@ export function createReadApi({
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       // Only explicitly-designed POST routes are accepted; everything else keeps the
       // read-only refusal, and none of them can start, cancel, approve or promote.
-      const postRoutes = new Set(['/api/v2/tasks/preflight', '/api/v2/tasks/record', '/api/v2/tasks/create', '/api/v2/projects/register']);
+      const postRoutes = new Set(['/api/v2/tasks/preflight', '/api/v2/tasks/record', '/api/v2/tasks/create', '/api/v2/projects/register', '/api/v2/access/authorize', '/api/v2/access/revoke']);
       const recoveryMatch = /^\/api\/v2\/tasks\/([^/]+)\/recovery-plan$/.exec(path);
       const actionMatch = /^\/api\/v2\/tasks\/([^/]+)\/(start|cancel)$/.exec(path);
       const messageMatch = /^\/api\/v2\/tasks\/([^/]+)\/messages$/.exec(path);
@@ -241,6 +258,32 @@ export function createReadApi({
       }
 
       try {
+        if (path === '/api/v2/access/authorize') {
+          if (allowRecord !== true || writeToken.configured !== true) {
+            const unavailable = localAvailability(req);
+            sendJson(res, 403, shape({ error: 'local_authorization_unavailable', reason: unavailable.reason }));
+            return;
+          }
+          const grant = localSessionAuth.issue(req);
+          if (!grant.ok) {
+            sendJson(res, grant.status, shape({ error: 'local_authorization_refused', reason: grant.reason }));
+            return;
+          }
+          res.setHeader('set-cookie', grant.cookie);
+          sendJson(res, 200, shape({ schema: 'af-v2-local-access-v1', authorized: true }));
+          return;
+        }
+        if (path === '/api/v2/access/revoke') {
+          const revoked = localSessionAuth.revoke(req);
+          if (!revoked.ok) {
+            sendJson(res, revoked.status, shape({ error: 'local_authorization_revoke_refused', reason: revoked.reason }));
+            return;
+          }
+          res.setHeader('set-cookie', revoked.cookie);
+          sendJson(res, 200, shape({ schema: 'af-v2-local-access-v1', authorized: false }));
+          return;
+        }
+
         if (path === '/api/v2/projects/register') {
           const allowedFields = new Set(['root', 'project_id', 'template_project_id', 'template_profile_id', 'expected_registry_digest']);
           if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).some((key) => !allowedFields.has(key))) {
@@ -431,6 +474,18 @@ export function createReadApi({
 
     const at = now();
     try {
+      if (path === '/api/v2/access/status') {
+        const local = localAvailability(req);
+        const authorized = hasValidWriteToken(req, writeToken)
+          || (allowRecord === true && writeToken.configured === true && localSessionAuth.isAuthorized(req));
+        return sendJson(res, 200, shape({
+          schema: 'af-v2-local-access-v1',
+          authorized,
+          local_authorization_available: local.available,
+          reason: authorized ? null : (local.available ? 'authorize this browser session to enable write actions' : local.reason),
+          reason_code: authorized ? null : (local.available ? 'authorization_required' : local.reasonCode),
+        }));
+      }
       if(path==='/api/v2/project-directories') {
         const auth=writeAuth(req);
         if(!auth.ok) return sendJson(res,auth.status,shape({error:'unauthorized',reason:auth.reason}));
@@ -457,14 +512,17 @@ export function createReadApi({
       }
       if (path === '/api/v2/capabilities') {
         const registry = loadProjectRegistry({ file: env.AF_PROJECTS_FILE ?? join(process.cwd(), 'config', 'projects.json') });
-        return sendJson(res, 200, shape({
-          ...capabilities({ allowRecord, writesAuthenticated: writeToken.configured === true, projectBrowsingConfigured: resolveProjectBrowseRoot(env).ok }),
+        const local = localAvailability(req);
+        const model = {
+          ...capabilities({ allowRecord, writesAuthenticated: writeToken.configured === true, projectBrowsingConfigured: resolveProjectBrowseRoot(env).ok,
+            localAccessAvailable: local.available, localAccessReason: local.reason, localAccessReasonCode: local.reasonCode }),
           planner_decision:plannerDecisionConfig(env),
           projects: registry.ok
             ? { configured: true, digest: registry.digest, count: registry.registry.projects.length }
             : { configured: registry.configured === true, digest: null, count: 0, reason: registry.reason },
           generated_at: new Date(at).toISOString(),
-        }));
+        };
+        return sendJson(res, 200, shape(model));
       }
       if (path === '/api/v2/tasks') {
         const model = buildOverview({ roots, now: at });

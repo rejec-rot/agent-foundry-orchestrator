@@ -1,8 +1,8 @@
 // web-write-browser.mjs - a REAL browser check of the authenticated write path (§7.3).
 //
 // The point is the difference between "the button is disabled" and "the server refuses": this
-// drives the page, saves the operator token through the UI, creates and cancels a task, and proves
-// that the SAME request without the token is rejected by the server, not merely greyed out.
+// drives the page, grants this browser a local session, creates and cancels a task, and proves that
+// the SAME request without authorization is rejected by the server, not merely greyed out.
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -18,7 +18,7 @@ const BREAKPOINTS = [1440, 390];
 const TOKEN = 'browser-operator-token';
 const checks = [];
 const check = (name, ok, detail = '') => {
-  checks.push({ name, ok });
+  checks.push({ name, ok, ...(!ok && detail ? { detail } : {}) });
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -137,10 +137,11 @@ try {
   // 1. Server capabilities say writes are possible; the PAGE still has no token, so its buttons
   //    must stay disabled. Capability and page state are different things on purpose.
   const disabled = await evaluate("({ create: document.getElementById('s-create').disabled, start: document.getElementById('a-start').disabled, mode: document.getElementById('mode-line').textContent })");
-  check('the create button is disabled until a token is saved', disabled?.create === true, JSON.stringify(disabled));
-  check('the page states that writes are enabled by the server', /写操作已启用/.test(String(disabled?.mode)), String(disabled?.mode));
+  check('the create button is disabled until this browser is authorized', disabled?.create === true, JSON.stringify(disabled));
+  check('the server advertises write capabilities before browser authorization', /create_task/.test(String(await evaluate("document.getElementById('capabilities').textContent"))), String(await evaluate("document.getElementById('capabilities').textContent")));
+  check('the primary action offers one-click authorization', await evaluate("document.getElementById('access-label').textContent.trim()==='一键授权'"));
   const badgeWithoutToken = await evaluate("(()=>{const b=document.getElementById('mode-badge');return {readonly:b.classList.contains('readonly'),write:b.classList.contains('write'),text:b.textContent.trim()}})()");
-  check('server write capability keeps the badge read-only until this browser has a token', badgeWithoutToken?.readonly === true && badgeWithoutToken?.write === false, JSON.stringify(badgeWithoutToken));
+  check('server write capability keeps the badge read-only before authorization', badgeWithoutToken?.readonly === true && badgeWithoutToken?.write === false && badgeWithoutToken?.text === '尚未授权', JSON.stringify(badgeWithoutToken));
 
   // 2. The real refusal - not the greyed-out button. A write without a token must be rejected by
   //    the SERVER, in the page's own context.
@@ -152,14 +153,17 @@ try {
   check('an unauthenticated write is refused by the server (401)', unauthed?.status === 401, JSON.stringify(unauthed));
   check('no task was created by the refused write', readdirSync(fx.tasks).filter((n) => n.endsWith('.json')).length === 0);
 
-  // 3. Save the token through the UI, then create a task with the form.
-  await evaluate("document.getElementById('token-input').value = 'browser-operator-token'");
-  await evaluate("document.getElementById('token-save').click()");
-  await sleep(300);
-  const afterToken = await evaluate("(()=>{const b=document.getElementById('mode-badge');return {create:document.getElementById('s-create').disabled,input:document.getElementById('token-input').value,stored:sessionStorage.getItem('af-write-token')==='browser-operator-token',write:b.classList.contains('write'),text:b.textContent.trim()}})()");
-  check('saving the token enables the create button', afterToken?.create === false, JSON.stringify(afterToken));
-  check('the token input is cleared and never left in the DOM', afterToken?.input === '', `value=${JSON.stringify(afterToken?.input)}`);
-  check('saving the token changes the badge to writable', afterToken?.stored === true && afterToken?.write === true && afterToken?.text === '可写', JSON.stringify({ stored: afterToken?.stored, write: afterToken?.write, text: afterToken?.text }));
+  // 3. Grant this browser through the one-click local authorization UI, then create a task.
+  await evaluate("document.getElementById('authorize-access').click()");
+  let afterGrant = null;
+  for (let i = 0; i < 30; i += 1) {
+    await sleep(200);
+    afterGrant = await evaluate("(()=>{const b=document.getElementById('mode-badge');return {create:document.getElementById('s-create').disabled,label:document.getElementById('access-label').textContent.trim(),stored:sessionStorage.getItem('af-write-token'),write:b.classList.contains('write'),text:b.textContent.trim()}})()");
+    if (afterGrant?.label === '取消授权' && afterGrant?.text === '已授权 · 可写') break;
+  }
+  check('one-click authorization enables the create button', afterGrant?.create === false && afterGrant?.label === '取消授权', JSON.stringify(afterGrant));
+  check('one-click authorization changes the badge to writable', afterGrant?.write === true && afterGrant?.text === '已授权 · 可写', JSON.stringify({ write: afterGrant?.write, text: afterGrant?.text }));
+  check('local authorization stores no configured token in session storage', afterGrant?.stored === null, JSON.stringify({ stored: afterGrant?.stored }));
 
   await evaluate("document.getElementById('s-goal').value = 'browser created task'");
   await evaluate(`document.getElementById('s-target').value = ${JSON.stringify(fx.target)}`);
@@ -173,7 +177,8 @@ try {
   const taskId = taskFiles[0]?.replace(/\.json$/, '');
 
   // 4. Start it: the request must be accepted and the worker (here a stub) dispatched.
-  await evaluate(`state.selected = ${JSON.stringify(taskId)}; refreshWriteControls();`);
+  await evaluate(`(()=>{const row=[...document.querySelectorAll('#tasks .row')].find(el=>el.dataset.id===${JSON.stringify(taskId)});if(!row)throw new Error('created task row not rendered');row.click()})()`);
+  await sleep(400);
   const startDisabled = await evaluate("document.getElementById('a-start').disabled");
   check('the start button enables for a selected task', startDisabled === false, `disabled=${startDisabled}`);
   await evaluate("document.getElementById('a-start').click()");
@@ -192,21 +197,30 @@ try {
   //     carried out - only that it is queued.
   await evaluate("document.getElementById('msg-text').value = 'please re-run the review with the stricter gate'");
   const sendDisabled = await evaluate("document.getElementById('msg-send').disabled");
-  check('the queue-message button enables with a token and a selection', sendDisabled === false, `disabled=${sendDisabled}`);
+  check('the queue-message button enables with authorization and a selection', sendDisabled === false, `disabled=${sendDisabled}`);
   await evaluate("document.getElementById('msg-send').click()");
   await sleep(1500);
   const collab = await evaluate("document.getElementById('collab').textContent");
   check('the queued message is visible with its honest status', /已排队/.test(String(collab)), String(collab).slice(0, 200));
   check('the page never claims the message was carried out', !/已落实/.test(String(collab)) || /没有/.test(String(collab)), String(collab).slice(0, 200));
 
-  // 6. The token never leaks into the URL or the visible DOM text.
-  const leak = await evaluate("({ url: location.href, html: document.documentElement.outerHTML.includes('browser-operator-token') })");
-  check('the token is not in the URL', !String(leak?.url).includes(TOKEN), String(leak?.url));
-  check('the token is not in the rendered DOM', leak?.html === false);
+  // 6. The configured operator credential never enters the browser. Revoke through the same
+  //    one-click control, then prove that the page returns to read-only mode.
+  const leak = await evaluate("({ url: location.href, html: document.documentElement.outerHTML.includes('browser-operator-token'), stored: sessionStorage.getItem('af-write-token') })");
+  check('the configured token is not in the URL', !String(leak?.url).includes(TOKEN), String(leak?.url));
+  check('the configured token is not in the rendered DOM', leak?.html === false);
+  check('the configured token is not in session storage', leak?.stored === null, JSON.stringify({ stored: leak?.stored }));
 
-  const cleared = await evaluate("(()=>{document.getElementById('token-clear').click();const b=document.getElementById('mode-badge');return {create:document.getElementById('s-create').disabled,readonly:b.classList.contains('readonly'),write:b.classList.contains('write'),stored:sessionStorage.getItem('af-write-token')===null}})()");
-  check('clearing the browser token returns the badge to read-only and disables writes', cleared?.create === true && cleared?.readonly === true && cleared?.write === false && cleared?.stored === true, JSON.stringify(cleared));
-  await evaluate(`(()=>{document.getElementById('s-target').value='';document.getElementById('s-goal').value='';document.getElementById('s-key').value='';document.getElementById('submit-result').hidden=true;document.getElementById('submit-result').textContent='';state.selected=null;document.getElementById('detail').replaceChildren();renderTasks();})()`);
+  await evaluate("document.getElementById('authorize-access').click()");
+  let revoked = null;
+  for (let i = 0; i < 30; i += 1) {
+    await sleep(200);
+    revoked = await evaluate("(()=>{const b=document.getElementById('mode-badge');return {create:document.getElementById('s-create').disabled,readonly:b.classList.contains('readonly'),write:b.classList.contains('write'),stored:sessionStorage.getItem('af-write-token'),label:document.getElementById('access-label').textContent.trim()}})()");
+    if (revoked?.label === '一键授权' && revoked?.readonly) break;
+  }
+  check('revoking through the same button returns the badge to read-only and disables writes', revoked?.create === true && revoked?.readonly === true && revoked?.write === false && revoked?.label === '一键授权', JSON.stringify(revoked));
+  check('revoking local authorization leaves no token in session storage', revoked?.stored === null, JSON.stringify({ stored: revoked?.stored }));
+  await evaluate(`(()=>{for(const id of ['s-target','s-goal','s-key','msg-text']){const el=document.getElementById(id);if(el)el.value='';}document.getElementById('submit-result').hidden=true;document.getElementById('submit-result').textContent='';for(const id of ['detail','timeline','collab'])document.getElementById(id)?.replaceChildren();history.replaceState(null,'',location.pathname);for(const row of document.querySelectorAll('#tasks .row'))row.setAttribute('aria-current','false');})()`);
   const screenshotSafe = await evaluate(`(()=>{const text=document.body.innerText;return !text.includes(${JSON.stringify(fx.target)})&&!document.documentElement.outerHTML.includes(${JSON.stringify(TOKEN)})})()`);
   check('palette screenshots contain no fixture path or token', screenshotSafe === true);
 

@@ -46,7 +46,7 @@
     <main class="workspace" id="workspace" tabindex="-1">
       <header class="topbar">
         <div class="topbar-location"><button class="icon-button mobile-menu" id="menu-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg class="icon"><use href="#i-menu"/></svg></button><span class="breadcrumb">WORKSPACE <span>/</span> <strong>COLLABORATION</strong></span></div>
-        <div class="topbar-actions"><span id="connection" class="connection" role="status"><i></i><span>连接中</span></span><button class="access-button" type="button" data-open="token-dialog"><svg class="icon"><use href="#i-key"/></svg><span id="access-label">连接令牌</span></button></div>
+        <div class="topbar-actions"><span id="connection" class="connection" role="status"><i></i><span>连接中</span></span><button class="access-button access-primary" id="authorize-access" type="button" disabled><svg class="icon"><use href="#i-key"/></svg><span id="access-label">正在确认权限</span></button></div>
       </header>
       <div class="workspace-content">
         <section class="hero" aria-labelledby="page-heading">
@@ -89,7 +89,7 @@
               <div id="planner-conversation" class="planner-conversation" role="log" aria-label="与 Planner 的对话" aria-live="polite"><div class="chat-empty"><span class="calling-card" aria-hidden="true">LET'S<br><b>MAKE A MOVE.</b><i>✦</i></span><h4>好计划，从一次对话开始。</h4><p>讨论目标、边界和验收要求。<br>满意后，再决定让谁开工。</p></div></div>
               <div class="chat-suggestions" aria-label="对话建议"><button type="button" data-prompt="先帮我分析这个目标的边界和约束。">分析目标 <span>↗</span></button><button type="button" data-prompt="你建议分给几个 Worker？解释分工和模型选择的理由。">推荐编组 <span>↗</span></button><button type="button" data-prompt="请帮我明确每一步的输出和验收要求。">明确验收 <span>↗</span></button></div>
               <form id="planner-chat-form" class="planner-composer"><label class="sr-only" for="planner-input">发送给 Planner 的消息</label><textarea id="planner-input" rows="2" maxlength="4000" required aria-describedby="planner-chat-hint" placeholder="告诉 Planner，你想怎样完成这个目标…"></textarea><button id="planner-send" class="chat-send" type="submit" data-write disabled aria-label="发送给 Planner"><svg class="icon"><use href="#i-arrow"/></svg></button></form>
-              <div class="planner-chat-access"><p id="planner-chat-hint" role="status">正在连接工作空间…</p><button id="planner-connect-access" class="text-button" type="button" data-open="token-dialog" hidden>连接操作权限 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+              <div class="planner-chat-access"><p id="planner-chat-hint" role="status">正在连接工作空间…</p><button id="planner-connect-access" class="text-button" type="button" hidden>一键授权 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
               <div class="planner-footer"><span id="dispatch-mode-label">由你确认，团队才开工。</span><button id="propose-plan" class="btn btn-ink" type="button" data-write disabled>生成行动计划 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
             </section>
             <section id="work-area" class="work-area" aria-labelledby="work-heading" hidden>
@@ -108,7 +108,7 @@
               <div id="receipts" class="team-history" role="tabpanel" aria-labelledby="receipts-tab" tabindex="0" hidden></div>
               <p class="activity-footnote">所有对话、改向和派工都会留下回执。</p>
           </section>
-          <div class="mission-bottom"><span id="access-hint">连接操作令牌后，即可启动和调整团队。</span><button class="text-button" type="button" data-open="replan-dialog">调整整体目标 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+          <div class="mission-bottom"><span id="access-hint">授权后，即可启动和调整团队。</span><button class="text-button" type="button" data-open="replan-dialog">调整整体目标 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
         </section>
         <footer class="workspace-footer"><span>AGENT FOUNDRY <b>© 2026</b></span><span>BUILT FOR THE NEXT MOVE. <span aria-hidden="true">✦</span></span></footer>
       </div>
@@ -129,8 +129,9 @@
     <form id="dispatch-form" class="form"><p id="dispatch-plan-version" class="form-hint"></p><label class="field workers-field"><span>Worker 数量 <output id="dispatch-workers-output" for="dispatch-workers">3</output></span><input id="dispatch-workers" type="range" min="1" max="8" value="3" step="1"><small>每位 Worker 都可独立选择 Agent、模型与思考强度。</small></label><div id="worker-profiles" class="worker-profiles"></div><div id="assignment-heading" class="assignment-heading">确认任务分配 <span>THE ASSIGNMENTS</span></div><div id="work-assignments" class="work-assignments"></div><p class="form-hint" id="worker-profile-hint">Planner / Reviewer 的模型保持一致。开工后，修改单个任务会先交回 Planner。</p><div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>返回协作</button><button id="approve-plan" class="btn btn-red" type="submit" disabled>确认并开工 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
   </dialog>
   <dialog class="dialog dialog-small" id="token-dialog" aria-labelledby="token-heading">
-    <div class="dialog-heading"><div><p class="eyebrow">YOUR ACCESS</p><h2 id="token-heading">连接操作权限。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭操作权限窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
-    <form id="token-form" class="form"><p class="dialog-description">使用服务端配置的操作令牌，启动团队、发送消息和调整工作方向。</p><label class="field"><span>操作令牌</span><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="输入你的操作令牌" autofocus></label><p class="form-hint">仅保存在当前浏览器会话，关闭会话后失效。</p><div class="dialog-actions"><button class="btn btn-quiet" type="button" data-close>取消</button><button class="btn btn-red" id="save-token" type="submit">连接 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form>
+    <div class="dialog-heading"><div><p class="eyebrow">YOUR ACCESS</p><h2 id="token-heading">操作权限。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭操作权限窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <div class="access-panel"><p id="access-status" class="access-status" role="status">正在确认操作权限…</p><p id="access-description" class="dialog-description">授权此浏览器后，即可启动团队、发送消息和调整工作方向。</p><button id="access-panel-action" class="btn btn-red" type="button" disabled>一键授权 <svg class="icon"><use href="#i-arrow"/></svg></button><p id="access-feedback" class="form-hint" role="status" hidden></p></div>
+    <details class="access-advanced" id="access-advanced"><summary>高级连接</summary><form id="token-form" class="form"><p class="dialog-description">远程连接可使用服务端配置的操作令牌。</p><label class="field"><span>操作令牌</span><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="输入操作令牌"></label><p class="form-hint">仅保存在当前浏览器会话。</p><div class="dialog-actions"><button class="btn btn-red" id="save-token" type="submit">连接 <svg class="icon"><use href="#i-arrow"/></svg></button></div></form></details>
   </dialog>
   <dialog class="dialog" id="message-dialog" aria-labelledby="message-heading">
     <div class="dialog-heading"><div><p class="eyebrow">KEEP THE CONVERSATION GOING</p><h2 id="message-heading">给团队一个信号。</h2></div><button class="icon-button" type="button" data-close aria-label="关闭消息窗口"><svg class="icon"><use href="#i-close"/></svg></button></div>

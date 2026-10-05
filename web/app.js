@@ -1,3 +1,5 @@
+import { createAccess, renderAccess } from './access.js';
+
 // app.js - V2 delivery workbench. Zero dependencies, offline-capable.
 //
 // Read projections and authenticated commands keep server capabilities authoritative.
@@ -11,10 +13,9 @@ const STAGES = [
 
 const state = {
   tasks: [], selected: null, selectionVersion: 0, filter: '', capabilities: null, plan: null,
-  // The operator token lives in memory + sessionStorage only: never localStorage (which would
-  // outlive the tab), never a cookie, never a URL, never the DOM as a value.
-  token: (() => { try { return sessionStorage.getItem('af-write-token') || ''; } catch { return ''; } })(),
+  pending: false,
 };
+const access = createAccess();
 
 const $ = (id) => document.getElementById(id);
 const submissionKey = () => 'delivery-' + (crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join(''));
@@ -31,7 +32,7 @@ function fmtTime(value) {
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 async function getJson(path) {
-  const res = await fetch(path, { headers: { accept: 'application/json' } });
+  const res = await fetch(path, { cache: 'no-store', credentials: 'same-origin', headers: { accept: 'application/json' } });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const err = new Error(body?.reason ?? `${res.status} ${res.statusText}`);
@@ -43,15 +44,16 @@ async function getJson(path) {
 }
 
 function authHeaders() {
-  return { 'content-type': 'application/json', 'x-af-csrf': '1', authorization: `Bearer ${state.token}` };
+  return { 'content-type': 'application/json', 'x-af-csrf': '1', ...access.headers() };
 }
 
 /** A write call. Failures are surfaced verbatim: the server's refusal is the useful message. */
 async function postWrite(path, body = {}) {
-  const res = await fetch(path, { method: 'POST', headers: authHeaders(), body: JSON.stringify(body) });
+  const res = await fetch(path, { method: 'POST', credentials: 'same-origin', headers: authHeaders(), body: JSON.stringify(body) });
   const payload = await res.json().catch(() => null);
   const model = payload?.model ?? payload;
   if (!res.ok) {
+    if(res.status===401)access.invalidate();
     const err = new Error(model?.reason ?? `${res.status} ${res.statusText}`);
     err.status = res.status;
     err.body = model;
@@ -100,35 +102,40 @@ function renderTimeline(model) {
 
 function refreshWriteControls() {
   const caps = state.capabilities?.write ?? {};
-  const can = (name) => caps[name] === true && state.token.length > 0;
+  const can = (name) => caps[name] === true && access.state.authorized && !state.pending && !access.state.pending;
+  const reason = access.state.error || (!access.state.known ? '正在确认操作权限…' : !access.state.authorized ?
+    (access.state.available ? '点击「一键授权」后可用。' : access.state.reason || '请连接操作权限。') : '服务端未启用此操作。');
   const create = $('s-create');
   const start = $('a-start');
   const cancel = $('a-cancel');
-  if (create) { create.disabled = !can('create_task'); create.title = can('create_task') ? '创建 V2 任务（幂等键相同则返回原任务）' : '需要服务端 --allow-write 且已保存令牌'; }
-  if (start) { start.disabled = !can('start_task') || !state.selected; start.title = can('start_task') ? '交给分离的 worker 执行；请求立刻返回' : '需要服务端 --allow-write 且已保存令牌'; }
-  if (cancel) { cancel.disabled = !can('cancel_task') || !state.selected; cancel.title = can('cancel_task') ? '持久化取消请求；在下一个受信边界生效，ref 更新后只记录为太迟' : '需要服务端 --allow-write 且已保存令牌'; }
+  const record = $('s-record');
+  if (create) { create.disabled = !can('create_task'); create.title = can('create_task') ? '创建 V2 任务（幂等键相同则返回原任务）' : reason; }
+  if (start) { start.disabled = !can('start_task') || !state.selected; start.title = can('start_task') ? '交给分离的 worker 执行；请求立刻返回' : reason; }
+  if (cancel) { cancel.disabled = !can('cancel_task') || !state.selected; cancel.title = can('cancel_task') ? '持久化取消请求；在下一个受信边界生效，ref 更新后只记录为太迟' : reason; }
+  if (record) { record.disabled = !can('record_task'); record.title = can('record_task') ? '保存交付草稿，不会启动任务。' : reason; }
   const note = $('detail-actions-note');
   const send = $('msg-send');
-  if (send) send.disabled = !(caps.queue_message === true && state.token.length > 0 && state.selected);
+  if (send) send.disabled = !can('queue_message') || !state.selected;
   const msgNote = $('msg-note');
   if (msgNote) msgNote.textContent = caps.queue_message === true
-    ? (state.token.length > 0 ? '排队不会打断正在运行的进程' : '已启用：保存操作令牌后才能排队')
+    ? (access.state.authorized ? '排队不会打断正在运行的进程' : reason)
     : '服务端未启用写路由';
   if (note) {
     note.textContent = !state.capabilities ? '' : (!state.capabilities.write.create_task
       ? (state.capabilities.note ?? '写操作不可用')
-      : (state.token.length > 0 ? '' : '已启用写路由：保存操作令牌后才能使用'));
+      : (access.state.authorized ? '' : reason));
   }
-  const tokenNote = $('token-note');
-  if (tokenNote) tokenNote.textContent = state.token.length > 0 ? '令牌已保存到本页会话（关闭标签页即失效）' : '无令牌时所有写操作都会失败；服务端拒绝未鉴权的请求';
+  renderAccess(access, { writeAvailable: Object.values(caps).some(value => value === true), busy: state.pending });
   setModeBadge();
   const mode = $('mode-line');
-  if (mode) mode.textContent = state.capabilities?.write?.create_task === true
-    ? '写操作已启用：创建 / 启动 / 取消（每次请求都需令牌；审批与提升仍不开放）。'
-    : '本页只读：写操作需要服务端 --allow-write 与操作令牌。';
+  if (mode) mode.textContent = state.capabilities?.write?.create_task === true && access.state.authorized
+    ? '操作权限已连接：可创建、启动和取消任务。'
+    : reason;
 }
 
 async function runWrite(label, fn) {
+  if(state.pending||access.state.pending)return;
+  state.pending=true;refreshWriteControls();
   const out = $('submit-result');
   if (out) { out.hidden = false; out.className = 'evidence'; out.textContent = `正在${label}…`; }
   try {
@@ -138,7 +145,7 @@ async function runWrite(label, fn) {
   } catch (err) {
     if (out) { out.className = 'evidence bad'; out.textContent = `✖ ${label}失败：${err.message}`; }
     return null;
-  }
+  } finally {state.pending=false;refreshWriteControls();}
 }
 
 function setConn(live, detail) {
@@ -157,12 +164,12 @@ function setModeBadge() {
   const el = $('mode-badge');
   if (!el) return;
   const writable = state.capabilities?.write?.create_task === true;
-  const hasToken = state.token.length > 0;
-  const text = !writable ? '只读' : (hasToken ? '可写' : '仅读（写路由已启用）');
-  el.className = `mode badge ${writable && hasToken ? 'write' : 'readonly'}`;
+  const authorized = access.state.authorized;
+  const text = !state.capabilities || !access.state.known ? '权限尚未确认' : !writable ? '只读' : (authorized ? '已授权 · 可写' : '尚未授权');
+  el.className = `mode badge ${writable && authorized ? 'write' : 'readonly'}`;
   el.title = writable
-    ? (hasToken ? '写操作可用：创建 / 启动 / 取消（审批与提升仍不开放）' : '服务端已启用写路由；保存操作令牌后才能使用')
-    : '首版只读：没有任何启动/取消/批准/提升操作';
+    ? (authorized ? '操作权限已连接，可创建、启动和取消任务。' : '授权此浏览器后即可使用写操作。')
+    : '当前服务未启用写操作。';
   el.innerHTML = `${LOCK_GLYPH}${esc(text)}`;
 }
 
@@ -230,6 +237,7 @@ function blockValue(block, fallback = '—') {
 function taskFromHash() {
   try {
     const id = decodeURIComponent(location.hash.slice(1));
+    if (document.getElementById(id)) return null;
     return /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : null;
   } catch { return null; }
 }
@@ -289,6 +297,7 @@ async function loadRecoveryPlan(taskId, expectedVersion) {
   try {
     const res = await fetch(`/api/v2/tasks/${encodeURIComponent(taskId)}/recovery-plan`, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ expected_state_version: Number(expectedVersion) }),
     });
@@ -386,7 +395,8 @@ async function postSubmit(path) {
   try {
     const res = await fetch(path, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      headers: path.endsWith('/record') ? authHeaders() : { 'content-type': 'application/json' },
       body: JSON.stringify({ spec: submitPayload() }),
     });
     const payload = await res.json();
@@ -485,36 +495,54 @@ async function boot() {
     await refreshList();
     return model;
   }));
-  $('token-save').addEventListener('click', () => {
-    state.token = $('token-input').value.trim();
-    try { sessionStorage.setItem('af-write-token', state.token); } catch { /* session-only fallback */ }
-    $('token-input').value = '';
-    refreshWriteControls();
+  $('token-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    if(state.pending||access.state.pending)return;
+    try {
+      if(await access.connectLegacy($('token-input').value)) {
+        $('token-input').value='';$('access-advanced').open=false;
+        showAccessResult('操作权限已连接，可继续当前草稿。');
+      }
+    } catch(error) {showAccessResult(error.message,true);}
   });
-  $('token-clear').addEventListener('click', () => {
-    state.token = '';
-    try { sessionStorage.removeItem('af-write-token'); } catch { /* nothing to clear */ }
-    refreshWriteControls();
-  });
+  const changeAccess = async () => {
+    if(state.pending||access.state.pending)return;
+    try {
+      if(!access.state.known){await access.refresh();return;}
+      if(!access.state.authorized&&!access.state.available){$('access-details').open=true;$('access-advanced').open=true;return;}
+      const revoking=access.state.authorized;
+      if(await (revoking?access.revoke():access.authorize()))showAccessResult(revoking?'已取消授权。当前草稿已保留。':'授权成功，可继续当前草稿。');
+    } catch(error) {showAccessResult(error.message,true);}
+  };
+  $('authorize-access').addEventListener('click',changeAccess);
+  $('access-panel-action').addEventListener('click',changeAccess);
+  access.subscribe(refreshWriteControls);
+  refreshWriteControls();
 
   try {
     const payload = await getJson('/api/v2/capabilities');
     state.capabilities = payload.model ?? payload;
     $('capabilities').textContent = `写操作：${Object.entries(state.capabilities.write).filter(([, v]) => v).map(([k]) => k).join(', ') || '无'}`;
-    const recordBtn = $('s-record');
-    if (state.capabilities.write.record_task === true) {
-      recordBtn.disabled = false;
-      recordBtn.title = '只写入 PREPARED 记录（started=false），不会启动任务';
-    }
     refreshWriteControls();
   } catch { /* the banner stays empty; the footer already says this page is read-only */ }
+  await access.refresh();
   await refreshList();
   const bookmarkedTask = taskFromHash();
   if (bookmarkedTask && !state.selected) await selectTask(bookmarkedTask);
   await refreshSide();
   setInterval(refreshList, 5000);
   setInterval(refreshSide, 30000);
+  setInterval(() => {if(!document.hidden)void access.refresh();},1500);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)void access.refresh();});
   setInterval(() => { if (state.selected) selectTask(state.selected); }, 3000);
+}
+
+function showAccessResult(message, failed=false) {
+  $('access-feedback').textContent=message;$('access-feedback').hidden=false;
+  if(failed) {
+    $('access-details').open=true;
+    const out=$('submit-result');out.hidden=false;out.className='evidence bad';out.textContent=message;
+  }
 }
 
 boot();

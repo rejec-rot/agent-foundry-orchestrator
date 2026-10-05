@@ -150,7 +150,7 @@ Trusted Import 交付服务接纳 `workspace` 代码成果；团队的工作图�
 
 浏览器默认进入 Persona 5 视觉风格协作空间：红黑白、斜切海报排版、原创面具、漫画对话气泡、行动卡片和四步流程条。协作空间与交付工作台共用本地加载的 Anton、Space Grotesk 和得意黑，以及带错位底板、箭头区和按压反馈的按钮。Planner 对话独占整行，计划与派工确认位于下方；聊天区放大文字和发送按钮。新建目标直接进入 Planner，Worker 编组、定向调整和运行记录使用弹窗。手机端成员横向滚动，减少顶部占用。
 
-两页的面板、成员卡片、工作项、表单、折叠设置与全部弹窗共用 P5 边框：黑色描边、斜切角、错位底板，以及表示选中或执行状态的红色强调。交付工作台的权限标识、连接状态、任务标签与已完成阶段也采用红黑纸白配色；只读与可写通过底色和文字区分，未保存操作令牌仍显示只读标识。文字输入保留完整区域，弹窗仍使用原生焦点与滚动；高对比模式保留系统边框。交付队列独立滚动，长卡片保持文字和状态标签的完整高度。
+两页的面板、成员卡片、工作项、表单、折叠设置与全部弹窗共用 P5 边框：黑色描边、斜切角、错位底板，以及表示选中或执行状态的红色强调。交付工作台的权限标识、连接状态、任务标签与已完成阶段也采用红黑纸白配色；只读与可写通过底色和文字区分，浏览器尚未授权时仍显示只读标识。文字输入保留完整区域，弹窗仍使用原生焦点与滚动；高对比模式保留系统边框。交付队列独立滚动，长卡片保持文字和状态标签的完整高度。
 
 [Planner 桌面预览](docs/previews/persona-workspace/planner-desktop.png) · [Planner 手机预览](docs/previews/persona-workspace/planner-mobile.png) · [手机编组窗口](docs/previews/persona-workspace/planner-dispatch-mobile.png) · [界面与验证说明](docs/design/PERSONA-COLLABORATION-WORKSPACE.md)
 
@@ -169,15 +169,19 @@ node af-admin.mjs web serve --port 8787
 # 打开 http://127.0.0.1:8787/，默认进入 /teams.html
 ```
 
-交付工作台位于 `/workbench.html`，采用同一套 Persona 视觉语言；旧的 `/#TASK-*` 详情链接会保留任务标识并转到交付工作台。浏览器写操作仍使用下文的 `--allow-write` 与操作令牌配置。
+交付工作台位于 `/workbench.html`，采用同一套 Persona 视觉语言；旧的 `/#TASK-*` 详情链接会保留任务标识并转到交付工作台。服务端以 `--allow-write` 和既有操作令牌配置开启写路由；本机浏览器点击顶部“一键授权”即可操作。
+
+本机一键授权适用于 `localhost`、`127.0.0.1` 或 `[::1]`，同一地址与端口的团队页和交付页共用浏览器授权。点击“取消授权”后恢复只读，当前草稿继续保留。授权不会启动 Agent、创建任务或触发模型扫描。页面只读取授权状态，服务器配置的操作令牌不会发送给浏览器。
+
+会话使用 HttpOnly Cookie，服务端最长接受 8 小时；浏览器结束会话、服务重启或取消授权后需要重新授权。浏览器的“恢复上次会话”可能恢复会话 Cookie，但仍受服务端时限约束。远程访问无法一键授权，既有令牌连接保留在折叠的“高级连接”中。
 
 [2026-10-04 系统复检](docs/reviews/2026-10-04-final-system-review.md)：全量 904 项（899 通过、0 失败、5 个既有门控跳过），240 项浏览器检查通过；包含模型档位准确性、共享扫描缓存和现有操作入口。本机目录已复扫，真实模型执行边界另行说明。
 
 先按既有部署要求配置项目注册表、验收 profile 和执行器隔离。目标 spec 保留 V2 的 `goal`、`target_path`、`acceptance`、`idempotency_key`。Planner/Worker 的选择属于鉴权后的团队配置，服务端仍检查执行器是否可用；验收 profile 与项目权限仍由受信注册表绑定。可选模型使用执行器支持的模型 ID，留空沿用其 CLI 默认配置。
 
-直接聊天读取 `GET /api/v2/projects` 的项目 ID 与验收标准 ID。创建时提交顶层 `project_id`、`profile_id` 和 `spec: {goal, idempotency_key}`，由服务端从同一受信注册表解析路径与验收命令；此模式拒绝调用方同时提供路径或验收覆盖。配置 `AF_PROJECTS_FILE`、`AF_WEB_TOKEN_FILE` 后以 `--allow-write --root` 启动服务，在页面连接一次操作令牌即可发送。只读启动仍可浏览。
+直接聊天读取 `GET /api/v2/projects` 的项目 ID 与验收标准 ID。创建时提交顶层 `project_id`、`profile_id` 和 `spec: {goal, idempotency_key}`，由服务端从同一受信注册表解析路径与验收命令；此模式拒绝调用方同时提供路径或验收覆盖。配置 `AF_PROJECTS_FILE`、`AF_WEB_TOKEN_FILE` 后以 `--allow-write --root` 启动服务，本机访问时点击页面顶部“一键授权”即可发送，无需查找文件或复制令牌。只读启动仍可浏览。
 
-工作项目旁的“浏览目录”打开本机目录选择器，可选已有项目，也可将兼容既有验收标准的新目录接入同一项目注册表。目录浏览要求操作令牌和显式配置的 `AF_PROJECT_BROWSE_ROOT`，只列当前层的文件夹；不上传项目文件，也不调用模型。新增项目需要选择已有的可信验收标准，服务端检查命令允许列表、所需文件与验收资产摘要；不从页面接收自由验收命令。建议将浏览范围配置为项目父目录，例如：
+工作项目旁的“浏览目录”打开本机目录选择器，可选已有项目，也可将兼容既有验收标准的新目录接入同一项目注册表。目录浏览要求浏览器已授权和显式配置的 `AF_PROJECT_BROWSE_ROOT`，只列当前层的文件夹；不上传项目文件，也不调用模型。新增项目需要选择已有的可信验收标准，服务端检查命令允许列表、所需文件与验收资产摘要；不从页面接收自由验收命令。建议将浏览范围配置为项目父目录，例如：
 
 ```bash
 AF_PROJECT_BROWSE_ROOT=/absolute/path/to/projects \
@@ -232,7 +236,7 @@ node af-admin.mjs executor connect --installed --json
 
 首次操作会启动持有全局团队租约的本地控制器；也可用 `node af-admin.mjs team serve` 在前台运行。前台服务收到 SIGINT/SIGTERM 时停止派发并等待受控执行范围退出。运行目录与任务目录通过 `AF_RUNTIME_DIR`、`AF_TASKS_DIR`、`AF_LOCKS_DIR` 或对应 CLI 参数配置，所有入口应使用同一组目录。自动启动的进程 PID 和 owner token 在 `locks/team-controller.lock`，日志在 `runtime/team-controller.log`。
 
-Web 使用现有令牌鉴权启动：`node af-admin.mjs web serve --allow-write --root /path/to/registered-project`，打开 `/teams.html`。页面支持创建、启动、查看分工、成员消息、定向调整、暂停和继续交付。消息在下一轮执行中领取；不会显示未经控制器确认的“已落实”。额度允许时独立工作项并行执行，单项调整保留无关产物；已完成目标再次调整会采用最新 canonical 基线进入新目标版本。
+Web 保留现有服务端令牌配置启动：`node af-admin.mjs web serve --allow-write --root /path/to/registered-project`，打开 `/teams.html`。页面支持创建、启动、查看分工、成员消息、定向调整、暂停和继续交付。消息在下一轮执行中领取；不会显示未经控制器确认的“已落实”。额度允许时独立工作项并行执行，单项调整保留无关产物；已完成目标再次调整会采用最新 canonical 基线进入新目标版本。
 
 首期使用原子文件和不可变顺序日志，未引入数据库或模型框架。跨目标成员共享与模型运行中实时消息注入尚未实现。设计、部署假设和验收证据分别见[方案二](docs/design/MULTI-AGENT-PLAN-B-COLLABORATION-CORE.md)、[ADR 0011](docs/adr/0011-team-collaboration-controller.md) 和[实施记录](docs/reviews/2026-10-01-team-core-implementation.md)。
 

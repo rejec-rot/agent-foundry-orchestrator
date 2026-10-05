@@ -8,7 +8,7 @@
 
 | 部分 | 状态 | 说明 |
 |---|---|---|
-| 只读工作台 | ✅ 已交付 | `server/read-api.mjs` + `web/`。**结构性只读**：写路由要么不存在，要么必须带令牌 |
+| 只读工作台 | ✅ 已交付 | `server/read-api.mjs` + `web/`。**结构性只读**：写路由要么不存在，要么必须通过浏览器会话或既有令牌鉴权 |
 | 写操作（创建 / 启动 / 取消） | ✅ 已交付 | 需要服务端 `--allow-write` **且** 配置了操作令牌（§7.3） |
 | 审批（Human Gate）/ 提升 | ❌ 有意不开放 | 审批需要**签名批准**（`AF_OPERATOR_KEY`）；浏览器不持有该密钥 |
 | 项目注册表与内容接口 | ✅ 已交付 | §6 G6：注册表是控制面数据；内容只按快照登记过的 blob id 取，裸 digest/路径不可寻址 |
@@ -50,7 +50,7 @@ cd /home/reject/DSHWorkSpace/agent-foundry-next
 node af-admin.mjs web serve --allow-write --root /home/reject/DSHWorkSpace/agent-foundry-next
 ```
 
-然后**在浏览器页面右侧**「操作令牌」里粘贴令牌内容并点「保存令牌」。令牌只留在页面内存与 `sessionStorage`（关闭标签页即失效），**不写磁盘、不进 URL、不留在 DOM**。
+然后从本机打开页面，点击顶部“一键授权”。团队页与交付页共用 HttpOnly 会话 Cookie，服务端最长接受 8 小时；取消授权会撤销服务端会话，草稿保留。配置令牌始终留在服务端，不返回给页面。服务重启后旧会话无效；浏览器恢复会话 Cookie 也不能延长服务端时限。远程访问需要折叠的“高级连接”，验证既有令牌后仅保存在当前标签页的 `sessionStorage`。
 
 没令牌就启动写模式会被直接拒绝：
 
@@ -79,8 +79,8 @@ node verification/deploy-preflight.mjs
 # (b) 真浏览器：只读工作台 15 项（含 390/320 无横向溢出、无控制台错误）
 node verification/web-console-smoke.mjs
 
-# (c) 真浏览器 + 真实写路径 19 项：保存令牌 → 创建 → 启动（分离 worker）→ 取消，
-#     并证明**同一请求不带令牌会被服务端拒绝**（不是按钮变灰而已）
+# (c) 真浏览器 + 真实写路径：一键授权 → 创建 → 启动（分离 worker）→ 取消，
+#     并证明**同一请求未经授权会被服务端拒绝**（不是按钮变灰而已）
 node verification/web-write-browser.mjs
 
 # (d) 全量单元/集成
@@ -164,7 +164,7 @@ node af-admin.mjs preview stop --task <task_id> --confirm
 ## 4. 已知限制（不修好就不说它好）
 
 1. **没有 TLS，只应跑在 loopback。** 这是明文 HTTP。`--allow-non-loopback` 存在，但只在你有反代/隧道且清楚后果时用。
-2. **令牌是"单操作者共享口令"，没有身份区分、没有过期、没有轮换机制。** 谁能拿到令牌谁就能写；轮换 = 换文件 + 重启服务 + 页面重新粘贴。
+2. **既有服务端令牌仍是单操作者共享口令。** 本机浏览器会话有 8 小时期限并支持撤销；共享令牌本身的轮换仍需更换配置并重启服务。该入口未引入多用户身份与权限分级。
 3. **CSRF 防护依赖自定义头 + Origin 校验**，不是逐请求的一次性 token。对 loopback 场景足够，对"暴露到公网"的场景不够。
 4. **审批与提升在浏览器里永远不可用**（设计如此）。Human Gate 的续跑必须走 `af-admin v2 gate-resume`，且需要 `AF_OPERATOR_KEY` 签名。
 5. **任务是单进程 owner。** 浏览器点「启动」只会**取到锁并派发一个分离 worker**；如果已有 owner 持锁，会返回 409 而不是排队。

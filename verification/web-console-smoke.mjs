@@ -23,8 +23,9 @@ const BREAKPOINTS = [1440, 768, 390, 320];
 const paletteDir = process.env.AF_WORKBENCH_PALETTE_DIR;
 const checks = [];
 const check = (name, ok, detail = '') => {
-  checks.push({ name, ok: Boolean(ok) });
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  const passed = Boolean(ok);
+  checks.push({ name, ok: passed, ...(!passed && detail ? { detail } : {}) });
+  console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -107,6 +108,7 @@ try {
   await cdp.send('Page.enable');
   await cdp.send('Runtime.enable');
   await cdp.send('Log.enable');
+  await cdp.send('Network.enable');
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
   await cdp.send('Page.navigate', { url: api.url + '/workbench.html' });
   await sleep(2500); // load + first polls
@@ -213,9 +215,21 @@ try {
     console.log(`      screenshot: ${file}`);
   }
 
-  await evaluate("(()=>{document.getElementById('token-input').value='browser-readonly-fixture-token';document.getElementById('token-save').click()})()");
-  const serverReadOnly = await evaluate("(()=>{const b=document.getElementById('mode-badge');return {tokenStored:sessionStorage.getItem('af-write-token')==='browser-readonly-fixture-token',readonly:b.classList.contains('readonly'),write:b.classList.contains('write'),createDisabled:document.getElementById('s-create').disabled,recordsDisabled:document.getElementById('s-record').disabled}})()");
-  check('a browser token cannot override a server with write routes disabled',serverReadOnly?.tokenStored===true&&serverReadOnly?.readonly===true&&serverReadOnly?.write===false&&serverReadOnly?.createDisabled===true&&serverReadOnly?.recordsDisabled===true,JSON.stringify(serverReadOnly));
+  const invalidAdvanced = await evaluate(`(async () => {
+    const candidate='browser-readonly-invalid-fixture-token';
+    document.getElementById('token-input').value=candidate;
+    document.getElementById('token-save').click();
+    for(let i=0;i<30;i+=1){
+      await new Promise(r=>setTimeout(r,100));
+      const feedback=document.getElementById('access-feedback');
+      if(!feedback.hidden)return {candidate,feedback:feedback.textContent,stored:sessionStorage.getItem('af-write-token')};
+    }
+    return {candidate,feedback:document.getElementById('access-feedback').textContent,stored:sessionStorage.getItem('af-write-token')};
+  })()`);
+  const serverReadOnly = await evaluate("(()=>{const b=document.getElementById('mode-badge');return {readonly:b.classList.contains('readonly'),write:b.classList.contains('write'),text:b.textContent.trim(),createDisabled:document.getElementById('s-create').disabled,recordsDisabled:document.getElementById('s-record').disabled}})()");
+  check('the read-only server rejects the invalid advanced token',/操作令牌无效/.test(String(invalidAdvanced?.feedback)),String(invalidAdvanced?.feedback));
+  check('the rejected candidate is not stored in the browser session',invalidAdvanced?.stored===null&&invalidAdvanced?.stored!==invalidAdvanced?.candidate,JSON.stringify({stored:invalidAdvanced?.stored}));
+  check('an advanced token cannot enable writes on a read-only server',serverReadOnly?.readonly===true&&serverReadOnly?.write===false&&serverReadOnly?.text==='只读'&&serverReadOnly?.createDisabled===true&&serverReadOnly?.recordsDisabled===true,JSON.stringify(serverReadOnly));
 
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
   await evaluate(`(()=>{const original=window.fetch;let fail=true;window.fetch=(...args)=>{if(fail&&String(args[0])==='/api/v2/tasks'){fail=false;window.fetch=original;return Promise.reject(new TypeError('controlled disconnect'));}return original(...args);};})()`);
@@ -236,7 +250,10 @@ try {
     .filter((e) => (e.method === 'Runtime.consoleAPICalled' && e.params?.type === 'error')
       || (e.method === 'Log.entryAdded' && e.params?.entry?.level === 'error'))
     .map((e) => e.params?.entry?.text ?? e.params?.args?.map((a) => a.value ?? a.description).join(' '));
-  check('no console errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+  const failedResources = cdp.events
+    .filter((e) => e.method === 'Network.responseReceived' && e.params?.response?.status >= 400)
+    .map((e) => `${e.params.response.status} ${e.params.response.url}`);
+  check('no console errors', errors.length === 0, [...errors.slice(0, 3), ...failedResources].join(' | '));
 
   // P3: the recovery plan is read-only and renders into the panel.
   const plan = await evaluate(`(async () => {

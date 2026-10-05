@@ -48,7 +48,8 @@ const chrome=spawnManaged(process.env.AF_BROWSER_BIN??'/usr/bin/google-chrome',[
 let chromeLog='',browser;chrome.stderr.on('data',c=>chromeLog+=c);
 const checks=[];
 const check=(name,value)=>{assert.ok(value,name);checks.push(name);};
-const output=resolve('docs/previews/persona-workspace');mkdirSync(output,{recursive:true});
+const outputArg=process.argv.indexOf('--output-dir');
+const output=resolve(outputArg<0?join(tmpdir(),'af-project-picker-browser'):process.argv[outputArg+1]);mkdirSync(output,{recursive:true});
 try{
   const portFile=join(chromeProfile,'DevToolsActivePort'),deadline=Date.now()+15000;
   while(!existsSync(portFile)&&Date.now()<deadline&&chrome.exitCode===null)await delay(100);
@@ -63,7 +64,9 @@ try{
   check('empty workspace has one creation surface and no empty work/delivery/history board',await browser.evaluate("!document.getElementById('create-dialog')&&document.getElementById('work-area').hidden&&document.getElementById('delivery-strip').hidden&&document.querySelector('.signal-shelf').hidden"));
   await browser.click('#browse-projects');
   check('directory browsing asks for operator access before sending a filesystem request',await browser.evaluate("document.getElementById('token-dialog').open&&!document.getElementById('project-dialog').open"));
-  await browser.evaluate(`document.getElementById('token').value=${JSON.stringify(testToken)}`);await browser.click('#save-token');
+  await browser.click('#access-panel-action');await browser.waitFor("document.getElementById('access-label').textContent==='取消授权'");
+  if(await browser.evaluate("document.getElementById('token-dialog').open"))await browser.click('#token-dialog [data-close]');
+  await browser.waitFor("!document.getElementById('token-dialog').open");await delay(300);
   await browser.click('#browse-projects');
   await browser.waitFor("document.querySelectorAll('[data-directory]').length===4&&!document.getElementById('project-name').disabled");
   check('picker starts at the configured host root',await browser.evaluate(`document.getElementById('directory-path').textContent===${JSON.stringify(browse)}`));
@@ -99,7 +102,7 @@ try{
   loseRegistration=false;
   const postCount=registrations;
   await browser.click('#project-dialog [data-close]');await browser.click('#browse-projects');
-  await browser.waitFor("document.getElementById('select-directory').textContent.includes('确认接入结果')");
+  await browser.waitFor("document.getElementById('select-directory').textContent.includes('确认接入结果')&&!document.getElementById('select-directory').disabled");
   check('closing an uncertain picker leaves a visible recovery entrance',await browser.evaluate("document.getElementById('browse-projects').textContent.includes('确认项目接入')"));
   await browser.click('#select-directory');await browser.waitFor("!document.getElementById('project-dialog').open&&!document.getElementById('browse-projects').disabled");
   check('retry confirms the durable registration without a duplicate write',registrations===postCount+1&&JSON.parse(readFileSync(registryFile)).projects.length===2);

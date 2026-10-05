@@ -128,6 +128,20 @@
 .members-heading h3 span, .panel-heading h3 span { font-family: var(--body); }
 .access-button { position: relative; box-shadow: 3px 3px 0 #ded8cb; }
 .access-button:hover { box-shadow: 3px 3px 0 var(--red); }
+.access-primary { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 8px 14px; border: 2px solid var(--ink); background: var(--red); color: var(--paper); font: 600 12px/1.5 var(--body); cursor: pointer; }
+.access-primary:hover { background: var(--ink); color: var(--paper); }
+.access-primary[data-authorized="true"] { background: var(--paper); color: var(--ink); }
+.access-primary[data-authorized="true"]:hover { background: var(--ink); color: var(--paper); }
+.access-primary:disabled { cursor: not-allowed; opacity: .55; }
+.rail .access-primary { border-color: var(--paper); box-shadow: 3px 3px 0 var(--red); }
+.access-panel { display: grid; gap: 14px; }
+.access-panel .btn { justify-self: start; }
+.access-panel p { margin: 0; }
+.access-status { color: var(--red-dark); font: 400 23px/1.6 var(--poster-cn); }
+.access-advanced { margin-top: 24px; padding-top: 16px; border-top: 2px solid var(--ink); }
+.access-advanced > summary { cursor: pointer; color: #706658; font-size: 12px; }
+.access-advanced > .form { margin-top: 16px; }
+[hidden] { display: none !important; }
 .text-button { position: relative; }
 .text-button::after { content: ""; position: absolute; inset: auto 0 -4px; height: 1px; background: var(--red); transform: scaleX(0); transform-origin: left; transition: transform .18s ease; }
 .text-button:hover::after { transform: scaleX(1); }

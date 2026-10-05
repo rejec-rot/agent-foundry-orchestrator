@@ -55,9 +55,9 @@ try {
   assert.equal(await browser.evaluate('document.fonts.check(\'400 24px "Foundry Poster CN"\', "协作目标") && document.fonts.check(\'400 14px "Foundry Sans"\')'),true,'Chinese headings and body fonts load locally');
   assert.equal(await browser.evaluate("getComputedStyle(document.querySelector('.hero-cta'),'::before').clipPath!=='none' && Boolean(document.querySelector('.hero-cta .cta-arrow'))"),true,'the primary action has a cut silhouette and separate arrow plate');
   assert.equal(await browser.evaluate("document.getElementById('start')?.disabled"),true);
-  await browser.click('.topbar [data-open=token-dialog]');
-  assert.equal(await browser.evaluate("document.activeElement.id==='token'"),true);
-  await browser.evaluate("document.getElementById('token').value='browser-test-token'");await browser.click('#save-token');await browser.click('#start');
+  await browser.click('#authorize-access');await browser.waitFor("document.getElementById('access-label').textContent==='取消授权'");
+  assert.equal(await browser.evaluate("sessionStorage.getItem('af-write-token')===null&&!document.querySelector('dialog[open]')"),true);
+  await browser.click('#start');
   await browser.waitFor("document.querySelector('[data-work=b]')?.textContent.includes('产物已接受')");
   const initial=controller.read(fx.team.team_id),bArtifact=initial.work_items.find(i=>i.work_item_id==='b').artifact_id;
   assert.equal(initial.work_items.find(i=>i.work_item_id==='a').status,'RUNNING');
@@ -114,7 +114,7 @@ try {
   await browser.waitFor("document.querySelectorAll('#tasks .row').length>=1");
   assert.equal(await browser.evaluate('location.hash'),'#'+fx.task.task_id,'historical task bookmarks retain their task identity');
   assert.deepEqual(browser.errors,[]);assert.deepEqual(tickErrors,[]);
-  report={ok:true,browser:'Chromium',model_adapters:'controlled test adapters',checks:['default collaboration entry','historical task bookmark compatibility','authenticated pointer actions','four registered members','dependency graph','Worker card locates its assigned task','explicit member message entry','member message receipt','message escaping','scoped adjustment','unchanged peer artifact','old result discarded','reload persistence','full-row Planner above Worker tasks','mobile navigation and focus restoration','unified new-goal Planner entry','registered acceptance profile selection','keyboard activity tabs','self-hosted display font','local Chinese heading and body typography','cut action and arrow plate','360–1920px responsive layouts','reduced motion'],desktop:'team-desktop.png',mobile:'team-mobile.png',verified_at:new Date().toISOString()};
+  report={ok:true,browser:'Chromium',model_adapters:'controlled test adapters',checks:['one-click local authorization without copying or storing the server token','default collaboration entry','historical task bookmark compatibility','authenticated pointer actions','four registered members','dependency graph','Worker card locates its assigned task','explicit member message entry','member message receipt','message escaping','scoped adjustment','unchanged peer artifact','old result discarded','reload persistence','full-row Planner above Worker tasks','mobile navigation and focus restoration','unified new-goal Planner entry','registered acceptance profile selection','keyboard activity tabs','self-hosted display font','local Chinese heading and body typography','cut action and arrow plate','360–1920px responsive layouts','reduced motion'],desktop:'team-desktop.png',mobile:'team-mobile.png',verified_at:new Date().toISOString()};
 } finally {
   clearInterval(timer);browser?.close();
   if(chrome.exitCode===null&&chrome.signalCode===null)await new Promise(resolve=>{
