@@ -690,11 +690,11 @@ pre.evidence.bad, pre.evidence.unverifiable, pre.evidence.missing { border-inlin
   .handoff-stamp span { font-size: 13px; bottom: calc(-1 * var(--s2)); }
   .workspace-nav { margin-inline: 0; gap: var(--s1); }
   .workspace-nav a { padding: var(--s1); }
-  .rail { gap: var(--s2); }
+  .rail { gap: var(--s2); flex-wrap: wrap; }
   .rail .brand { width: 100%; flex-wrap: wrap; gap: var(--s2); }
   .rail .brand-home { margin-right: auto; }
   .rail .brand-home h1 { font-size: 21px; }
-  .rail-meta { position: absolute; right: var(--s3); top: var(--s2); font-size: 10px; }
+  .rail-meta { position: static; width: 100%; justify-content: space-between; font-size: 10px; }
   .brand .mode { margin-left: auto; }
 }
 @media (pointer: coarse) {
@@ -714,7 +714,7 @@ pre.evidence.bad, pre.evidence.unverifiable, pre.evidence.missing { border-inlin
   .rail .brand-home { margin-right: 0; }
   .workspace-nav { order: 3; width: 100%; }
   .workspace-nav a { flex: 1; text-align: center; }
-  .rail-meta { display: none; }
+  .rail-meta { display: flex; }
 }
 @media (forced-colors: active) {
   .row[aria-current="true"], .runway .stage.current { outline: 2px solid Highlight; }

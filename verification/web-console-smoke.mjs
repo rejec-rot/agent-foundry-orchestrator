@@ -206,6 +206,7 @@ try {
     await sleep(400);
     const overflow = await evaluate('({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth })');
     check(`no horizontal overflow at ${width}px`, overflow.sw <= overflow.cw + 1, `scrollWidth=${overflow.sw} clientWidth=${overflow.cw}`);
+    check(`the primary authorization control remains visible at ${width}px`, await evaluate("(()=>{const e=document.getElementById('authorize-access'),r=e.getBoundingClientRect();return r.width>0&&r.height>0&&r.left>=0&&r.right<=innerWidth+1&&getComputedStyle(e).visibility==='visible'})()"));
     const tagsContained = await evaluate("[...document.querySelectorAll('.row .tag')].every(tag => tag.getBoundingClientRect().right <= tag.closest('.row').getBoundingClientRect().right + 1 && tag.scrollWidth <= tag.clientWidth + 1)");
     check(`long task statuses stay inside their cards at ${width}px`, tagsContained);
     const {cssContentSize} = await cdp.send('Page.getLayoutMetrics');
@@ -229,7 +230,7 @@ try {
   const serverReadOnly = await evaluate("(()=>{const b=document.getElementById('mode-badge');return {readonly:b.classList.contains('readonly'),write:b.classList.contains('write'),text:b.textContent.trim(),createDisabled:document.getElementById('s-create').disabled,recordsDisabled:document.getElementById('s-record').disabled}})()");
   check('the read-only server rejects the invalid advanced token',/操作令牌无效/.test(String(invalidAdvanced?.feedback)),String(invalidAdvanced?.feedback));
   check('the rejected candidate is not stored in the browser session',invalidAdvanced?.stored===null&&invalidAdvanced?.stored!==invalidAdvanced?.candidate,JSON.stringify({stored:invalidAdvanced?.stored}));
-  check('an advanced token cannot enable writes on a read-only server',serverReadOnly?.readonly===true&&serverReadOnly?.write===false&&serverReadOnly?.text==='只读'&&serverReadOnly?.createDisabled===true&&serverReadOnly?.recordsDisabled===true,JSON.stringify(serverReadOnly));
+  check('rejecting an advanced token keeps read-only controls disabled',serverReadOnly?.readonly===true&&serverReadOnly?.write===false&&serverReadOnly?.text==='只读'&&serverReadOnly?.createDisabled===true&&serverReadOnly?.recordsDisabled===true,JSON.stringify(serverReadOnly));
 
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
   await evaluate(`(()=>{const original=window.fetch;let fail=true;window.fetch=(...args)=>{if(fail&&String(args[0])==='/api/v2/tasks'){fail=false;window.fetch=original;return Promise.reject(new TypeError('controlled disconnect'));}return original(...args);};})()`);
