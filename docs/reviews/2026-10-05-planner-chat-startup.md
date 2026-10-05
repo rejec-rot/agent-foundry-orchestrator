@@ -1,10 +1,12 @@
 # Planner 聊天启动故障复检 — 2026-10-05
 
+代码提交：[`0129fd4ce3bb2f979365be5c5b938d8b1991aa37`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/0129fd4ce3bb2f979365be5c5b938d8b1991aa37)。
+
 ## 故障与原因
 
 本机真实首聊未返回回复。团队记录为 `BLOCKED`，讨论尝试为 `FAILED`，错误为 `TRUSTED_IMPORT_WRITER_SCOPE_UNAVAILABLE` / cgroup `EACCES`；终止证据确认 `process_started=false`。当前 Web 和自动启动的团队控制器均缺少 `AF_CGROUP_BASE`，适配器默认在无写权限的系统 cgroup 根目录创建执行范围，因而在启动模型进程前拒绝执行。
 
-失败后的消息保留为 `queued`，对应尝试和团队错误已经持久化。聊天气泡此前只展示消息状态，导致用户看到“已排队”，无法在聊天位置判断 Planner 已执行失败。Jev 的启用状态只表示辅助配置就绪，普通讨论不会调用它，也不能证明 Planner 已启动。
+失败后的消息保留为 `queued`，对应尝试和团队错误已经持久化。聊天气泡此前只展示消息状态，导致用户看到“已排队”，无法在聊天位置判断 Planner 已执行失败。Jev 的启用状态只表示辅助配置就绪，普通讨论不发起 Planner 计划与编组咨询，也不能证明 Planner 已启动。
 
 ## 修复
 

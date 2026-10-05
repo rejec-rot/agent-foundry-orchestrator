@@ -1,5 +1,30 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Planner Chat Startup and Failure Feedback — 2026-10-05
+
+| Field | Verified value |
+|---|---|
+| Code commit | [`0129fd4ce3bb2f979365be5c5b938d8b1991aa37`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/0129fd4ce3bb2f979365be5c5b938d8b1991aa37) |
+| Full regression | 940 tests: 935 passed, 0 failed, 5 existing gated skips at 2026-10-05T10:50:52.408Z |
+| Architecture invariants | 6/6 in this verification run |
+| First-chat / Planner Chromium | 55/55 at 2026-10-05T10:55:51.744Z; 58/58 at 2026-10-05T10:53:23.657Z |
+| Independent review | Non-author PASS; independently ran prior 53-check browser; final appended-run retry coverage reviewed |
+| Actual host discussion | Qoder / Qwen3.8-Flash / xhigh, COMPLETED, original message applied, 1,768-character reply delivered, cgroup empty |
+| Real verification limit | One recovered discussion, zero Worker runs, no review, acceptance or promotion |
+
+The preview lacked an explicit delegated AF_CGROUP_BASE and correctly rejected
+Planner startup before launching the model process. The host configuration and
+restart instructions are corrected. Chat now displays the attempt linked to
+each message: running, failed, not started or termination unconfirmed. Queue
+facts and failed history are retained; a new successful attempt clears the
+failure display. Error details require a server-redacted response.
+
+No executor guard, scheduling contract, registry, authentication or dependency
+change; no automatic retry or scan. Local launch configuration and credentials
+remain outside the repository. Controlled browser checks are separate from the
+one real Qoder discussion. Full real multi-Worker acceptance remains outstanding.
+See [failure and recovery evidence](docs/reviews/2026-10-05-planner-chat-startup.md).
+
 ## V2 Agent Mask Identities — 2026-10-05
 
 | Field | Verified value |
