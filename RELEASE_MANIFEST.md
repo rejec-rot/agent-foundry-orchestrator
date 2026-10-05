@@ -1,5 +1,31 @@
 # Agent Foundry Orchestrator - Release Manifest
 
+## V2 Local One-Click Authorization — 2026-10-05
+
+| Field | Verified value |
+|---|---|
+| Code commit | [`5005dab693cf1161c2b701bb9dc7b41b039bc2b9`](https://github.com/rejec-rot/agent-foundry-orchestrator/commit/5005dab693cf1161c2b701bb9dc7b41b039bc2b9) — e92e6d4 implementation plus mobile entry fix |
+| Full regression | 940 tests: 935 passed, 0 failed, 5 existing environment-gated skips at 2026-10-05T01:26:04.484Z |
+| Auth / architecture checks | 20/20 including architecture 6/6 at 2026-10-05T01:17:18.718Z |
+| Browser and simulation | 342/342: Planner 58, first chat 46, teams 24, directories 19, discovery 35, read-only delivery 40, writable delivery 29, cross-page access 37, simulated workflow 54 |
+| Independent review | Non-author PASS; auth/readonly 28/28, cross-page Chromium 37/37; expiry, Host/port, replay and iframe rejection; mobile button verified at eight widths from 320–1440px |
+| Actual host preview | Service updated; local access available; one explicit scan found 114 models at 2026-10-05T01:19:16.330Z; ordinary cached read unchanged |
+| Simulated replay | 54/54, nine stages at 2026-10-05T01:19:20.744Z; 2/2 actual Node acceptance and temporary Git promotion; Agents and Jev simulated |
+
+Both workspaces now grant and revoke local browser access through one button.
+The configured server bearer never reaches the browser. Bounded process-local
+sessions use signed, HttpOnly, Strict, session-scoped cookies with an exact eight-hour
+server limit, revocation and socket/Host/port/Origin binding. HTML refuses framing.
+Advanced bearer compatibility remains available behind a collapsed entry; invalid
+credentials are never stored. Drafts survive permission changes and failures.
+Mobile delivery keeps its primary authorization control visible. Page anchors no
+longer generate invalid task-detail reads.
+
+Authorization does not scan models or start Agents, controllers, or tasks. No
+scheduler, registry, database or governance plane is added. Five prior environment
+gates stay skipped; no new real model invocation is claimed. See the
+[implementation and verification record](docs/reviews/2026-10-05-one-click-authorization.md).
+
 ## V2 Jev Planner Decision Advice — 2026-10-04
 
 | Field | Verified value |

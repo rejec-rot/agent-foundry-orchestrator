@@ -1,0 +1,112 @@
+{
+  "code_commit": "5005dab693cf1161c2b701bb9dc7b41b039bc2b9",
+  "full_regression": {
+    "tests": 940,
+    "passed": 935,
+    "failed": 0,
+    "skipped": 5,
+    "completed_at": "2026-10-05T01:26:04.484Z",
+    "existing_gated_skips": [
+      "DEPLOY-V2-SUCCESS",
+      "DEPLOY-V2-FAILURE",
+      "REG-1",
+      "REG-2",
+      "GP-4"
+    ]
+  },
+  "targeted_auth_and_architecture": {
+    "passed": 20,
+    "failed": 0,
+    "architecture_passed": 6,
+    "completed_at": "2026-10-05T01:17:18.718Z"
+  },
+  "browser_and_simulation": [
+    {
+      "name": "Planner",
+      "ok": true,
+      "count": 58,
+      "verified_at": "2026-10-05T01:15:14.349Z"
+    },
+    {
+      "name": "首次聊天",
+      "ok": true,
+      "count": 46,
+      "verified_at": "2026-10-05T01:13:04.191Z"
+    },
+    {
+      "name": "团队操作",
+      "ok": true,
+      "count": 24,
+      "verified_at": "2026-10-05T01:13:29.100Z"
+    },
+    {
+      "name": "项目目录",
+      "ok": true,
+      "count": 19,
+      "verified_at": "2026-10-05T01:15:58.033Z"
+    },
+    {
+      "name": "Agent 发现",
+      "ok": true,
+      "count": 35,
+      "verified_at": "2026-10-05T01:20:07.420Z"
+    },
+    {
+      "name": "交付只读",
+      "ok": true,
+      "count": 40,
+      "verified_at": "2026-10-05T01:24:50.238Z"
+    },
+    {
+      "name": "交付写操作",
+      "ok": true,
+      "count": 29,
+      "verified_at": "2026-10-05T01:25:31.457Z"
+    },
+    {
+      "name": "跨页面授权",
+      "ok": true,
+      "count": 37,
+      "verified_at": "2026-10-05T01:19:29.310Z"
+    },
+    {
+      "name": "模拟流程与浏览器",
+      "ok": true,
+      "count": 54,
+      "verified_at": "2026-10-05T01:19:20.744Z"
+    }
+  ],
+  "browser_and_simulation_total": 342,
+  "independent_review": {
+    "status": "PASS",
+    "targeted_tests": 28,
+    "access_browser_checks": 37,
+    "frame_embedding": "Chromium refuses teams/workbench embedding from another loopback origin",
+    "boundary_checks": [
+      "exact eight-hour expiry",
+      "socket/Host/port/Origin binding",
+      "mandatory CSRF and Origin",
+      "nonce rotation, revocation and saved-cookie replay rejection",
+      "fixture-only QA; no model dispatch or native scan"
+    ],
+    "responsive_authorization_button": "Chromium: visible, hit-testable, keyboard-focusable and no overflow at 320, 390, 640, 768, 820, 821, 1180 and 1440 pixels"
+  },
+  "host_preview": {
+    "port": 8787,
+    "configured": true,
+    "teams_before_validation": 0,
+    "models": 114,
+    "scan_completed_at": "2026-10-05T01:19:16.330Z",
+    "cached_read_preserved": true
+  },
+  "simulation": {
+    "port": 8788,
+    "ok": true,
+    "checks": 54,
+    "phases": 9,
+    "real_acceptance_tests": 2,
+    "temporary_git_promotion": true,
+    "virtual_agents_and_jev": true
+  },
+  "collected_at": "2026-10-05T01:27:30.800Z"
+}
