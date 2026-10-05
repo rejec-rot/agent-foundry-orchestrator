@@ -1,4 +1,5 @@
 import { createAccess, renderAccess } from './access.js';
+import { agentMask, agentMaskName } from './agent-masks.js';
 
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -39,6 +40,21 @@ function setHTML(id, html) {
     $(id).innerHTML = html;
     htmlCache.set(id, html);
   }
+}
+function memberMask(agentId, size = 20) {
+  const member = team?.members.find(m => m.agent_id === agentId);
+  return member ? agentMask(member.executor_type, { size }) : '';
+}
+function messageMask(message) {
+  const runId = message.from_run_id ?? message.run_id;
+  const run = runId && team?.runs.find(r => r.run_id === runId && r.agent_id === message.from_agent_id);
+  return run ? agentMask(run.executor_type, { size: 20 }) : '';
+}
+function renderPlannerMask() {
+  const actual = team?.planning?.planner ?? team?.members.find(m => m.role === 'lead');
+  const draft = $('console-planner-executor').value;
+  setHTML('planner-emblem', agentMask(actual?.executor_type ?? draft, { size: 44 }));
+  setHTML('console-planner-agent-mask', agentMask(draft, { size: 22 }));
 }
 async function request(path, body = null, { timeoutMs = 12000, authenticated = false } = {}) {
   const controller = new AbortController();
@@ -285,7 +301,7 @@ function renderPlanner() {
   for(const item of document.querySelectorAll('[data-phase]'))item.dataset.current=String(item.dataset.phase===phase);
   const conversation=team?.messages.filter(m=>m.goal_revision===team.goal_revision && ((m.from_agent_id==='operator'&&m.to_agent_id==='lead') || (m.from_agent_id==='lead'&&m.to_agent_id==='operator')))??[];
   const log=$('planner-conversation'),atBottom=log.scrollHeight-log.scrollTop-log.clientHeight<48;
-  const html=legacy?'<div class="chat-empty"><span class="calling-card" aria-hidden="true">YOUR NEXT<br><b>MOVE AWAITS.</b><i>✦</i></span><h4>开启新的 Planner 协作。</h4><p>当前团队使用原有启动流程。<br>新建目标，即可先聊天、确认编组后开工。</p><button class="text-button" type="button" data-new-goal>新建 Planner 目标 '+icon('arrow')+'</button></div>':conversation.slice(-60).map(m=>'<article class="chat-bubble '+(m.from_agent_id==='operator'?'from-operator':'from-planner')+'"><strong>'+esc(memberName(m.from_agent_id))+'<small>'+esc(label(m.status))+'</small></strong><p>'+esc(m.message)+'</p></article>').join('') || emptyConversation;
+  const html=legacy?'<div class="chat-empty"><span class="calling-card" aria-hidden="true">YOUR NEXT<br><b>MOVE AWAITS.</b><i>✦</i></span><h4>开启新的 Planner 协作。</h4><p>当前团队使用原有启动流程。<br>新建目标，即可先聊天、确认编组后开工。</p><button class="text-button" type="button" data-new-goal>新建 Planner 目标 '+icon('arrow')+'</button></div>':conversation.slice(-60).map(m=>'<article class="chat-bubble '+(m.from_agent_id==='operator'?'from-operator':'from-planner')+'"><strong><span class="agent-identity">'+messageMask(m)+esc(memberName(m.from_agent_id))+'</span><small>'+esc(label(m.status))+'</small></strong><p>'+esc(m.message)+'</p></article>').join('') || emptyConversation;
   const active=team?.runs.findLast(r=>r.agent_id==='lead'&&r.status==='RUNNING');
   const next=html+(active?'<p class="planner-thinking" role="status">✦ '+(active.kind==='revise'?'Planner 正在改写任务方向…':active.kind==='plan'?'Planner 正在拟定行动计划…':'Planner 正在思考…')+'</p>':'');
   const changed=htmlCache.get('planner-conversation')!==next;setHTML('planner-conversation',next);
@@ -346,7 +362,7 @@ function renderAgentInventory() {
     const name=entry.id==='command-code'?'cmd':entry.id;
     return '<article class="agent-inventory-card" tabindex="0" aria-label="'+esc(name+' · '+availabilityLabel(entry))+'" data-agent="'+esc(entry.id)+'" data-adapter="'+esc(entry.adapter_status??'unknown')+'" data-dispatchable="'+dispatchable+'" style="--agent-order:'+index+'">'+
       '<span class="agent-card-art" aria-hidden="true"><span class="agent-card-number">'+String(index+1).padStart(2,'0')+'</span><svg class="agent-card-spark" viewBox="0 0 52 52"><path d="m26 2 6 18 18 6-18 6-6 18-6-18-18-6 18-6z"/></svg></span>'+
-      '<div class="agent-inventory-heading"><strong>'+esc(entry.id==='command-code'?'cmd':entry.id)+'</strong><span>'+esc(protocolLabel(entry.protocol))+'</span></div>'+
+      '<div class="agent-inventory-heading"><strong class="agent-identity" title="'+esc(agentMaskName(entry.id))+'">'+agentMask(entry.id,{size:36})+'<span>'+esc(entry.id==='command-code'?'cmd':entry.id)+'</span></strong><span>'+esc(protocolLabel(entry.protocol))+'</span></div>'+
       '<div class="agent-inventory-states"><span data-state="'+(installed?'ready':'muted')+'">'+(installed?'已安装':'未检测到安装')+'</span><span data-state="'+(matched?'ready':'pending')+'">'+esc(adapterLabel)+'</span><span data-state="'+(dispatchable?'ready':'pending')+'">'+esc(availabilityLabel(entry))+'</span></div>'+
       '<p>'+esc(unsupportedAdapter(entry)?'角色能力待验证':entry.supports_planner===true?'Planner 与 Worker':entry.supports_planner===false?'Worker 专用':'角色能力未提供')+' · '+(entry.supports_model?'支持模型配置':'仅使用默认模型')+' · '+models+' 个目录模型</p>'+
       (models?'<p class="hint">'+adjustable+' 个模型可调思考档位'+(unknown?' · '+unknown+' 个待确认':' · 已完成逐模型确认')+'</p>':'')+
@@ -439,6 +455,7 @@ function consoleProfile() {
   return {executor_type:$('console-planner-executor').value,model:$('console-planner-model-input').value.trim()||null,effort:$('console-planner-effort').value||null};
 }
 function updateConsoleControls(reset=false) {
+  renderPlannerMask();
   const entry=entryFor($('console-planner-executor').value,Boolean(team?.planning)),input=$('console-planner-model-input'),select=$('console-planner-model-select');
   const custom=select.value==='__custom'&&!reset;
   if(reset){input.value='';$('console-planner-effort').value='';}
@@ -471,10 +488,12 @@ function renderConsoleProfile() {
   const entry=entryFor($('console-planner-executor').value,Boolean(team?.planning));
   $('console-profile-hint').textContent=configCommand?(configCommand.retryable?'配置回执未确认；再次发送或保存会重用原请求，消息已保留。':'配置正在保存，请等待回执。'):!team?(entry?.availability==='AVAILABLE'?'选好 Planner 与工作项目后，直接发送第一条消息。':entry?.availability==='DISABLED_BY_OPERATOR'?'此 Agent 已停用；请选择其他 Agent 开始。':entry?.availability==='UNAVAILABLE'?'此 Agent 当前不可用；请选择其他 Agent 开始。':'此 Agent 待接入；可先选择模型与思考强度。'):!editable?'当前会话或任务正在执行，结束后可修改配置。':consoleProfileDirty?'下一条消息将自动应用所选配置；也可单独保存。':'选择模型与强度后直接发送，Reviewer 保持一致。';
   $('save-console-planner').hidden=!team;
+  renderPlannerMask();
 }
 function updateWorkerControls(row,reset=false) {
   const executor=row.querySelector('[data-profile-executor]'),input=row.querySelector('[data-profile-model]'),effort=row.querySelector('[data-profile-effort]'),select=row.querySelector('[data-profile-model-select]');
   const entry=entryFor(executor.value,Boolean(team?.planning));
+  row.querySelector('[data-profile-mask]').innerHTML=agentMask(executor.value,{size:30});
   if(reset){input.value='';effort.value='';}
   input.disabled=!entry?.supports_model;input.placeholder=entry?.default_model?'默认 · '+entry.default_model:'默认模型或输入模型 ID';
   if(input.disabled)input.value='';
@@ -491,7 +510,7 @@ function renderDispatch() {
   const count=Number($('dispatch-workers').value),lead=team?.planning?.planner??consoleProfile();
   while(profileDraft.length<count)profileDraft.push({...lead});profileDraft=profileDraft.slice(0,count);
   $('dispatch-workers-output').value=String(count);
-  $('worker-profiles').innerHTML=profileDraft.map((p,i)=>'<div class="worker-profile"><strong aria-label="Worker '+(i+1)+'">'+String(i+1).padStart(2,'0')+'</strong><label class="field"><span>Agent</span><select data-profile-executor="'+i+'" aria-label="Worker '+(i+1)+' 执行器">'+executorOptions(p.executor_type,'worker',Boolean(team?.planning))+'</select></label><label class="field"><span>模型</span><select data-profile-model-select="'+i+'" aria-label="Worker '+(i+1)+' 模型选择"></select><input data-profile-model="'+i+'" list="worker-models-'+i+'" maxlength="160" value="'+esc(p.model??'')+'" aria-label="Worker '+(i+1)+' 自定义模型 ID"><datalist id="worker-models-'+i+'"></datalist></label><label class="field worker-effort"><span>思考强度</span><select data-profile-effort="'+i+'" aria-label="Worker '+(i+1)+' 思考强度"><option value="'+esc(p.effort??'')+'" selected>'+esc(effortLabel(p.effort??'默认'))+'</option></select><small data-effort-hint></small></label></div>').join('');
+  $('worker-profiles').innerHTML=profileDraft.map((p,i)=>'<div class="worker-profile"><strong aria-label="Worker '+(i+1)+'"><span data-profile-mask>'+agentMask(p.executor_type,{size:30})+'</span><span class="agent-slot">'+String(i+1).padStart(2,'0')+'</span></strong><label class="field"><span>Agent</span><select data-profile-executor="'+i+'" aria-label="Worker '+(i+1)+' 执行器">'+executorOptions(p.executor_type,'worker',Boolean(team?.planning))+'</select></label><label class="field"><span>模型</span><select data-profile-model-select="'+i+'" aria-label="Worker '+(i+1)+' 模型选择"></select><input data-profile-model="'+i+'" list="worker-models-'+i+'" maxlength="160" value="'+esc(p.model??'')+'" aria-label="Worker '+(i+1)+' 自定义模型 ID"><datalist id="worker-models-'+i+'"></datalist></label><label class="field worker-effort"><span>思考强度</span><select data-profile-effort="'+i+'" aria-label="Worker '+(i+1)+' 思考强度"><option value="'+esc(p.effort??'')+'" selected>'+esc(effortLabel(p.effort??'默认'))+'</option></select><small data-effort-hint></small></label></div>').join('');
   for(const row of document.querySelectorAll('.worker-profile'))updateWorkerControls(row);
   const previous=Object.fromEntries([...document.querySelectorAll('[data-assignment]')].map(s=>[s.dataset.assignment,s.value]));
   $('work-assignments').innerHTML=dispatchBase.items.map(item=>{
@@ -542,10 +561,10 @@ function render() {
     return '<button type="button" class="member-card ' + (member.role === 'lead' ? 'lead' : '') +
       '" data-member="' + esc(member.agent_id) + '" data-running="' + Boolean(active) +
       '" aria-label="'+(member.role==='lead'?'与 Planner 对话':'查看 '+esc(memberName(member.agent_id))+' 的任务')+'"><span class="member-avatar" aria-hidden="true">' +
-      (member.role === 'lead' ? 'P' : String(index).padStart(2, '0')) + '</span><span class="member-detail"><strong>' +
+      agentMask(member.executor_type,{size:32}) + '<span class="agent-slot">' + (member.role === 'lead' ? 'P' : String(index).padStart(2, '0')) + '</span></span><span class="member-detail"><strong>' +
       esc(memberName(member.agent_id)) + '</strong><small>' + esc(member.executor_type) + (member.model?' / '+esc(member.model):' / 默认模型') +
       (member.effort?' · '+esc(effortLabel(member.effort)):'')+'</small><span class="member-status">' + esc(status) + '</span></span>' + icon('arrow', 'member-cta') + '</button>';
-  }).join('') + (team.planning ? '<div class="member-card reviewer"><span class="member-avatar" aria-hidden="true">R</span><span class="member-detail"><strong>Reviewer</strong><small>'+esc(team.planning.planner.executor_type)+' / '+esc(team.planning.planner.model??'默认模型')+'</small><span class="member-status">'+(['DELIVERING','WAITING_HUMAN','COMPLETED'].includes(team.state)?'独立复检 · '+esc(label(team.delivery?.status??team.state)):'与 Planner 同模型 · 独立会话')+'</span></span></div>' : ''));
+  }).join('') + (team.planning ? '<div class="member-card reviewer"><span class="member-avatar" aria-hidden="true">'+agentMask(team.planning.planner.executor_type,{size:32})+'<span class="agent-slot">R</span></span><span class="member-detail"><strong>Reviewer</strong><small>'+esc(team.planning.planner.executor_type)+' / '+esc(team.planning.planner.model??'默认模型')+'</small><span class="member-status">'+(['DELIVERING','WAITING_HUMAN','COMPLETED'].includes(team.state)?'独立复检 · '+esc(label(team.delivery?.status??team.state)):'与 Planner 同模型 · 独立会话')+'</span></span></div>' : ''));
   const chosen = $('member-target').value, chosenWorker = $('worker-target').value;
   setHTML('member-target', team.members.map(m => '<option value="' + esc(m.agent_id) + '">' +
     esc(memberName(m.agent_id)) + ' · ' + esc(m.executor_type) + '</option>').join(''));
@@ -562,7 +581,7 @@ function render() {
       esc(item.work_item_id) + '</strong><span class="work-goal">' + esc(item.goal) +
       '</span><span class="work-dependency">' + (item.depends_on.length ?
         '依赖 ' + esc(item.depends_on.join(' + ')) : '↗ 可独立执行') +
-      '</span><span class="work-assignment"><span>' + esc(memberName(item.agent_id)) +
+      '</span><span class="work-assignment"><span class="agent-identity">' + memberMask(item.agent_id) + esc(memberName(item.agent_id)) +
       ' · v' + esc(item.revision) + '</span>' + icon('arrow') + '</span>' +
       (item.blocked_reason ? '<span class="work-error">' + esc(item.blocked_reason) + '</span>' : '') + '<span class="work-adjust-cta">'+icon('pause')+(item.status==='DRAFT'?'确认后可调整':item.status==='HELD'?'查看 Planner 改写进度':'通过 Planner 调整')+icon('arrow')+'</span></button>';
   }).join('') : '');
@@ -585,7 +604,7 @@ function render() {
   const memberMessages=team.messages.filter(m=>!((m.from_agent_id==='operator'&&m.to_agent_id==='lead')||(m.from_agent_id==='lead'&&m.to_agent_id==='operator')));
   $('message-count').textContent = String(memberMessages.length);
   $('receipt-count').textContent = String(team.commands.length);
-  setHTML('messages', memberMessages.slice(-30).reverse().map(message => '<article class="history-card"><strong>' +
+  setHTML('messages', memberMessages.slice(-30).reverse().map(message => '<article class="history-card"><strong class="agent-identity">' + messageMask(message) +
     esc(memberName(message.from_agent_id)) + ' → ' + esc(memberName(message.to_agent_id)) +
     '</strong><span class="history-state">' + esc(label(message.status)) + '</span><p>' +
     esc(message.message) + '</p>' + (message.reply_to ? '<small>回复 ' + esc(message.reply_to) + '</small>' : '') +
@@ -595,7 +614,7 @@ function render() {
     '</strong><p>' + esc(command.message ?? command.reason ?? '操作已登记') + '</p>' +
     (command.evidence ? '<small>已记录落实证据</small>' : '') + '</article>').join('') ||
     '<div class="empty-activity">' + icon('check') + '<p>每次行动，都会有回应。</p><span>操作提交后，在这里查看落实情况。</span></div>');
-  setHTML('runs', team.runs.slice(-30).reverse().map(run => '<article class="history-card"><strong>' +
+  setHTML('runs', team.runs.slice(-30).reverse().map(run => '<article class="history-card"><strong class="agent-identity">' + agentMask(run.executor_type,{size:20}) +
     esc(memberName(run.agent_id)) + ' · ' + esc(run.work_item_id) + '</strong><span class="history-state">' +
     esc(label(run.status)) + ' · ' + esc(run.executor_type) + '</span><p>'+esc(run.model??'默认模型')+' · '+esc(run.effort?effortLabel(run.effort)+'思考':'默认强度')+'</p><small>' + esc(run.run_id) + '</small></article>').join('') ||
     '<p class="hint">团队启动后，会在这里记录每次执行。</p>');

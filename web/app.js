@@ -1,4 +1,5 @@
 import { createAccess, renderAccess } from './access.js';
+import { agentMask } from './agent-masks.js';
 
 // app.js - V2 delivery workbench. Zero dependencies, offline-capable.
 //
@@ -77,7 +78,7 @@ function renderCollab(model) {
         <span class="claim">${esc(m.claim)}</span></li>`).join('')
     : '<li class="msg"><span class="hint">还没有留言。留言会在下一次 run/resume 开始时被收集，不会打断正在运行的进程。</span></li>';
   const acts = model.activity.length > 0
-    ? `<ul class="timeline-list">${model.activity.map((a) => `<li><b>${esc(a.executor ?? '?')}</b>${a.role ? `<span class="phase">${esc(a.role)}</span>` : ''}<span class="detail">${esc(a.status ?? '?')} · ${esc(a.run_id)}</span></li>`).join('')}</ul>`
+    ? `<ul class="timeline-list">${model.activity.map((a) => `<li><b class="agent-identity">${a.executor ? agentMask(a.executor, {size: 18}) : ''}${esc(a.executor ?? '?')}</b>${a.role ? `<span class="phase">${esc(a.role)}</span>` : ''}<span class="detail">${esc(a.status ?? '?')} · ${esc(a.run_id)}</span></li>`).join('')}</ul>`
     : '<p class="hint">没有运行记录。</p>';
   host.innerHTML = `<div class="tags">
       ${m_count('queued', '已排队', model.counts.queued)}
@@ -200,7 +201,7 @@ function renderTasks() {
         ${t.lock_stale ? tag('锁疑似陈旧') : ''}
         ${t.read_status && t.read_status !== 'ok' ? tag(`读取 ${t.read_status}`, 'unverifiable') : ''}
       </div>
-      <div class="id">${esc(t.author_executor ?? '—')} / ${esc(t.reviewer_executor ?? '—')} · v${esc(t.state_version ?? '—')} · ${esc(fmtTime(t.as_of))}</div>
+      <div class="id agent-participants"><span class="agent-identity">${t.author_executor ? agentMask(t.author_executor,{size:18}) : ''}${esc(t.author_executor ?? '—')}</span> / <span class="agent-identity">${t.reviewer_executor ? agentMask(t.reviewer_executor,{size:18}) : ''}${esc(t.reviewer_executor ?? '—')}</span> · v${esc(t.state_version ?? '—')} · ${esc(fmtTime(t.as_of))}</div>
     </button>`).join('');
   const count = $('task-count');
   if (count) count.textContent = `${rows.length}/${state.tasks.length}`;
@@ -336,7 +337,7 @@ function renderDetail(model, evidence) {
       <dl class="kv">
         <dt>任务 ID</dt><dd>${esc(value.task_id ?? taskIdSafe(model))}</dd>
         <dt>状态版本</dt><dd>${esc(value.state_version ?? '—')}</dd>
-        <dt>作者 / 评审</dt><dd>${esc(value.author_executor ?? '—')} / ${esc(value.reviewer_executor ?? '—')}</dd>
+        <dt>作者 / 评审</dt><dd class="agent-participants"><span class="agent-identity">${value.author_executor ? agentMask(value.author_executor,{size:20}) : ''}${esc(value.author_executor ?? '—')}</span> / <span class="agent-identity">${value.reviewer_executor ? agentMask(value.reviewer_executor,{size:20}) : ''}${esc(value.reviewer_executor ?? '—')}</span></dd>
         <dt>更新时间</dt><dd>${esc(fmtTime(value.updated_at))}</dd>
       </dl>
       <details class="disclosure flush" style="margin-top: var(--s3)">

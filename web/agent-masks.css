@@ -1,0 +1,238 @@
+/* Fixed executor faces: inherit the foreground on both ink and paper. */
+.agent-mask {
+  display: inline-block;
+  flex: 0 0 auto;
+  overflow: visible;
+  vertical-align: middle;
+  pointer-events: none;
+  transform-origin: 50% 70%;
+  transition: transform 160ms ease;
+}
+
+.agent-mask__eyes {
+  fill: transparent;
+  transition: fill 160ms ease;
+}
+
+.agent-mask__accent {
+  fill: var(--agent-mask-accent, var(--red, #e81932));
+}
+
+/* Use this wrapper wherever a face and executor name travel together. */
+.agent-identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.agent-identity > .agent-mask {
+  align-self: center;
+}
+
+/* Compact faces in form labels, messages, and profile controls. */
+.agent-mask-token {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  line-height: 1;
+  color: inherit;
+}
+
+/* Role / slot labels stay separate from the executor's face. */
+.agent-slot {
+  position: absolute;
+  right: -3px;
+  bottom: -4px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  min-width: 15px;
+  height: 14px;
+  padding: 0 2px;
+  border: 1px solid var(--paper, #f7f4ec);
+  color: var(--paper, #f7f4ec);
+  background: var(--ink, #141414);
+  font: 800 9px/1 var(--display, sans-serif);
+  letter-spacing: 0;
+}
+
+.member-avatar {
+  /* Clip only the plate, leaving the separate slot badge free to extend. */
+  z-index: 0;
+  isolation: isolate;
+  clip-path: none;
+  overflow: visible;
+  background: transparent;
+}
+
+.member-avatar::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: var(--ink, #141414);
+  clip-path: polygon(9% 0, 100% 7%, 91% 100%, 0 91%);
+  pointer-events: none;
+}
+
+.member-avatar .agent-mask {
+  width: 30px;
+  height: 30px;
+}
+
+.member-card.lead .member-avatar {
+  background: transparent;
+  --agent-mask-accent: var(--ink, #141414);
+  --agent-mask-expression: var(--ink, #141414);
+}
+
+.member-card.lead .member-avatar::before {
+  background: var(--red, #e81932);
+}
+
+.member-avatar .agent-slot {
+  background: var(--red, #e81932);
+}
+
+.worker-profile > strong {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  min-height: 36px;
+  margin-top: 23px;
+  color: var(--ink, #141414);
+}
+
+.worker-profile > strong > [data-profile-mask] {
+  display: grid;
+  place-items: center;
+  line-height: 1;
+}
+
+.worker-profile > strong .agent-slot {
+  right: -1px;
+  bottom: -4px;
+  border-color: var(--white, #fffef9);
+}
+
+.agent-selector-label {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.agent-selector-label .agent-mask-token {
+  margin-left: auto;
+}
+
+.agent-inventory-heading .agent-identity {
+  gap: 10px;
+}
+
+.planner-emblem .agent-mask {
+  --agent-mask-accent: var(--red, #e81932);
+}
+
+:is(.agent-inventory-card, .member-card, .agent-identity, .agent-mask-token):focus-visible .agent-mask,
+:is(.agent-inventory-card, .member-card, .agent-identity, .agent-mask-token):focus-within .agent-mask,
+[data-running="true"] .agent-mask,
+[data-active="true"] > .agent-mask,
+.agent-mask[data-active="true"] {
+  transform: translateY(-1px) rotate(-3deg);
+}
+
+:is(.agent-inventory-card, .member-card, .agent-identity, .agent-mask-token):focus-visible .agent-mask__eyes,
+:is(.agent-inventory-card, .member-card, .agent-identity, .agent-mask-token):focus-within .agent-mask__eyes,
+[data-running="true"] .agent-mask__eyes,
+[data-active="true"] > .agent-mask .agent-mask__eyes,
+.agent-mask[data-active="true"] .agent-mask__eyes {
+  fill: var(--agent-mask-expression, var(--red, #e81932));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :is(.agent-inventory-card, .member-card, .agent-identity, .agent-mask-token):hover .agent-mask {
+    transform: translateY(-1px) rotate(-3deg);
+  }
+
+  :is(.agent-inventory-card, .member-card, .agent-identity, .agent-mask-token):hover .agent-mask__eyes {
+    fill: var(--agent-mask-expression, var(--red, #e81932));
+  }
+}
+
+@media (max-width: 720px) {
+  .worker-profile > strong {
+    width: 30px;
+    min-height: 34px;
+  }
+
+  .worker-profile > strong .agent-mask {
+    width: 28px;
+    height: 28px;
+  }
+}
+
+@media (max-width: 380px) {
+  .member-avatar .agent-mask {
+    width: 26px;
+    height: 26px;
+  }
+
+  .member-avatar .agent-slot {
+    min-width: 13px;
+    height: 12px;
+    font-size: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-mask,
+  .agent-mask__eyes {
+    transition: none;
+  }
+
+  :is(.agent-inventory-card, .member-card, .agent-identity, .agent-mask-token):hover .agent-mask,
+  :is(.agent-inventory-card, .member-card, .agent-identity, .agent-mask-token):focus-visible .agent-mask,
+  :is(.agent-inventory-card, .member-card, .agent-identity, .agent-mask-token):focus-within .agent-mask,
+  [data-running="true"] .agent-mask,
+  [data-active="true"] > .agent-mask,
+  .agent-mask[data-active="true"] {
+    transform: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .member-avatar {
+    color: Canvas;
+    forced-color-adjust: none;
+  }
+
+  .member-avatar::before,
+  .member-card.lead .member-avatar::before {
+    background: CanvasText;
+  }
+
+  .agent-slot,
+  .member-avatar .agent-slot {
+    color: Canvas;
+    background: CanvasText;
+    border-color: Canvas;
+    forced-color-adjust: none;
+  }
+
+  .agent-mask__face,
+  .agent-mask__feature,
+  .agent-mask__accent {
+    fill: currentColor;
+  }
+
+  /* Preserve the apertures instead of filling them with an indistinct colour. */
+  .agent-mask__eyes {
+    fill: transparent !important;
+    forced-color-adjust: none;
+  }
+}
